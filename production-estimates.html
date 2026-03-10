@@ -930,22 +930,23 @@ function renderMain() {
   html += `</table>`;
 
   // ===== FOCACCIA / BOCADILLO =====
-  const fcLabel = store.fcType === 'focaccia' ? 'Focaccias' : 'Bocadillos';
-  const fcIcon = store.fcType === 'focaccia' ? '🫓' : '🥖';
+  const isBocadillo = store.fcType === 'bocadillo';
+  const fcLabel = isBocadillo ? 'Bocadillos' : 'Focaccias';
+  const fcIcon = isBocadillo ? '🥖' : '🫓';
   html += `<div class="section-header">${fcIcon} ${fcLabel}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px">Producto</th>
     <th class="shop-header">Shop</th>
-    <th class="orders-header">Pedidos</th>
+    ${isBocadillo ? '' : '<th class="orders-header">Pedidos</th>'}
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
   </tr>`;
-  store.fcNames.forEach(name => {
+  store.fcNames.forEach((name, idx) => {
     const fcSobras = sobras.focaccia[name];
     html += `<tr>
       <td class="product-name">${name}</td>
-      ${eCell(`fc-${name}-shop`, 4, 'ai')}
-      ${eCell(`fc-${name}-order`, 0, 'manual order-cell')}
+      ${eCell(`fc-${idx}-shop`, 4, 'ai')}
+      ${isBocadillo ? '' : eCell(`fc-${idx}-order`, 0, 'manual order-cell')}
       <td class="sep"></td>
       ${sobrasCell(fcSobras)}
     </tr>`;
@@ -1121,8 +1122,8 @@ async function confirmSync() {
     const shopVal = shopInput ? (parseInt(shopInput.value) || 0) : 0;
     const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
 
-    if (shopVal > 0) estimates.push({ cell: 'G' + row, value: shopVal });
-    if (orderVal > 0) estimates.push({ cell: 'J' + row, value: orderVal });
+    estimates.push({ cell: 'G' + row, value: shopVal });
+    estimates.push({ cell: 'J' + row, value: orderVal });
   });
 
   // Pastry: each batch has shop + orders in specific columns
@@ -1142,9 +1143,21 @@ async function confirmSync() {
     for (const [suffix, col] of Object.entries(PASTRY_COL_MAP)) {
       const input = document.querySelector(`input[data-key="pastry-${p.key}-${suffix}"]`);
       const val = input ? (parseInt(input.value) || 0) : 0;
-      if (val > 0) estimates.push({ cell: col + row, value: val });
+      estimates.push({ cell: col + row, value: val });
     }
   });
+
+  // Bocadillos (Sant Joan only): shop → G50, G51, G52
+  if (currentStore === 'santjoan') {
+    const BOCADILLO_ROWS = [50, 51, 52];
+    const store = STORE_CONFIG[currentStore];
+    store.fcNames.forEach((name, idx) => {
+      if (idx >= BOCADILLO_ROWS.length) return;
+      const input = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+      const val = input ? (parseInt(input.value) || 0) : 0;
+      estimates.push({ cell: 'G' + BOCADILLO_ROWS[idx], value: val });
+    });
+  }
 
   // 4. Show syncing state
   const btn = document.getElementById('syncBtn');
