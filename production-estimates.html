@@ -285,6 +285,18 @@ function roundToNearest(value, multiple) {
   return Math.round(value / multiple) * multiple;
 }
 
+// Round total (shop+orders) to nearest multiple, but:
+// 1. Never round a non-zero total to 0
+// 2. Always guarantee orders are covered (round up if needed)
+function roundWithOrderGuarantee(total, orderVal, multiple) {
+  if (!multiple) return total;
+  if (total === 0) return orderVal > 0 ? Math.ceil(orderVal / multiple) * multiple : 0;
+  const rounded = Math.round(total / multiple) * multiple;
+  // Never round non-zero to 0, and always cover orders
+  if (rounded === 0 || rounded < orderVal) return Math.ceil(total / multiple) * multiple;
+  return rounded;
+}
+
 // ===== PRODUCT NAME → KEY MAPPING (for sobras data from API) =====
 const PRODUCT_NAME_TO_KEY = {
   // Bread
@@ -989,7 +1001,7 @@ function collectRoundingChanges() {
     }
   });
 
-  // Pastry: per batch, round (shop + orders) total, difference goes to shop
+  // Pastry: per batch, round (shop + orders) total, guarantee orders covered
   const batchNames = { b1: '1er lote', b2: '2do lote', b3: '3er lote' };
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
@@ -1000,9 +1012,9 @@ function collectRoundingChanges() {
       const shopVal = parseInt(shopInput.value) || 0;
       const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
       const total = shopVal + orderVal;
-      const rounded = roundToNearest(total, p.roundTo);
-      if (total !== rounded && total > 0) {
-        const newShop = rounded - orderVal;
+      const rounded = roundWithOrderGuarantee(total, orderVal, p.roundTo);
+      if (total !== rounded && (total > 0 || orderVal > 0)) {
+        const newShop = Math.max(0, rounded - orderVal);
         changes.push({ product: p.name, field: batchNames[b], original: shopVal, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
       }
     });
@@ -1071,7 +1083,7 @@ async function confirmSync() {
     shopInput.value = rounded - orderVal;  // add rounding difference to shop
   });
 
-  // 2. Apply rounding to pastry (per batch: round shop+orders, add extra to shop)
+  // 2. Apply rounding to pastry (per batch: round shop+orders, guarantee orders covered)
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
     ['b1','b2','b3'].forEach(b => {
@@ -1081,8 +1093,8 @@ async function confirmSync() {
       const shopVal = parseInt(shopInput.value) || 0;
       const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
       const total = shopVal + orderVal;
-      const rounded = roundToNearest(total, p.roundTo);
-      shopInput.value = rounded - orderVal;  // add rounding difference to shop
+      const rounded = roundWithOrderGuarantee(total, orderVal, p.roundTo);
+      shopInput.value = Math.max(0, rounded - orderVal);  // shop = rounded total minus orders
     });
   });
 
