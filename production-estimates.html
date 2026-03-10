@@ -639,6 +639,80 @@ let currentStore = 'santpau';
 let currentDay = 'Miércoles';
 let editedCells = {};
 
+// ============ INPUT PERSISTENCE (localStorage) ============
+// Shop values: saved per store + specific date (reset when new AI estimates arrive)
+// Order values: saved per store + day of week (carry over week to week)
+
+function getShopStorageKey() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  return `origo-shop-${currentStore}-${dateStr}`;
+}
+
+function getOrderStorageKey() {
+  // Day-of-week key (no date) so orders persist across weeks
+  return `origo-orders-${currentStore}-${currentDay}`;
+}
+
+function saveInputState() {
+  const shopData = {};
+  const orderData = {};
+
+  document.querySelectorAll('.editable input').forEach(input => {
+    const key = input.dataset.key;
+    const val = input.value;
+    if (!key || val === '') return;
+
+    // Order inputs contain '-order' (bread) or end in 'o' for pastry batches (b1o, b2o, b3o)
+    const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+    if (isOrder) {
+      orderData[key] = val;
+    } else {
+      shopData[key] = val;
+    }
+  });
+
+  localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells }));
+  localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData }));
+}
+
+function restoreInputState() {
+  // 1. Restore shop values (per date — only if they exist for this week's estimate)
+  try {
+    const shopSaved = localStorage.getItem(getShopStorageKey());
+    if (shopSaved) {
+      const { inputs, editedCells: savedEdited } = JSON.parse(shopSaved);
+      if (inputs) {
+        for (const [key, val] of Object.entries(inputs)) {
+          const input = document.querySelector(`input[data-key="${key}"]`);
+          if (input) {
+            input.value = val;
+            input.closest('td').className = 'editable edited';
+          }
+        }
+      }
+      if (savedEdited) Object.assign(editedCells, savedEdited);
+    }
+  } catch(e) { console.warn('Failed to restore shop inputs:', e); }
+
+  // 2. Restore order values (per day of week — persist across weeks)
+  try {
+    const orderSaved = localStorage.getItem(getOrderStorageKey());
+    if (orderSaved) {
+      const { inputs } = JSON.parse(orderSaved);
+      if (inputs) {
+        for (const [key, val] of Object.entries(inputs)) {
+          const input = document.querySelector(`input[data-key="${key}"]`);
+          if (input) {
+            input.value = val;
+            input.closest('td').className = 'editable edited';
+          }
+        }
+      }
+    }
+  } catch(e) { console.warn('Failed to restore order inputs:', e); }
+}
+
 // ============ HELPERS ============
 function eCell(key, value, cls) {
   const isEdited = editedCells[key];
@@ -887,35 +961,49 @@ function renderMain() {
     input.addEventListener('change', function() {
       editedCells[this.dataset.key] = true;
       this.closest('td').className = 'editable edited';
+      saveInputState();  // auto-save on every change
     });
   });
+
+  // Restore any previously saved manual adjustments
+  restoreInputState();
 }
 
 // ===== SYNC WITH ROUNDING PREVIEW =====
 function collectRoundingChanges() {
   const changes = [];
 
+  // Bread: round (shop + orders) total, difference goes to shop
   BREAD.forEach(item => {
     if (!item.roundTo) return;
-    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
-    if (!input) return;
-    const val = parseInt(input.value) || 0;
-    const rounded = roundToNearest(val, item.roundTo);
-    if (val !== rounded && val > 0) {
-      changes.push({ product: item.name, field: 'Shop', original: val, rounded, mult: item.label });
+    const shopInput = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    const orderInput = document.querySelector(`input[data-key="bread-${item.key}-order"]`);
+    if (!shopInput) return;
+    const shopVal = parseInt(shopInput.value) || 0;
+    const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+    const total = shopVal + orderVal;
+    const rounded = roundToNearest(total, item.roundTo);
+    if (total !== rounded && total > 0) {
+      const newShop = rounded - orderVal;
+      changes.push({ product: item.name, field: 'Shop', original: shopVal, rounded: newShop, total, roundedTotal: rounded, mult: item.label });
     }
   });
 
-  const batchNames = { b1s: '1er lote Shop', b2s: '2do lote Shop', b3s: '3er lote Shop' };
+  // Pastry: per batch, round (shop + orders) total, difference goes to shop
+  const batchNames = { b1: '1er lote', b2: '2do lote', b3: '3er lote' };
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
-    ['b1s','b2s','b3s'].forEach(b => {
-      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
-      if (!input) return;
-      const val = parseInt(input.value) || 0;
-      const rounded = roundToNearest(val, p.roundTo);
-      if (val !== rounded && val > 0) {
-        changes.push({ product: p.name, field: batchNames[b], original: val, rounded, mult: p.label });
+    ['b1','b2','b3'].forEach(b => {
+      const shopInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`);
+      const orderInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`);
+      if (!shopInput) return;
+      const shopVal = parseInt(shopInput.value) || 0;
+      const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+      const total = shopVal + orderVal;
+      const rounded = roundToNearest(total, p.roundTo);
+      if (total !== rounded && total > 0) {
+        const newShop = rounded - orderVal;
+        changes.push({ product: p.name, field: batchNames[b], original: shopVal, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
       }
     });
   });
@@ -935,6 +1023,11 @@ function showSyncPreview() {
       html += `<div class="round-row">
         <span>${c.product} <span style="color:#888;font-size:11px">${c.field}</span></span>
         <span>
+          <span style="color:#888;font-size:11px">total ${c.total}</span>
+          <span class="arrow">→</span>
+          <span style="color:#888;font-size:11px">${c.roundedTotal}</span>
+          <span style="margin:0 4px">·</span>
+          <span style="font-size:11px">shop</span>
           <span class="original">${c.original}</span>
           <span class="arrow">→</span>
           <span class="rounded">${c.rounded}</span>
