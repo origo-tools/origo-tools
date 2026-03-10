@@ -965,23 +965,31 @@ async function confirmSync() {
     return;
   }
 
-  // 1. Apply rounding to bread
+  // 1. Apply rounding to bread (round shop+orders total, add extra to shop)
   BREAD.forEach(item => {
     if (!item.roundTo) return;
-    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
-    if (!input) return;
-    const val = parseInt(input.value) || 0;
-    input.value = roundToNearest(val, item.roundTo);
+    const shopInput = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    const orderInput = document.querySelector(`input[data-key="bread-${item.key}-order"]`);
+    if (!shopInput) return;
+    const shopVal = parseInt(shopInput.value) || 0;
+    const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+    const total = shopVal + orderVal;
+    const rounded = roundToNearest(total, item.roundTo);
+    shopInput.value = rounded - orderVal;  // add rounding difference to shop
   });
 
-  // 2. Apply rounding to pastry
+  // 2. Apply rounding to pastry (per batch: round shop+orders, add extra to shop)
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
-    ['b1s','b2s','b3s'].forEach(b => {
-      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
-      if (!input) return;
-      const val = parseInt(input.value) || 0;
-      input.value = roundToNearest(val, p.roundTo);
+    ['b1','b2','b3'].forEach(b => {
+      const shopInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`);
+      const orderInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`);
+      if (!shopInput) return;
+      const shopVal = parseInt(shopInput.value) || 0;
+      const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+      const total = shopVal + orderVal;
+      const rounded = roundToNearest(total, p.roundTo);
+      shopInput.value = rounded - orderVal;  // add rounding difference to shop
     });
   });
 
