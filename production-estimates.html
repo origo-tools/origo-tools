@@ -216,8 +216,6 @@
     <div class="legend-item"><div style="width:10px;height:10px;border-radius:50%;background:#b7791f"></div> Pedidos (sem. pasada)</div>
     <div class="legend-item"><div class="legend-dot edited"></div> Editado</div>
     <div class="legend-item"><span class="round-badge">×12</span> Redondeado al sincronizar</div>
-    <div class="legend-item"><span style="color:#c0392b;font-weight:600;font-size:11px">▲%</span> Correc. agotamiento</div>
-    <div class="legend-item"><span style="color:#2d6a4f;font-weight:600;font-size:11px">▼%</span> Reduc. sobreproducción</div>
   </div>
   <div style="display:flex;align-items:center;gap:16px;">
     <div class="sync-status" id="syncStatus">Sin sincronizar</div>
@@ -366,14 +364,14 @@ async function testForecastApiConnection(url) {
 }
 
 // Get the target date for a given day name — always NEXT WEEK
-// The estimates are for next week (generated progressively as each day's sobras come in)
+// Estimates are for next week (generated progressively as each day's sobras come in)
 function getTargetDate(dayName) {
   const dayIdx = DAYS.indexOf(dayName); // 0=Lunes(Mon)...5=Sábado(Sat), 6=Domingo(Sun)
   const today = new Date();
   const todayDay = today.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
 
   // Find next week's Monday
-  // If today is Mon(1), next Mon is +7. If today is Tue(2), next Mon is +6. Sun(0) → +1.
+  // Mon(1)→+7, Tue(2)→+6, Wed(3)→+5, ..., Sat(6)→+2, Sun(0)→+1
   const daysUntilNextMon = todayDay === 0 ? 1 : (8 - todayDay);
   const nextMon = new Date(today);
   nextMon.setDate(today.getDate() + daysUntilNextMon);
@@ -526,7 +524,6 @@ function getEstimateFactors() {
     isHoliday: cached.isHoliday,
     seasonalIndex: cached.seasonalIndex,
     weather: cached.weather,
-    sobrasWeeksAvailable: cached.sobrasWeeksAvailable || 0,
   };
 }
 
@@ -710,30 +707,9 @@ function pastryTotalSobras(data) {
   return `<td class="sobras-cell ${cls}">${html}</td>`;
 }
 
-function productNameCell(name, label, cell) {
+function productNameCell(name, label) {
   const multHtml = label ? `<span class="mult">${label}</span>` : '';
-  let factorHtml = '';
-  // Show per-product sobras factor indicators if available
-  if (cell) {
-    const targetDate = getTargetDate(currentDay);
-    const dateStr = formatDateStr(targetDate);
-    const cacheKey = `${currentStore}-${dateStr}`;
-    const cached = forecastCache[cacheKey];
-    if (cached && cached.estimates) {
-      const est = cached.estimates.find(e => e.cell === cell);
-      if (est && est.factors) {
-        if (est.factors.soldOut > 1.0) {
-          const pct = Math.round((est.factors.soldOut - 1) * 100);
-          factorHtml += ` <span style="font-size:10px;color:#c0392b;font-weight:600" title="Corrección por agotamiento">▲${pct}%</span>`;
-        }
-        if (est.factors.overproduction < 1.0) {
-          const pct = Math.round((1 - est.factors.overproduction) * 100);
-          factorHtml += ` <span style="font-size:10px;color:#2d6a4f;font-weight:600" title="Reducción por sobreproducción">▼${pct}%</span>`;
-        }
-      }
-    }
-  }
-  return `<td class="product-name">${name}${multHtml}${factorHtml}</td>`;
+  return `<td class="product-name">${name}${multHtml}</td>`;
 }
 
 // ============ RENDER ============
@@ -762,14 +738,6 @@ function renderAlertsBar() {
     if (factors.weather && factors.weather.precipitation_mm > 3) {
       const adj = factors.weather.precipitation_mm > 10 ? '-10%' : '-5%';
       html += `<div class="event-badge medium">🌧️ Ajuste lluvia: ${adj}</div>`;
-    }
-    // v2: Sobras feedback indicator
-    if (factors.sobrasWeeksAvailable !== undefined) {
-      if (factors.sobrasWeeksAvailable >= 2) {
-        html += `<div class="event-badge info">📦 Feedback sobras activo (${factors.sobrasWeeksAvailable} semanas de datos)</div>`;
-      } else if (factors.sobrasWeeksAvailable > 0) {
-        html += `<div class="event-badge info">📦 Sobras: datos insuficientes (${factors.sobrasWeeksAvailable}/2 semanas mín.)</div>`;
-      }
     }
   }
 
@@ -808,7 +776,7 @@ function renderMain() {
     const orderVal = orders.bread[item.key] ?? '';
     const sobrasData = sobras.bread[item.key];
     html += `<tr>
-      ${productNameCell(item.name, item.label, KEY_TO_CELL[item.key])}
+      ${productNameCell(item.name, item.label)}
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
       ${eCell(`bread-${item.key}-order`, orderVal, 'manual order-cell')}
       <td class="sep"></td>
@@ -856,7 +824,7 @@ function renderMain() {
       const b3Alert = pastryBatchSobras(sd, 3);
 
       html += `<tr>
-        ${productNameCell(p.name, p.label, KEY_TO_CELL[p.key])}
+        ${productNameCell(p.name, p.label)}
         ${pastryTotalSobras(sd)}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
