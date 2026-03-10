@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Registro de Sobras — Origo</title>
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%231a3a2a' width='100' height='100' rx='20'/><text x='50' y='68' text-anchor='middle' font-size='50'>🍞</text></svg>">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #f5f0eb; color: #2c2c2c;
+    min-height: 100vh; min-height: 100dvh;
+    padding-bottom: 100px;
+  }
+
+  /* Header */
+  .header {
+    background: #1a3a2a; color: white;
+    padding: 16px 16px 14px; text-align: center;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; text-transform: lowercase; }
+  .store-name { font-size: 14px; opacity: 0.85; margin-top: 2px; font-weight: 500; }
+  .connection-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle;
+  }
+  .connection-dot.ok { background: #2ecc71; }
+  .connection-dot.err { background: #e74c3c; }
+  .connection-dot.pending { background: #f39c12; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* Date bar */
+  .date-bar {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; padding: 12px 16px; background: white;
+    border-bottom: 1px solid #e0d8d0; font-size: 15px; font-weight: 600;
+  }
+  .day-name {
+    background: #1a3a2a; color: white; padding: 3px 12px;
+    border-radius: 20px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .day-circles { display: flex; gap: 5px; }
+  .day-circle {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; border: 2px solid #ddd; color: #999;
+  }
+  .day-circle.today { background: #1a3a2a; color: white; border-color: #1a3a2a; }
+
+  /* Settings gear */
+  .settings-btn {
+    position: absolute; top: 14px; right: 14px;
+    background: none; border: none; color: white; font-size: 20px;
+    cursor: pointer; opacity: 0.7; padding: 4px;
+  }
+
+  /* Section headers */
+  .section-header {
+    display: flex; align-items: center; padding: 14px 16px 6px; gap: 8px;
+  }
+  .section-header h2 {
+    font-size: 16px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 1px; color: #1a3a2a;
+  }
+  .section-header .line { flex: 1; height: 2px; background: #1a3a2a; opacity: 0.15; }
+
+  /* Product cards */
+  .products { padding: 0 10px; display: flex; flex-direction: column; gap: 5px; }
+  .product-card {
+    background: white; border-radius: 12px; padding: 10px 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    min-height: 52px; transition: all 0.15s;
+  }
+  .product-card .card-top {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .product-card.ran-out { border-left: 4px solid #c0392b; }
+  .product-card.leftover-positive { border-left: 4px solid #e67e22; }
+  .product-card.has-batch-data { border-left: 4px solid #457b9d; }
+  .product-card.complete { border-left: 4px solid #2e7d32; }
+
+  .product-name { flex: 1; font-size: 14px; font-weight: 600; line-height: 1.2; }
+
+  .product-actions { display: flex; gap: 5px; align-items: center; }
+  .btn-sobras, .btn-acabado {
+    padding: 9px 12px; border-radius: 10px; font-size: 12px;
+    font-weight: 700; border: none; cursor: pointer; white-space: nowrap;
+  }
+  .btn-sobras { background: #f0ebe5; color: #2c2c2c; }
+  .btn-sobras:active { background: #e0d8d0; }
+  .btn-acabado { background: #c0392b; color: white; }
+  .btn-acabado:active { background: #a93226; }
+
+  .product-result { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; }
+  .result-tag { padding: 4px 8px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+  .result-tag.ran-out { background: #fde8e8; color: #c0392b; }
+  .result-tag.leftover { background: #fef3e2; color: #e67e22; }
+  .result-tag.perfect { background: #e8f5e9; color: #2e7d32; }
+  .btn-undo { background: none; border: none; font-size: 16px; cursor: pointer; padding: 4px; opacity: 0.35; }
+
+  /* Batch sold-out tags row */
+  .batch-tags {
+    display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; padding-left: 0;
+  }
+  .batch-tag {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;
+    background: #eef0f8; color: #457b9d;
+  }
+  .batch-tag .remove-batch {
+    background: none; border: none; font-size: 13px; cursor: pointer;
+    color: #457b9d; opacity: 0.5; padding: 0 0 0 2px; line-height: 1;
+  }
+  .sobras-tag-inline {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;
+    cursor: pointer;
+  }
+  .sobras-tag-inline.leftover { background: #fef3e2; color: #e67e22; }
+  .sobras-tag-inline.perfect { background: #e8f5e9; color: #2e7d32; }
+
+  /* Sub-section */
+  .sub-section { padding: 0 10px; margin-top: 2px; }
+  .sub-section-header {
+    display: flex; align-items: center; justify-content: space-between; padding: 8px 14px 4px;
+  }
+  .sub-section-title {
+    font-size: 12px; font-weight: 700; color: #666;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .btn-edit-names {
+    font-size: 11px; color: #1a3a2a; background: none; border: none;
+    text-decoration: underline; cursor: pointer; font-weight: 600;
+  }
+
+  /* Modals */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 200;
+    align-items: flex-end; justify-content: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: white; border-radius: 20px 20px 0 0;
+    padding: 20px; width: 100%; max-width: 500px;
+    animation: slideUp 0.2s ease-out;
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .modal h3 { font-size: 17px; font-weight: 700; text-align: center; margin-bottom: 16px; }
+
+  /* Numpad */
+  .numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-width: 260px; margin: 0 auto; }
+  .numpad button {
+    height: 54px; border-radius: 12px; font-size: 22px; font-weight: 700; border: none; cursor: pointer;
+  }
+  .numpad .num { background: #f5f0eb; color: #2c2c2c; }
+  .numpad .num:active { background: #e0d8d0; }
+  .numpad .del { background: #fde8e8; color: #c0392b; font-size: 16px; }
+  .num-display { text-align: center; font-size: 44px; font-weight: 800; padding: 12px; color: #1a3a2a; min-height: 70px; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 14px; }
+  .modal-actions button {
+    flex: 1; padding: 14px; border-radius: 12px; font-size: 15px;
+    font-weight: 700; border: none; cursor: pointer;
+  }
+  .btn-cancel { background: #f5f0eb; color: #666; }
+  .btn-confirm { background: #1a3a2a; color: white; }
+
+  /* Time picker modal */
+  .time-picker { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 20px 0; }
+  .time-input {
+    width: 70px; height: 60px; border-radius: 12px; border: 2px solid #e0d8d0;
+    text-align: center; font-size: 28px; font-weight: 800; color: #1a3a2a; font-family: inherit;
+  }
+  .time-input:focus { outline: none; border-color: #1a3a2a; }
+  .time-sep { font-size: 28px; font-weight: 800; color: #1a3a2a; }
+  .batch-hint {
+    text-align: center; font-size: 13px; color: #457b9d; font-weight: 600;
+    padding: 6px; background: #eef0f8; border-radius: 8px; margin-bottom: 10px;
+  }
+
+  /* Edit names modal */
+  .edit-name-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .edit-name-input {
+    flex: 1; padding: 12px; border-radius: 10px; border: 2px solid #e0d8d0;
+    font-size: 15px; font-family: inherit; font-weight: 600;
+  }
+  .edit-name-input:focus { outline: none; border-color: #1a3a2a; }
+  .edit-name-num {
+    width: 28px; height: 28px; border-radius: 50%; background: #1a3a2a;
+    color: white; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+
+  /* Submit bar */
+  .submit-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    padding: 10px 14px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    background: white; border-top: 1px solid #e0d8d0; z-index: 100;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .progress-text { font-size: 12px; color: #999; white-space: nowrap; }
+  .progress-text strong { color: #1a3a2a; font-size: 15px; }
+  .btn-submit {
+    flex: 1; padding: 14px 20px; border-radius: 12px;
+    background: #ccc; color: white; font-size: 16px; font-weight: 800;
+    border: none; cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
+  }
+  .btn-submit.ready { background: #1a3a2a; }
+  .btn-submit.ready:active { background: #0d1f15; }
+  .btn-submit.sending { background: #888; pointer-events: none; }
+
+  /* TGTG & Comments */
+  .tgtg-section { padding: 14px 10px 0; }
+  .tgtg-card {
+    background: #1a3a2a; color: white; border-radius: 12px;
+    padding: 14px; display: flex; align-items: center; gap: 10px;
+  }
+  .tgtg-card .emoji { font-size: 24px; }
+  .tgtg-card .label { flex: 1; font-weight: 600; font-size: 14px; }
+  .tgtg-input {
+    width: 54px; height: 40px; border-radius: 8px; border: none;
+    text-align: center; font-size: 18px; font-weight: 700; color: #1a3a2a;
+  }
+  .comments-section { padding: 10px 10px 6px; }
+  .comments-label {
+    font-size: 12px; font-weight: 700; color: #666;
+    padding: 4px 4px 4px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .comments-input {
+    width: 100%; padding: 12px; border-radius: 12px;
+    border: 2px solid #e0d8d0; font-size: 14px; font-family: inherit;
+    background: white; resize: none; min-height: 50px;
+  }
+  .comments-input:focus { outline: none; border-color: #1a3a2a; }
+
+  /* Success screen */
+  .success-screen {
+    display: none; position: fixed; inset: 0; background: #1a3a2a;
+    z-index: 300; flex-direction: column; align-items: center;
+    justify-content: center; color: white;
+  }
+  .success-screen.active { display: flex; }
+  .success-screen .checkmark { font-size: 72px; margin-bottom: 16px; }
+  .success-screen h2 { font-size: 22px; font-weight: 700; }
+  .success-screen p { font-size: 15px; opacity: 0.7; margin-top: 6px; }
+
+  /* Error toast */
+  .toast {
+    display: none; position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: #c0392b; color: white; padding: 12px 20px; border-radius: 12px;
+    font-size: 14px; font-weight: 600; z-index: 400; text-align: center;
+    max-width: 90%; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .toast.info { background: #457b9d; }
+  .toast.show { display: block; animation: fadeInUp 0.3s ease-out; }
+  @keyframes fadeInUp { from { opacity:0; transform: translateX(-50%) translateY(20px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }
+
+  /* Settings modal — API URL config */
+  .api-config { margin-top: 16px; padding-top: 16px; border-top: 1px solid #eee; }
+  .api-config label { font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .api-config input {
+    width: 100%; padding: 10px; border: 2px solid #e0d8d0; border-radius: 8px;
+    font-size: 13px; margin-top: 4px; font-family: inherit;
+  }
+  .api-config input:focus { outline: none; border-color: #1a3a2a; }
+  .api-config .hint { font-size: 11px; color: #999; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>origo</h1>
+  <div class="store-name" id="storeName">Registro de Sobras</div>
+  <button class="settings-btn" onclick="openSettings()">⚙</button>
+</div>
+
+<div class="date-bar">
+  <div class="day-circles" id="daycircles"></div>
+  <div class="day-name" id="dayname"></div>
+  <div id="datetext"></div>
+</div>
+
+<div id="product-list"></div>
+
+<div class="tgtg-section">
+  <div class="tgtg-card">
+    <div class="emoji">📦</div>
+    <div class="label">Too Good To Go</div>
+    <input type="number" class="tgtg-input" id="tgtg" value="0" min="0" inputmode="numeric">
+  </div>
+</div>
+
+<div class="comments-section">
+  <div class="comments-label">Comentarios</div>
+  <textarea class="comments-input" id="comments" placeholder="Notas del día..."></textarea>
+</div>
+
+<div class="submit-bar">
+  <div class="progress-text"><strong id="progress-count">0</strong> / <span id="progress-total">0</span></div>
+  <button class="btn-submit" id="submitBtn" onclick="submitForm()">ENVIAR</button>
+</div>
+
+<!-- Number input modal (Sobras) -->
+<div class="modal-overlay" id="numModal">
+  <div class="modal">
+    <h3 id="num-modal-title">Sobras</h3>
+    <div class="num-display" id="num-display">0</div>
+    <div class="numpad">
+      <button class="num" onclick="numInput(1)">1</button>
+      <button class="num" onclick="numInput(2)">2</button>
+      <button class="num" onclick="numInput(3)">3</button>
+      <button class="num" onclick="numInput(4)">4</button>
+      <button class="num" onclick="numInput(5)">5</button>
+      <button class="num" onclick="numInput(6)">6</button>
+      <button class="num" onclick="numInput(7)">7</button>
+      <button class="num" onclick="numInput(8)">8</button>
+      <button class="num" onclick="numInput(9)">9</button>
+      <button class="del" onclick="numDelete()">⌫</button>
+      <button class="num" onclick="numInput(0)">0</button>
+      <button class="num" style="background:#1a3a2a;color:white;font-size:18px;" onclick="numConfirm()">✓</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeNumModal()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Time picker modal (Se acabó) -->
+<div class="modal-overlay" id="timeModal">
+  <div class="modal">
+    <h3 id="time-modal-title">Se acabó — hora</h3>
+    <div class="batch-hint" id="batchHint" style="display:none;"></div>
+    <div class="time-picker">
+      <input type="text" class="time-input" id="timeHour" maxlength="2" inputmode="numeric" placeholder="HH">
+      <span class="time-sep">:</span>
+      <input type="text" class="time-input" id="timeMin" maxlength="2" inputmode="numeric" placeholder="MM">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeTimeModal()">Cancelar</button>
+      <button class="btn-confirm" onclick="confirmTime()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit names modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h3 id="edit-modal-title">Editar nombres</h3>
+    <div id="edit-names-list"></div>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn-cancel" onclick="closeEditModal()">Cancelar</button>
+      <button class="btn-confirm" onclick="saveEditNames()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings modal (store selection + API config) -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal" style="text-align:center;">
+    <h3>Selecciona tu tienda</h3>
+    <p style="font-size:14px;color:#666;margin-bottom:20px;">Solo necesitas hacer esto una vez</p>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button class="btn-confirm" style="padding:16px;" onclick="setStore('santpau')">Sant Pau</button>
+      <button class="btn-confirm" style="padding:16px;" onclick="setStore('mila')">Milà</button>
+      <button class="btn-confirm" style="padding:16px;" onclick="setStore('santjoan')">Sant Joan</button>
+    </div>
+    <div class="api-config">
+      <label>URL del servidor (Apps Script)</label>
+      <input type="url" id="apiUrlInput" placeholder="https://script.google.com/macros/s/.../exec" value="">
+      <div class="hint">Pega aquí la URL del Apps Script desplegado</div>
+      <button class="btn-confirm" style="margin-top:10px;padding:10px;width:100%;font-size:14px;" onclick="saveApiUrl()">Guardar URL</button>
+    </div>
+  </div>
+</div>
+
+<!-- Success screen -->
+<div class="success-screen" id="success">
+  <div class="checkmark">✓</div>
+  <h2>¡Enviado!</h2>
+  <p id="success-msg">Registro guardado correctamente</p>
+</div>
+
+<!-- Error toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── CONFIG ────────────────────────────────────────────────
+const STORES = {
+  santpau: { name: 'Sant Pau', variableType: 'focaccia' },
+  mila: { name: 'Milà', variableType: 'focaccia' },
+  santjoan: { name: 'Sant Joan', variableType: 'bocadillo' }
+};
+
+const DEFAULT_FOCACCIA_NAMES = ['Mortadella', 'Panceta & crème fraîche', 'Chorizo', 'Olivas', 'Berenjena'];
+const DEFAULT_BOCADILLO_NAMES = ['Mortadella', 'Berenjena', 'Jamón y queso'];
+
+// ─── PRODUCT LISTS (updated to match Square/production sheet) ───
+const BREAD = [
+  { id: 'origo', name: 'ORIGO', category: 'bread' },
+  { id: 'origo_molde', name: 'ORIGO MOLDE', category: 'bread' },
+  { id: 'origo_integral', name: 'ORIGO INTEGRAL', category: 'bread' },
+  { id: 'llavors', name: 'LLAVORS', category: 'bread' },
+  { id: 'especial', name: 'ESPECIAL', category: 'bread' },
+  { id: 'espelta_petita', name: 'ESPELTA PETITA', category: 'bread' },
+  { id: 'segol_integral', name: 'SÈGOL INTEGRAL', category: 'bread' },
+  { id: 'copenhague', name: 'COPENHAGUE', category: 'bread' },
+  { id: 'baguette', name: 'BAGUETTE', category: 'bread' },
+  { id: 'focaccia_bread', name: 'FOCACCIA', category: 'bread' },
+];
+
+// Pastry products — all support per-batch sold-out tracking
+const PASTRY = [
+  { id: 'canela_twist', name: 'Canela Twist', category: 'pastry', hasBatches: true },
+  { id: 'cardamomo_twist', name: 'Cardamomo twist', category: 'pastry', hasBatches: true },
+  { id: 'vainilla_roll', name: 'Vainilla Roll', category: 'pastry', hasBatches: true },
+  { id: 'brioix_classic', name: 'Brioix clàssic', category: 'pastry', hasBatches: true },
+  null,
+  { id: 'croissant', name: 'Croissant', category: 'pastry', hasBatches: true },
+  { id: 'pain_au_chocolat', name: 'Pain au chocolat', category: 'pastry', hasBatches: true },
+  { id: 'napolitana', name: 'Napolitana pernil i formatge', category: 'pastry', hasBatches: true },
+  null,
+  { id: 'mico', name: 'Mico', category: 'pastry', hasBatches: true },
+  { id: 'niu_temporada', name: 'Niu de temporada', category: 'pastry', hasBatches: true },
+  null,
+  { id: 'croissant_ametlla', name: "Croissant d'ametlla", category: 'pastry', hasBatches: true },
+  null,
+  { id: 'cookie_chocolate', name: 'Cookie chocolate', category: 'pastry', hasBatches: true },
+  { id: 'pastry_del_mes', name: 'Pastry del mes', category: 'pastry', hasBatches: true },
+  null,
+  { id: 'pastis_llimona', name: 'Pastís llimona i ametlla', category: 'pastry', hasBatches: true },
+];
+
+// Batch time boundaries
+// Batch 1: before 11:00 | Batch 2: 11:00–12:59 | Batch 3: 13:00+
+function timeToBatch(timeStr) {
+  if (!timeStr) return null;
+  const [h] = timeStr.split(':').map(Number);
+  if (h < 11) return 1;
+  if (h < 13) return 2;
+  return 3;
+}
+function batchLabel(b) {
+  return b === 1 ? '1er lote' : b === 2 ? '2do lote' : '3er lote';
+}
+
+// ─── STATE ─────────────────────────────────────────────────
+let currentStore = null;
+// productData structure:
+//   For BREAD: { type: 'leftover', value: N } or { type: 'ran_out', time: 'HH:MM' }
+//   For PASTRY (hasBatches): { batchSoldOuts: [{ batch: 2, time: '11:30' }], sobras: null | N }
+let productData = {};
+let numValue = '';
+let numModalCallback = null;
+let timeModalCallback = null;
+let isSending = false;
+
+const days = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+const dayLetters = ['D','L','M','X','J','V','S'];
+const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+// ─── API URL PERSISTENCE ───────────────────────────────────
+function getApiUrl() {
+  try { return localStorage.getItem('origo_api_url') || ''; } catch(e) { return ''; }
+}
+function setApiUrl(url) {
+  try { localStorage.setItem('origo_api_url', url); } catch(e) {}
+}
+
+// ─── STORE PERSISTENCE ─────────────────────────────────────
+function getStoredStore() {
+  try { return localStorage.getItem('origo_store'); } catch(e) { return null; }
+}
+function saveStore(store) {
+  try { localStorage.setItem('origo_store', store); } catch(e) {}
+}
+
+// Variable names persistence
+function getVariableNames(store) {
+  const key = `origo_varnames_${store}`;
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved) return JSON.parse(saved);
+  } catch(e) {}
+  const type = STORES[store].variableType;
+  return type === 'bocadillo' ? [...DEFAULT_BOCADILLO_NAMES] : [...DEFAULT_FOCACCIA_NAMES];
+}
+function saveVariableNames(store, names) {
+  try { localStorage.setItem(`origo_varnames_${store}`, JSON.stringify(names)); } catch(e) {}
+}
+
+// Pending submissions (offline queue)
+function getPendingQueue() {
+  try {
+    const q = localStorage.getItem('origo_pending');
+    return q ? JSON.parse(q) : [];
+  } catch(e) { return []; }
+}
+function savePendingQueue(q) {
+  try { localStorage.setItem('origo_pending', JSON.stringify(q)); } catch(e) {}
+}
+
+function getVariableProducts() {
+  const names = getVariableNames(currentStore);
+  const type = STORES[currentStore].variableType;
+  const prefix = type === 'bocadillo' ? 'bocadillo' : 'focaccia';
+  const category = type === 'bocadillo' ? 'bocadillo' : 'focaccia';
+  return names.map((name, i) => ({ id: `${prefix}_${i}`, name, category, hasBatches: false }));
+}
+
+// ─── URL PARAM ─────────────────────────────────────────────
+function getUrlStore() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('store');
+}
+
+// ─── TOAST ─────────────────────────────────────────────────
+function showToast(msg, duration, cls) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (cls ? ' ' + cls : '');
+  setTimeout(() => t.className = 'toast', duration || 3000);
+}
+
+// ─── INIT ──────────────────────────────────────────────────
+function init() {
+  const urlStore = getUrlStore();
+  const savedStore = getStoredStore();
+
+  const savedUrl = getApiUrl();
+  if (savedUrl) document.getElementById('apiUrlInput').value = savedUrl;
+
+  if (urlStore && STORES[urlStore]) {
+    currentStore = urlStore;
+    saveStore(urlStore);
+  } else if (savedStore && STORES[savedStore]) {
+    currentStore = savedStore;
+  } else {
+    document.getElementById('settingsModal').classList.add('active');
+    return;
+  }
+
+  if (!savedUrl) {
+    document.getElementById('settingsModal').classList.add('active');
+    return;
+  }
+
+  startApp();
+  flushPendingQueue();
+}
+
+function setStore(store) {
+  currentStore = store;
+  saveStore(store);
+  const apiUrl = getApiUrl();
+  if (!apiUrl) return;
+  document.getElementById('settingsModal').classList.remove('active');
+  startApp();
+}
+
+function saveApiUrl() {
+  const input = document.getElementById('apiUrlInput');
+  const url = input.value.trim();
+  if (!url) { showToast('Introduce la URL del Apps Script'); return; }
+  setApiUrl(url);
+  if (currentStore) {
+    document.getElementById('settingsModal').classList.remove('active');
+    startApp();
+  }
+}
+
+function openSettings() {
+  document.getElementById('apiUrlInput').value = getApiUrl();
+  document.getElementById('settingsModal').classList.add('active');
+}
+
+function startApp() {
+  document.getElementById('storeName').textContent = `Registro de Sobras — ${STORES[currentStore].name}`;
+  initDate();
+  renderProducts();
+}
+
+function initDate() {
+  const now = new Date();
+  document.getElementById('dayname').textContent = days[now.getDay()];
+  document.getElementById('datetext').textContent = `${now.getDate()} ${months[now.getMonth()]}`;
+
+  const circles = document.getElementById('daycircles');
+  circles.innerHTML = '';
+  for (let i = 1; i <= 7; i++) {
+    const d = i % 7;
+    const el = document.createElement('div');
+    el.className = 'day-circle' + (now.getDay() === d ? ' today' : '');
+    el.textContent = dayLetters[d];
+    circles.appendChild(el);
+  }
+}
+
+// ─── RENDER ────────────────────────────────────────────────
+function renderProducts() {
+  if (!currentStore) return;
+  const variableProducts = getVariableProducts();
+  const type = STORES[currentStore].variableType;
+  const sectionLabel = type === 'bocadillo' ? 'Bocadillos' : 'Focaccias';
+
+  const container = document.getElementById('product-list');
+  let html = '';
+
+  // Bread
+  html += `<div class="section-header"><h2>Pan</h2><div class="line"></div></div>`;
+  html += `<div class="products">`;
+  BREAD.forEach(p => html += renderCard(p));
+  html += `</div>`;
+
+  // Focaccia / Bocadillo
+  html += `<div class="sub-section"><div class="sub-section-header">`;
+  html += `<div class="sub-section-title">${sectionLabel}</div>`;
+  html += `<button class="btn-edit-names" onclick="openEditNames()">editar nombres</button>`;
+  html += `</div></div>`;
+  html += `<div class="products">`;
+  variableProducts.forEach(p => html += renderCard(p));
+  html += `</div>`;
+
+  // Pastry
+  html += `<div class="section-header"><h2>Dulces</h2><div class="line"></div></div>`;
+  html += `<div class="products">`;
+  PASTRY.forEach(p => {
+    if (p === null) html += `<div style="height:3px"></div>`;
+    else html += renderCard(p);
+  });
+  html += `</div>`;
+
+  container.innerHTML = html;
+  updateProgress();
+}
+
+function renderCard(product) {
+  const data = productData[product.id];
+  const escapedName = product.name.replace(/'/g, "\\'");
+
+  // ── PASTRY with batch tracking ──
+  if (product.hasBatches) {
+    return renderBatchCard(product, data, escapedName);
+  }
+
+  // ── BREAD / FOCACCIA / BOCADILLO (simple: sobras or single se acabó) ──
+  if (data) {
+    const isRanOut = data.type === 'ran_out';
+    const cardClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'complete' : 'leftover-positive');
+    const tagClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'perfect' : 'leftover');
+    const tagText = isRanOut ? `⏱ ${data.time}` : (data.value === 0 ? '✓ 0 sobras' : `${data.value} sobras`);
+
+    return `
+      <div class="product-card ${cardClass}">
+        <div class="card-top">
+          <div class="product-name">${product.name}</div>
+          <div class="product-result">
+            <span class="result-tag ${tagClass}" onclick="${isRanOut ? `editTimeBread('${product.id}', '${escapedName}')` : `openSobras('${product.id}', '${escapedName}', false)`}">${tagText}</span>
+            <button class="btn-undo" onclick="undoProduct('${product.id}')">✕</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="product-card">
+      <div class="card-top">
+        <div class="product-name">${product.name}</div>
+        <div class="product-actions">
+          <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false)">Sobras</button>
+          <button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Render a pastry card with per-batch sold-out support ──
+function renderBatchCard(product, data, escapedName) {
+  const hasBatchData = data && data.batchSoldOuts && data.batchSoldOuts.length > 0;
+  const hasSobras = data && data.sobras !== null && data.sobras !== undefined;
+  const isComplete = hasSobras || (hasBatchData && data.batchSoldOuts.length >= 3);
+
+  let cardClass = '';
+  if (isComplete && hasSobras && data.sobras === 0) cardClass = 'complete';
+  else if (hasSobras) cardClass = 'leftover-positive';
+  else if (hasBatchData) cardClass = 'has-batch-data';
+
+  let html = `<div class="product-card ${cardClass}">`;
+  html += `<div class="card-top">`;
+  html += `<div class="product-name">${product.name}</div>`;
+
+  // Actions: always show available actions on the right
+  html += `<div class="product-actions">`;
+  if (!hasSobras) {
+    html += `<button class="btn-sobras" onclick="openSobrasBatch('${product.id}', '${escapedName}')">Sobras</button>`;
+  }
+  // Allow "Se acabó" if not all 3 batches are marked
+  const batchCount = hasBatchData ? data.batchSoldOuts.length : 0;
+  if (batchCount < 3 && !isComplete) {
+    html += `<button class="btn-acabado" onclick="openTimePickerBatch('${product.id}', '${escapedName}')">Se acabó</button>`;
+  }
+  if (hasBatchData || hasSobras) {
+    html += `<button class="btn-undo" onclick="undoProduct('${product.id}')">✕</button>`;
+  }
+  html += `</div>`;
+  html += `</div>`; // end card-top
+
+  // Show batch tags and sobras below
+  if (hasBatchData || hasSobras) {
+    html += `<div class="batch-tags">`;
+    if (hasBatchData) {
+      data.batchSoldOuts.forEach((bs, i) => {
+        html += `<span class="batch-tag">⏱ ${batchLabel(bs.batch)} ${bs.time}`;
+        html += ` <button class="remove-batch" onclick="removeBatchSoldOut('${product.id}', ${i})">✕</button>`;
+        html += `</span>`;
+      });
+    }
+    if (hasSobras) {
+      const cls = data.sobras === 0 ? 'perfect' : 'leftover';
+      const txt = data.sobras === 0 ? '✓ 0 sobras' : `${data.sobras} sobras`;
+      html += `<span class="sobras-tag-inline ${cls}" onclick="openSobrasBatch('${product.id}', '${escapedName}')">${txt}</span>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+// ─── SOBRAS (number modal) — simple products ───────────────
+function openSobras(id, name, isBatch) {
+  numValue = '';
+  document.getElementById('num-display').textContent = '0';
+  document.getElementById('num-modal-title').textContent = `Sobras — ${name}`;
+  document.getElementById('numModal').classList.add('active');
+  numModalCallback = (val) => {
+    if (isBatch) {
+      if (!productData[id]) productData[id] = { batchSoldOuts: [], sobras: null };
+      productData[id].sobras = val;
+    } else {
+      productData[id] = { type: 'leftover', value: val };
+    }
+    renderProducts();
+  };
+}
+
+function openSobrasBatch(id, name) {
+  openSobras(id, name, true);
+}
+
+function numInput(n) {
+  if (numValue.length >= 3) return;
+  numValue += n.toString();
+  document.getElementById('num-display').textContent = numValue || '0';
+}
+function numDelete() {
+  numValue = numValue.slice(0, -1);
+  document.getElementById('num-display').textContent = numValue || '0';
+}
+function numConfirm() {
+  const val = parseInt(numValue) || 0;
+  if (numModalCallback) numModalCallback(val);
+  closeNumModal();
+}
+function closeNumModal() {
+  document.getElementById('numModal').classList.remove('active');
+  numModalCallback = null;
+}
+
+// ─── SE ACABÓ — bread (simple, single time) ────────────────
+function openTimePickerBread(id, name) {
+  const now = new Date();
+  document.getElementById('timeHour').value = now.getHours().toString().padStart(2, '0');
+  document.getElementById('timeMin').value = now.getMinutes().toString().padStart(2, '0');
+  document.getElementById('time-modal-title').textContent = `Se acabó — ${name}`;
+  document.getElementById('batchHint').style.display = 'none';
+  document.getElementById('timeModal').classList.add('active');
+  document.getElementById('timeHour').focus();
+
+  timeModalCallback = (h, m) => {
+    productData[id] = { type: 'ran_out', time: `${h}:${m}` };
+    renderProducts();
+  };
+}
+
+function editTimeBread(id, name) {
+  const existing = productData[id];
+  if (!existing) return;
+  const [h, m] = existing.time.split(':');
+  document.getElementById('timeHour').value = h;
+  document.getElementById('timeMin').value = m;
+  document.getElementById('time-modal-title').textContent = `Se acabó — ${name}`;
+  document.getElementById('batchHint').style.display = 'none';
+  document.getElementById('timeModal').classList.add('active');
+  document.getElementById('timeHour').focus();
+
+  timeModalCallback = (newH, newM) => {
+    productData[id] = { type: 'ran_out', time: `${newH}:${newM}` };
+    renderProducts();
+  };
+}
+
+// ─── SE ACABÓ — pastry (per-batch) ─────────────────────────
+function openTimePickerBatch(id, name) {
+  const now = new Date();
+  const h = now.getHours().toString().padStart(2, '0');
+  const m = now.getMinutes().toString().padStart(2, '0');
+  document.getElementById('timeHour').value = h;
+  document.getElementById('timeMin').value = m;
+  document.getElementById('time-modal-title').textContent = `Se acabó — ${name}`;
+
+  // Show batch hint
+  const batch = timeToBatch(`${h}:${m}`);
+  const hint = document.getElementById('batchHint');
+  hint.style.display = 'block';
+  hint.textContent = `Se asignará al ${batchLabel(batch)} (según la hora)`;
+
+  document.getElementById('timeModal').classList.add('active');
+  document.getElementById('timeHour').focus();
+
+  timeModalCallback = (newH, newM) => {
+    const timeStr = `${newH}:${newM}`;
+    const batch = timeToBatch(timeStr);
+
+    if (!productData[id]) {
+      productData[id] = { batchSoldOuts: [], sobras: null };
+    }
+
+    // Check if this batch is already recorded
+    const existing = productData[id].batchSoldOuts.find(bs => bs.batch === batch);
+    if (existing) {
+      existing.time = timeStr; // Update time
+    } else {
+      productData[id].batchSoldOuts.push({ batch, time: timeStr });
+      productData[id].batchSoldOuts.sort((a, b) => a.batch - b.batch);
+    }
+
+    renderProducts();
+  };
+}
+
+// Update batch hint when user changes time
+function updateBatchHint() {
+  const hint = document.getElementById('batchHint');
+  if (hint.style.display === 'none') return;
+  const h = document.getElementById('timeHour').value;
+  const m = document.getElementById('timeMin').value;
+  if (h.length === 2 && m.length >= 1) {
+    const batch = timeToBatch(`${h}:${m}`);
+    hint.textContent = `Se asignará al ${batchLabel(batch)} (según la hora)`;
+  }
+}
+
+function confirmTime() {
+  let h = document.getElementById('timeHour').value.padStart(2, '0');
+  let m = document.getElementById('timeMin').value.padStart(2, '0');
+  if (timeModalCallback) timeModalCallback(h, m);
+  closeTimeModal();
+}
+function closeTimeModal() {
+  document.getElementById('timeModal').classList.remove('active');
+  document.getElementById('batchHint').style.display = 'none';
+  timeModalCallback = null;
+}
+
+// Auto-advance from hour to minute field
+document.getElementById('timeHour').addEventListener('input', function() {
+  if (this.value.length === 2) document.getElementById('timeMin').focus();
+  updateBatchHint();
+});
+document.getElementById('timeMin').addEventListener('input', updateBatchHint);
+
+// ─── REMOVE a single batch sold-out ────────────────────────
+function removeBatchSoldOut(id, index) {
+  const data = productData[id];
+  if (!data || !data.batchSoldOuts) return;
+  data.batchSoldOuts.splice(index, 1);
+  // If nothing left, clean up
+  if (data.batchSoldOuts.length === 0 && (data.sobras === null || data.sobras === undefined)) {
+    delete productData[id];
+  }
+  renderProducts();
+}
+
+// ─── EDIT NAMES ────────────────────────────────────────────
+function openEditNames() {
+  const names = getVariableNames(currentStore);
+  const type = STORES[currentStore].variableType;
+  const label = type === 'bocadillo' ? 'Bocadillos' : 'Focaccias';
+  document.getElementById('edit-modal-title').textContent = `Editar ${label}`;
+
+  const list = document.getElementById('edit-names-list');
+  list.innerHTML = '';
+  names.forEach((name, i) => {
+    list.innerHTML += `
+      <div class="edit-name-row">
+        <div class="edit-name-num">${i + 1}</div>
+        <input class="edit-name-input" id="editname_${i}" value="${name}">
+      </div>`;
+  });
+  list.innerHTML += `
+    <div class="edit-name-row">
+      <div class="edit-name-num" style="background:#ccc;">+</div>
+      <input class="edit-name-input" id="editname_${names.length}" value="" placeholder="Añadir nuevo...">
+    </div>`;
+
+  document.getElementById('editModal').classList.add('active');
+}
+
+function saveEditNames() {
+  const names = [];
+  let i = 0;
+  while (true) {
+    const el = document.getElementById(`editname_${i}`);
+    if (!el) break;
+    const val = el.value.trim();
+    if (val) names.push(val);
+    i++;
+  }
+  if (names.length > 0) {
+    saveVariableNames(currentStore, names);
+    renderProducts();
+  }
+  closeEditModal();
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.remove('active');
+}
+
+// ─── UNDO ──────────────────────────────────────────────────
+function undoProduct(id) {
+  delete productData[id];
+  renderProducts();
+}
+
+// ─── PROGRESS ──────────────────────────────────────────────
+function updateProgress() {
+  const variableProducts = getVariableProducts();
+  const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
+  const total = allProducts.length;
+  const filled = allProducts.filter(p => {
+    const d = productData[p.id];
+    if (!d) return false;
+    // Batch products: has at least one action
+    if (p.hasBatches) {
+      return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null;
+    }
+    return true;
+  }).length;
+
+  document.getElementById('progress-count').textContent = filled;
+  document.getElementById('progress-total').textContent = total;
+
+  const btn = document.getElementById('submitBtn');
+  btn.classList.toggle('ready', filled > 0 && !isSending);
+  btn.textContent = isSending ? 'ENVIANDO...' : (filled === total ? 'ENVIAR ✓' : 'ENVIAR');
+}
+
+// ─── BUILD SUBMISSION ──────────────────────────────────────
+function buildSubmission() {
+  const variableProducts = getVariableProducts();
+  const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
+
+  const now = new Date();
+  const submission = {
+    store: STORES[currentStore].name,
+    store_id: currentStore,
+    date: now.toISOString().split('T')[0],
+    day: days[now.getDay()],
+    tgtg: parseInt(document.getElementById('tgtg').value) || 0,
+    comments: document.getElementById('comments').value,
+    products: {},
+    submitted_at: new Date().toISOString()
+  };
+
+  allProducts.forEach(p => {
+    const d = productData[p.id];
+    if (!d) return;
+
+    if (p.hasBatches) {
+      // Pastry with batch data
+      submission.products[p.name] = {
+        category: p.category || 'pastry',
+        batchSoldOuts: d.batchSoldOuts || [],
+        sobras: d.sobras
+      };
+    } else {
+      // Simple bread/focaccia/bocadillo
+      submission.products[p.name] = {
+        ...d,
+        category: p.category || ''
+      };
+    }
+  });
+
+  return submission;
+}
+
+// ─── SUBMIT ────────────────────────────────────────────────
+async function submitForm() {
+  if (isSending) return;
+  const variableProducts = getVariableProducts();
+  const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
+  const filled = allProducts.filter(p => {
+    const d = productData[p.id];
+    if (!d) return false;
+    if (p.hasBatches) return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null;
+    return true;
+  }).length;
+  if (filled === 0) return;
+
+  const apiUrl = getApiUrl();
+  if (!apiUrl) {
+    showToast('Configura la URL del servidor primero (⚙)');
+    return;
+  }
+
+  const submission = buildSubmission();
+  isSending = true;
+  updateProgress();
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(submission),
+      mode: 'no-cors'
+    });
+    showSuccess(submission);
+  } catch (err) {
+    console.warn('Send failed, queuing:', err);
+    const queue = getPendingQueue();
+    queue.push(submission);
+    savePendingQueue(queue);
+    showToast(`Sin conexión — guardado localmente (${queue.length} pendiente${queue.length > 1 ? 's' : ''})`);
+  }
+
+  isSending = false;
+  updateProgress();
+}
+
+function showSuccess(submission) {
+  const now = new Date();
+  document.getElementById('success-msg').textContent = `${STORES[currentStore].name} — ${now.getDate()} ${months[now.getMonth()]}`;
+  document.getElementById('success').classList.add('active');
+  setTimeout(() => {
+    document.getElementById('success').classList.remove('active');
+    productData = {};
+    document.getElementById('tgtg').value = '0';
+    document.getElementById('comments').value = '';
+    renderProducts();
+  }, 2200);
+}
+
+// ─── OFFLINE QUEUE FLUSH ───────────────────────────────────
+async function flushPendingQueue() {
+  const queue = getPendingQueue();
+  if (queue.length === 0) return;
+
+  const apiUrl = getApiUrl();
+  if (!apiUrl) return;
+
+  const remaining = [];
+  for (const submission of queue) {
+    try {
+      await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(submission),
+        mode: 'no-cors'
+      });
+    } catch (err) {
+      remaining.push(submission);
+    }
+  }
+
+  savePendingQueue(remaining);
+  if (remaining.length === 0 && queue.length > 0) {
+    showToast('✓ Registros pendientes enviados', 2000, 'info');
+  }
+}
+
+// ─── START ──────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>

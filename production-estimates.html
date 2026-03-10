@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Estimaciones de Producción — Origo Bakery</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #f5f0eb; color: #2c2c2c; min-height: 100vh;
+  }
+  .top-bar {
+    background: #1a3a2a; color: white; padding: 12px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .top-bar h1 { font-size: 20px; font-weight: 700; letter-spacing: 1px; }
+  .top-bar .store-selector { display: flex; align-items: center; gap: 10px; }
+  .top-bar select {
+    background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+    color: white; padding: 6px 12px; border-radius: 6px; font-size: 14px; cursor: pointer;
+  }
+  .top-bar select option { color: #2c2c2c; background: white; }
+  .top-bar .week-label { font-size: 14px; opacity: 0.85; }
+
+  .day-tabs { display: flex; background: #22503a; padding: 0 16px; gap: 2px; overflow-x: auto; }
+  .day-tab {
+    padding: 10px 20px; color: rgba(255,255,255,0.6); font-size: 14px; font-weight: 600;
+    cursor: pointer; border: none; background: none; border-bottom: 3px solid transparent;
+    transition: all 0.2s; white-space: nowrap;
+  }
+  .day-tab:hover { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.05); }
+  .day-tab.active { color: white; border-bottom-color: #e8c547; background: rgba(255,255,255,0.08); }
+
+  .alerts-bar {
+    display: flex; gap: 12px; padding: 10px 24px; background: white;
+    border-bottom: 1px solid #e0d8d0; align-items: center; flex-wrap: wrap;
+  }
+  .weather-badge {
+    display: flex; align-items: center; gap: 6px;
+    background: #eef6ff; padding: 5px 12px; border-radius: 20px;
+    font-size: 13px; font-weight: 500; color: #1a5276;
+  }
+  .event-badge {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  }
+  .event-badge.high { background: #fde8e8; color: #c0392b; }
+  .event-badge.medium { background: #fef3e2; color: #b7791f; }
+  .event-badge.info { background: #e8f5e9; color: #2e7d32; }
+  .alerts-bar .date-label { font-size: 14px; font-weight: 600; color: #555; margin-right: auto; }
+
+  .main-content { padding: 16px 24px 100px; max-width: 1500px; overflow-x: auto; }
+
+  .section-header {
+    font-size: 16px; font-weight: 700; padding: 14px 0 6px; color: #1a3a2a;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  table.grid { width: auto; border-collapse: collapse; font-size: 13px; margin-bottom: 20px; }
+  table.grid th {
+    background: #1a3a2a; color: white; padding: 6px 10px; text-align: center;
+    font-weight: 600; font-size: 12px; white-space: nowrap; border: 1px solid #153022;
+  }
+  table.grid th.shop-header { background: #2d6a4f; }
+  table.grid th.orders-header { background: #7f4f24; }
+  table.grid th.batch-1 { background: #457b9d; }
+  table.grid th.batch-2 { background: #6d6875; }
+  table.grid th.batch-3 { background: #9b5de5; }
+  table.grid th.sobras-header { background: #8b6914; }
+
+  table.grid td {
+    padding: 5px 8px; border: 1px solid #d5cfc7; text-align: center; background: white;
+  }
+  table.grid td.product-name {
+    text-align: left; font-weight: 600; background: #faf8f5;
+    white-space: nowrap; min-width: 200px;
+  }
+  table.grid td.product-name .mult {
+    font-weight: 400; font-size: 11px; color: #888; margin-left: 4px;
+  }
+  table.grid td.total-col { background: #fce4ec; font-weight: 700; }
+  table.grid td.sep { background: #f5f0eb; border: none; width: 6px; padding: 0; }
+  table.grid td.group-sep {
+    background: #f5f0eb; border-left: none; border-right: none; height: 6px; padding: 0;
+  }
+
+  table.grid td.sobras-cell { background: #fffcf5; font-size: 12px; min-width: 70px; }
+  table.grid td.sobras-cell.ran-out { background: #fef0f0; color: #c0392b; font-weight: 600; }
+  table.grid td.sobras-cell.leftover { color: #b7791f; font-weight: 600; }
+  table.grid td.sobras-cell.perfect { background: #f0faf0; color: #2e7d32; font-weight: 600; }
+
+  .batch-alert {
+    display: inline-block; background: #fde8e8; color: #c0392b;
+    font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 8px; margin-left: 2px;
+  }
+  .batch-alert.b1 { background: #e3eef7; color: #457b9d; }
+  .batch-alert.b2 { background: #eee8f0; color: #6d6875; }
+  .batch-alert.b3 { background: #f0e8fa; color: #9b5de5; }
+
+  table.grid td.editable { cursor: text; position: relative; }
+  table.grid td.editable:hover { background: #fff9e6; }
+  table.grid td.editable:focus-within { outline: 2px solid #e8c547; outline-offset: -2px; }
+  table.grid td.editable input {
+    width: 100%; border: none; background: transparent; text-align: center;
+    font-size: 13px; font-weight: 600; font-family: inherit; padding: 0;
+  }
+  table.grid td.editable input:focus { outline: none; }
+  table.grid td.editable.ai input { color: #2d6a4f; }
+  table.grid td.editable.manual input { color: #555; }
+  table.grid td.editable.edited input { color: #c0392b; }
+  table.grid td.order-cell { background: #fdf8f0; }
+
+  .round-badge {
+    display: inline-block; font-size: 10px; font-weight: 600; color: #457b9d;
+    background: #eef6ff; padding: 1px 5px; border-radius: 6px; margin-left: 3px;
+  }
+  table.grid td.trays-cell {
+    background: #f8f6ff; color: #6d6875; font-size: 12px; font-weight: 500; min-width: 50px;
+  }
+
+  .sync-bar {
+    position: sticky; bottom: 0; background: white;
+    border-top: 2px solid #e0d8d0; padding: 12px 24px;
+    display: flex; align-items: center; justify-content: space-between; z-index: 50;
+  }
+  .sync-btn {
+    background: #1a3a2a; color: white; border: none; padding: 10px 28px;
+    border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; gap: 8px; transition: all 0.2s;
+  }
+  .sync-btn:hover { background: #22503a; transform: translateY(-1px); }
+  .sync-btn:active { transform: translateY(0); }
+  .sync-btn.synced { background: #2e7d32; }
+  .sync-status { font-size: 13px; color: #888; }
+  .sync-status strong { color: #2e7d32; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: #888; align-items: center; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .legend-dot.ai { background: #2d6a4f; }
+  .legend-dot.edited { background: #c0392b; }
+
+  .sync-preview { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; align-items: center; justify-content: center; }
+  .sync-preview.show { display: flex; }
+  .sync-modal {
+    background: white; border-radius: 12px; padding: 24px; max-width: 500px; width: 90%;
+    max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .sync-modal h3 { font-size: 16px; margin-bottom: 12px; color: #1a3a2a; }
+  .sync-modal .round-row {
+    display: flex; justify-content: space-between; padding: 6px 0;
+    border-bottom: 1px solid #eee; font-size: 13px;
+  }
+  .sync-modal .round-row .original { color: #888; text-decoration: line-through; }
+  .sync-modal .round-row .rounded { color: #2d6a4f; font-weight: 600; }
+  .sync-modal .round-row .arrow { color: #aaa; margin: 0 6px; }
+  .sync-modal-btns { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+  .sync-modal-btns button {
+    padding: 8px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none;
+  }
+  .sync-modal-btns .cancel { background: #eee; color: #555; }
+  .sync-modal-btns .confirm { background: #1a3a2a; color: white; }
+
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  .config-banner {
+    background: #fef3e2; padding: 8px 24px; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid #e0d8d0; font-size: 13px; color: #b7791f;
+  }
+  .config-banner input {
+    flex: 1; padding: 5px 10px; border: 1px solid #e0d8d0; border-radius: 6px;
+    font-size: 13px; font-family: inherit; max-width: 500px;
+  }
+  .config-banner input:focus { outline: none; border-color: #1a3a2a; }
+  .config-banner button {
+    padding: 5px 14px; background: #1a3a2a; color: white; border: none;
+    border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .config-banner .status { font-weight: 600; }
+  .config-banner .status.ok { color: #2e7d32; }
+  .config-banner .status.err { color: #c0392b; }
+  .sobras-loading { color: #888; font-style: italic; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div><h1>origo — estimaciones de producción</h1></div>
+  <div class="store-selector">
+    <span class="week-label">Semana del 9 – 15 Mar 2026</span>
+    <select id="storeSelect" onchange="switchStore(this.value)">
+      <option value="santpau">Sant Pau</option>
+      <option value="mila">Milà</option>
+      <option value="santjoan">Sant Joan</option>
+    </select>
+  </div>
+</div>
+<div class="config-banner" id="configBanner">
+  <span>📡 API Sobras:</span>
+  <input type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec">
+  <button onclick="saveApiConfig()">Conectar</button>
+  <span class="status" id="apiStatus"></span>
+</div>
+<div class="day-tabs" id="dayTabs"></div>
+<div class="alerts-bar" id="alertsBar"></div>
+<div class="main-content" id="mainContent"></div>
+
+<div class="sync-bar">
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot ai"></div> Sugerencia IA (shop)</div>
+    <div class="legend-item"><div style="width:10px;height:10px;border-radius:50%;background:#b7791f"></div> Pedidos (sem. pasada)</div>
+    <div class="legend-item"><div class="legend-dot edited"></div> Editado</div>
+    <div class="legend-item"><span class="round-badge">×12</span> Redondeado al sincronizar</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:16px;">
+    <div class="sync-status" id="syncStatus">Sin sincronizar</div>
+    <button class="sync-btn" id="syncBtn" onclick="showSyncPreview()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      Sincronizar con Hoja de Producción
+    </button>
+  </div>
+</div>
+
+<div class="sync-preview" id="syncPreview">
+  <div class="sync-modal">
+    <h3>Resumen de redondeo antes de sincronizar</h3>
+    <p style="font-size:13px;color:#888;margin-bottom:12px;">Cada lote se redondea a bandejas completas (×12, ×6, ×3, ×5):</p>
+    <div id="syncPreviewContent"></div>
+    <div class="sync-modal-btns">
+      <button class="cancel" onclick="closeSyncPreview()">Cancelar</button>
+      <button class="confirm" onclick="confirmSync()">Confirmar y sincronizar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+
+const STORES = {
+  santpau: { name: 'Sant Pau', fcType: 'focaccia', fcNames: ['Mortadella','Panceta & crème fraîche','Chorizo','Olivas','Berenjena'] },
+  mila:    { name: 'Milà', fcType: 'focaccia', fcNames: ['Mortadella','Panceta & crème fraîche','Chorizo','Olivas','Berenjena'] },
+  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo', fcNames: ['Mortadella','Berenjena','Jamón y queso'] }
+};
+
+// ===== PRODUCT DEFINITIONS (updated to match Square / production sheet) =====
+const BREAD = [
+  { name: 'ORIGO', key: 'origo', roundTo: null },
+  { name: 'ORIGO MOLDE', key: 'origoMolde', roundTo: null },
+  { spacer: true },
+  { name: 'ORIGO INTEGRAL', key: 'origoIntegral', roundTo: null },
+  { sep: true },
+  { name: 'ESPECIAL', key: 'especial', roundTo: null },
+  { name: 'LLAVORS', key: 'llavors', roundTo: null },
+  { sep: true },
+  { name: 'SÈGOL INTEGRAL', key: 'segolIntegral', roundTo: 3, label: 'x3' },
+  { name: 'COPENHAGUE', key: 'copenhague', roundTo: 5, label: 'x5' },
+  { name: 'BAGUETTE', key: 'baguette', roundTo: null },
+  { name: 'FOCACCIA', key: 'focaccia', roundTo: null },
+  { name: 'ESPELTA PETITA', key: 'espeltaPetita', roundTo: null }
+];
+
+const PASTRY_GROUPS = [
+  [{ name: 'Canela Twist', key: 'canelaTwist', roundTo: 12, label: 'x12' },
+   { name: 'Cardamomo twist', key: 'cardamomoTwist', roundTo: 12, label: 'x12' },
+   { name: 'Vainilla Roll', key: 'vainillaRoll', roundTo: 12, label: 'x12' },
+   { name: 'Brioix clàssic', key: 'brioixClassic', roundTo: 12, label: 'x12' }],
+  [{ name: 'Croissant', key: 'croissant', roundTo: 12, label: 'x12' },
+   { name: 'Pain au chocolat', key: 'painChocolat', roundTo: 12, label: 'x12' },
+   { name: 'Napolitana pernil i formatge', key: 'napolitana', roundTo: 12, label: 'x12' }],
+  [{ name: 'Mico', key: 'mico', roundTo: 6, label: 'x6' },
+   { name: 'Niu de temporada', key: 'niuTemporada', roundTo: 12, label: 'x12' }],
+  [{ name: "Croissant d'ametlla", key: 'croissantAmetlla', roundTo: 12, label: 'x12' }],
+  [{ name: 'Cookie chocolate', key: 'cookieChocolate', roundTo: null, label: 'uds' },
+   { name: 'Pastry del mes', key: 'pastryMes', roundTo: null, label: 'uds' }],
+  [{ name: 'Pastís llimona i ametlla', key: 'pastisLlimona', roundTo: null }]
+];
+
+function roundToNearest(value, multiple) {
+  if (!multiple || !value) return value;
+  return Math.round(value / multiple) * multiple;
+}
+
+// ===== PRODUCT NAME → KEY MAPPING (for sobras data from API) =====
+const PRODUCT_NAME_TO_KEY = {
+  // Bread
+  'ORIGO': 'origo', 'ORIGO MOLDE': 'origoMolde', 'ORIGO INTEGRAL': 'origoIntegral',
+  'ESPECIAL': 'especial', 'LLAVORS': 'llavors', 'SÈGOL INTEGRAL': 'segolIntegral',
+  'COPENHAGUE': 'copenhague', 'BAGUETTE': 'baguette', 'FOCACCIA': 'focaccia',
+  'ESPELTA PETITA': 'espeltaPetita',
+  // Pastry
+  'Canela Twist': 'canelaTwist', 'Cardamomo twist': 'cardamomoTwist',
+  'Vainilla Roll': 'vainillaRoll', 'Brioix clàssic': 'brioixClassic',
+  'Croissant': 'croissant', 'Pain au chocolat': 'painChocolat',
+  'Napolitana pernil i formatge': 'napolitana',
+  'Mico': 'mico', 'Niu de temporada': 'niuTemporada',
+  "Croissant d'ametlla": 'croissantAmetlla',
+  'Cookie chocolate': 'cookieChocolate', 'Pastry del mes': 'pastryMes',
+  'Pastís llimona i ametlla': 'pastisLlimona'
+};
+
+const BREAD_KEYS = new Set(['origo','origoMolde','origoIntegral','especial','llavors','segolIntegral','copenhague','baguette','focaccia','espeltaPetita']);
+const PASTRY_KEYS = new Set(['canelaTwist','cardamomoTwist','vainillaRoll','brioixClassic','croissant','painChocolat','napolitana','mico','niuTemporada','croissantAmetlla','cookieChocolate','pastryMes','pastisLlimona']);
+
+// ===== MOCK DATA (will be replaced by real API data) =====
+const WEATHER = {
+  Lunes:     { icon: '☀️', temp: '18°C', desc: 'Soleado', rain: '0%' },
+  Martes:    { icon: '⛅', temp: '16°C', desc: 'Parcialmente nublado', rain: '10%' },
+  Miércoles: { icon: '🌧️', temp: '14°C', desc: 'Lluvia', rain: '80%' },
+  Jueves:    { icon: '🌧️', temp: '13°C', desc: 'Lluvia', rain: '70%' },
+  Viernes:   { icon: '⛅', temp: '17°C', desc: 'Nubes dispersas', rain: '20%' },
+  Sábado:    { icon: '☀️', temp: '20°C', desc: 'Soleado', rain: '5%' },
+  Domingo:   { icon: '☀️', temp: '21°C', desc: 'Soleado', rain: '0%' }
+};
+const EVENTS = {
+  Lunes: [], Martes: [],
+  Miércoles: [{ text: 'Partido Barça — Champions', type: 'medium' }],
+  Jueves: [], Viernes: [],
+  Sábado: [{ text: 'Maratón Barcelona — desvíos zona Sant Pau', type: 'high' }],
+  Domingo: [{ text: 'Maratón Barcelona — día 2', type: 'high' }]
+};
+
+function getShopSuggestions() {
+  return {
+    bread: {
+      origo: 35, origoMolde: 15, origoIntegral: 21,
+      especial: 18, llavors: 0, segolIntegral: 9, copenhague: 25,
+      baguette: 41, focaccia: 4, espeltaPetita: 6
+    },
+    pastry: {
+      canelaTwist:    { b1: 18, b2: 24, b3: 12 },
+      cardamomoTwist: { b1: 19, b2: 12, b3: 12 },
+      vainillaRoll:   { b1: 23, b2: 12, b3: 12 },
+      brioixClassic:  { b1: 11, b2: 12, b3: 0 },
+      croissant:      { b1: 22, b2: 24, b3: 12 },
+      painChocolat:   { b1: 26, b2: 12, b3: 12 },
+      napolitana:     { b1: 9, b2: 12, b3: 0 },
+      mico:           { b1: 12, b2: 12, b3: 0 },
+      niuTemporada:   { b1: 12, b2: 24, b3: 0 },
+      croissantAmetlla:{ b1: 0, b2: 0, b3: 0 },
+      cookieChocolate: { b1: 17, b2: 19, b3: 0 },
+      pastryMes:       { b1: 15, b2: 0, b3: 0 },
+      pastisLlimona:   { b1: 2, b2: 0, b3: 0 }
+    }
+  };
+}
+
+function getLastWeekOrders() {
+  return {
+    bread: {
+      origo: 87, origoMolde: 2, origoIntegral: 18,
+      especial: 0, llavors: 0, segolIntegral: 0,
+      copenhague: 0, baguette: 0, focaccia: 0, espeltaPetita: 0
+    },
+    pastry: {
+      canelaTwist:    { b1: 44, b2: 0, b3: 0 },
+      cardamomoTwist: { b1: 41, b2: 0, b3: 0 },
+      vainillaRoll:   { b1: 1, b2: 0, b3: 0 },
+      brioixClassic:  { b1: 49, b2: 0, b3: 0 },
+      croissant:      { b1: 38, b2: 0, b3: 0 },
+      painChocolat:   { b1: 10, b2: 0, b3: 0 },
+      napolitana:     { b1: 3, b2: 0, b3: 0 },
+      mico:           { b1: 0, b2: 0, b3: 0 },
+      niuTemporada:   { b1: 0, b2: 0, b3: 0 },
+      croissantAmetlla:{ b1: 0, b2: 0, b3: 0 },
+      cookieChocolate: { b1: 2, b2: 0, b3: 0 },
+      pastryMes:       { b1: 0, b2: 0, b3: 0 },
+      pastisLlimona:   { b1: 0, b2: 0, b3: 0 }
+    }
+  };
+}
+
+// ===== SOBRAS DATA (fetched from API) =====
+let sobrasCache = {};
+let sobrasLoading = false;
+
+function getApiUrlProd() {
+  try { return localStorage.getItem('origo_prod_api_url') || ''; } catch(e) { return ''; }
+}
+function setApiUrlProd(url) {
+  try { localStorage.setItem('origo_prod_api_url', url); } catch(e) {}
+}
+
+function saveApiConfig() {
+  const input = document.getElementById('apiUrlConfig');
+  const url = input.value.trim();
+  if (!url) return;
+  setApiUrlProd(url);
+  testApiConnection(url);
+  sobrasCache = {};
+  fetchSobrasForCurrentDay();
+}
+
+async function testApiConnection(url) {
+  const status = document.getElementById('apiStatus');
+  status.textContent = 'Conectando...';
+  status.className = 'status';
+  try {
+    const resp = await fetch(url + '?action=ping');
+    const data = await resp.json();
+    if (data.status === 'ok') {
+      status.textContent = '✓ Conectado';
+      status.className = 'status ok';
+    } else {
+      status.textContent = '✗ Error';
+      status.className = 'status err';
+    }
+  } catch(e) {
+    status.textContent = '✗ No se pudo conectar';
+    status.className = 'status err';
+  }
+}
+
+function getLastWeekDate(dayName) {
+  const dayIdx = DAYS.indexOf(dayName);
+  const thisDate = new Date(2026, 2, 9 + dayIdx);
+  const lastWeek = new Date(thisDate);
+  lastWeek.setDate(lastWeek.getDate() - 7);
+  const y = lastWeek.getFullYear();
+  const m = String(lastWeek.getMonth() + 1).padStart(2, '0');
+  const d = String(lastWeek.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+async function fetchSobrasForCurrentDay() {
+  const apiUrl = getApiUrlProd();
+  if (!apiUrl) return;
+
+  const date = getLastWeekDate(currentDay);
+  const cacheKey = `${currentStore}-${date}`;
+
+  if (sobrasCache[cacheKey]) return;
+
+  sobrasLoading = true;
+  renderMain();
+
+  try {
+    const url = `${apiUrl}?action=getSobras&store=${currentStore}&date=${date}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+
+    // Transform API v2 response into internal format
+    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0 };
+    const products = data.products || {};
+
+    for (const [name, pData] of Object.entries(products)) {
+      const key = PRODUCT_NAME_TO_KEY[name];
+      // v2 format: { sobras, b1SoldOut, b2SoldOut, b3SoldOut }
+      const sobrasObj = {
+        sobras: pData.sobras,
+        b1SoldOut: pData.b1SoldOut || null,
+        b2SoldOut: pData.b2SoldOut || null,
+        b3SoldOut: pData.b3SoldOut || null
+      };
+
+      if (key && BREAD_KEYS.has(key)) {
+        result.bread[key] = sobrasObj;
+      } else if (key && PASTRY_KEYS.has(key)) {
+        result.pastry[key] = sobrasObj;
+      } else {
+        result.focaccia[name] = sobrasObj;
+      }
+    }
+
+    sobrasCache[cacheKey] = result;
+  } catch(e) {
+    console.warn('Failed to fetch sobras:', e);
+    sobrasCache[cacheKey] = { bread: {}, pastry: {}, focaccia: {}, comments: '', tgtg: 0 };
+  }
+
+  sobrasLoading = false;
+  renderMain();
+}
+
+function getSobras() {
+  const date = getLastWeekDate(currentDay);
+  const cacheKey = `${currentStore}-${date}`;
+  return sobrasCache[cacheKey] || { bread: {}, pastry: {}, focaccia: {}, comments: '', tgtg: 0 };
+}
+
+// ============ STATE ============
+let currentStore = 'santpau';
+let currentDay = 'Miércoles';
+let editedCells = {};
+
+// ============ HELPERS ============
+function eCell(key, value, cls) {
+  const isEdited = editedCells[key];
+  const cellCls = isEdited ? 'edited' : cls;
+  const displayVal = (value === 0 || value === '0') ? '0' : (value || '');
+  return `<td class="editable ${cellCls}"><input type="text" data-key="${key}" value="${displayVal}" inputmode="numeric"></td>`;
+}
+
+// Bread sobras cell — simple: sobras count or sold-out time
+function sobrasCell(data) {
+  if (!data) return `<td class="sobras-cell">—</td>`;
+  // Check if any batch sold out
+  const soldOuts = [];
+  if (data.b1SoldOut) soldOuts.push('1er ' + data.b1SoldOut);
+  if (data.b2SoldOut) soldOuts.push('2do ' + data.b2SoldOut);
+  if (data.b3SoldOut) soldOuts.push('3er ' + data.b3SoldOut);
+
+  if (soldOuts.length > 0 && (data.sobras === null || data.sobras === undefined || data.sobras === '')) {
+    return `<td class="sobras-cell ran-out">⚡ ${soldOuts[0]}</td>`;
+  }
+  if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">✓ 0</td>`;
+  if (data.sobras !== null && data.sobras !== undefined && data.sobras !== '') {
+    return `<td class="sobras-cell leftover">${data.sobras}</td>`;
+  }
+  return `<td class="sobras-cell">—</td>`;
+}
+
+// Pastry sobras — show per-batch sold-out badges AND sobras count
+function pastryBatchSobras(data, batchNum) {
+  if (!data) return '';
+  const key = `b${batchNum}SoldOut`;
+  const time = data[key];
+  if (time) {
+    const cls = batchNum === 1 ? 'b1' : batchNum === 2 ? 'b2' : 'b3';
+    return `<span class="batch-alert ${cls}">⚡ ${time}</span>`;
+  }
+  return '';
+}
+
+function pastryTotalSobras(data) {
+  if (!data) return `<td class="sobras-cell">—</td>`;
+
+  let html = '';
+  const hasSoldOuts = data.b1SoldOut || data.b2SoldOut || data.b3SoldOut;
+  const hasSobras = data.sobras !== null && data.sobras !== undefined && data.sobras !== '';
+
+  if (hasSobras) {
+    if (data.sobras === 0 || data.sobras === '0') {
+      html += `<span style="color:#2e7d32;font-weight:600;">✓ 0</span>`;
+    } else {
+      html += `<span style="color:#b7791f;font-weight:600;">${data.sobras} sobras</span>`;
+    }
+  }
+
+  if (hasSoldOuts && hasSobras) html += '<br>';
+
+  if (hasSoldOuts) {
+    if (data.b1SoldOut) html += `<span class="batch-alert b1">1er ⚡${data.b1SoldOut}</span> `;
+    if (data.b2SoldOut) html += `<span class="batch-alert b2">2do ⚡${data.b2SoldOut}</span> `;
+    if (data.b3SoldOut) html += `<span class="batch-alert b3">3er ⚡${data.b3SoldOut}</span> `;
+  }
+
+  if (!hasSobras && !hasSoldOuts) return `<td class="sobras-cell">—</td>`;
+
+  const cls = (!hasSobras && hasSoldOuts) ? 'ran-out' : (data.sobras === 0 ? 'perfect' : 'leftover');
+  return `<td class="sobras-cell ${cls}">${html}</td>`;
+}
+
+function productNameCell(name, label) {
+  const multHtml = label ? `<span class="mult">${label}</span>` : '';
+  return `<td class="product-name">${name}${multHtml}</td>`;
+}
+
+// ============ RENDER ============
+function renderDayTabs() {
+  document.getElementById('dayTabs').innerHTML = DAYS.map(d =>
+    `<button class="day-tab ${d === currentDay ? 'active' : ''}" onclick="switchDay('${d}')">${d}</button>`
+  ).join('');
+}
+
+function renderAlertsBar() {
+  const w = WEATHER[currentDay];
+  const evts = EVENTS[currentDay] || [];
+  const dayIdx = DAYS.indexOf(currentDay);
+  const date = new Date(2026, 2, 9 + dayIdx);
+  const dateStr = date.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  let html = `<span class="date-label">${dateStr}</span>`;
+  html += `<div class="weather-badge">${w.icon} ${w.temp} — ${w.desc} · Lluvia: ${w.rain}</div>`;
+  evts.forEach(e => html += `<div class="event-badge ${e.type}">⚡ ${e.text}</div>`);
+  if (!evts.length) html += `<div class="event-badge info">✓ Sin eventos especiales</div>`;
+  document.getElementById('alertsBar').innerHTML = html;
+}
+
+function renderMain() {
+  const store = STORES[currentStore];
+  const shop = getShopSuggestions();
+  const orders = getLastWeekOrders();
+  const sobras = getSobras();
+  let html = '';
+
+  // ===== BREAD =====
+  html += `<div class="section-header">🍞 Pan — A hornear el: ${currentDay.toLowerCase()}</div>`;
+  html += `<table class="grid"><tr>
+    <th style="min-width:200px"></th>
+    <th class="shop-header">Shop</th>
+    <th class="orders-header">Pedidos</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
+    <th class="sobras-header">Sem. pasada</th>
+  </tr>`;
+
+  BREAD.forEach(item => {
+    if (item.sep) { html += `<tr><td colspan="5" class="group-sep"></td></tr>`; return; }
+    if (item.spacer) { html += `<tr><td class="product-name"></td><td></td><td class="order-cell"></td><td class="sep"></td><td class="sobras-cell"></td></tr>`; return; }
+    const shopVal = shop.bread[item.key] ?? '';
+    const orderVal = orders.bread[item.key] ?? '';
+    const sobrasData = sobras.bread[item.key];
+    html += `<tr>
+      ${productNameCell(item.name, item.label)}
+      ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
+      ${eCell(`bread-${item.key}-order`, orderVal, 'manual order-cell')}
+      <td class="sep"></td>
+      ${sobrasCell(sobrasData)}
+    </tr>`;
+  });
+  html += `</table>`;
+
+  // ===== PASTRY =====
+  html += `<div class="section-header">🥐 Bollería — para el: ${currentDay.toLowerCase()}</div>`;
+  html += `<table class="grid">`;
+  html += `<tr>
+    <th style="min-width:220px" rowspan="2">Producto</th>
+    <th rowspan="2">Sem. pasada</th>
+    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
+    <th class="batch-1" colspan="2">1er lote · 7:00</th>
+    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
+    <th class="batch-2" colspan="2">2do lote · 11:00</th>
+    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
+    <th class="batch-3" colspan="2">3er lote · 13:00</th>
+    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
+    <th rowspan="2">Total Shop</th>
+    <th rowspan="2">Total</th>
+  </tr>`;
+  html += `<tr>
+    <th class="batch-1">Shop</th><th class="batch-1">Ped.</th>
+    <th class="batch-2">Shop</th><th class="batch-2">Ped.</th>
+    <th class="batch-3">Shop</th><th class="batch-3">Ped.</th>
+  </tr>`;
+
+  PASTRY_GROUPS.forEach((group, gi) => {
+    if (gi > 0) html += `<tr><td colspan="14" class="group-sep"></td></tr>`;
+    group.forEach(p => {
+      const s = shop.pastry[p.key] || { b1:0, b2:0, b3:0 };
+      const o = orders.pastry[p.key] || { b1:0, b2:0, b3:0 };
+      const sd = sobras.pastry[p.key];
+      const totalShop = (s.b1||0) + (s.b2||0) + (s.b3||0);
+      const totalAll = totalShop + (o.b1||0) + (o.b2||0) + (o.b3||0);
+
+      // Per-batch sold-out badges next to each batch column
+      const b1Alert = pastryBatchSobras(sd, 1);
+      const b2Alert = pastryBatchSobras(sd, 2);
+      const b3Alert = pastryBatchSobras(sd, 3);
+
+      html += `<tr>
+        ${productNameCell(p.name, p.label)}
+        ${pastryTotalSobras(sd)}
+        <td class="sep"></td>
+        ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
+        ${eCell(`pastry-${p.key}-b1o`, o.b1, 'manual order-cell')}
+        <td class="sep"></td>
+        ${eCell(`pastry-${p.key}-b2s`, s.b2, 'ai')}
+        ${eCell(`pastry-${p.key}-b2o`, o.b2, 'manual order-cell')}
+        <td class="sep"></td>
+        ${eCell(`pastry-${p.key}-b3s`, s.b3, 'ai')}
+        ${eCell(`pastry-${p.key}-b3o`, o.b3, 'manual order-cell')}
+        <td class="sep"></td>
+        <td style="color:#2d6a4f;font-weight:600">${totalShop || ''}</td>
+        <td class="total-col">${totalAll || ''}</td>
+      </tr>`;
+    });
+  });
+  html += `</table>`;
+
+  // ===== FOCACCIA / BOCADILLO =====
+  const fcLabel = store.fcType === 'focaccia' ? 'Focaccias' : 'Bocadillos';
+  const fcIcon = store.fcType === 'focaccia' ? '🫓' : '🥖';
+  html += `<div class="section-header">${fcIcon} ${fcLabel}</div>`;
+  html += `<table class="grid"><tr>
+    <th style="min-width:200px">Producto</th>
+    <th class="shop-header">Shop</th>
+    <th class="orders-header">Pedidos</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
+    <th class="sobras-header">Sem. pasada</th>
+  </tr>`;
+  store.fcNames.forEach(name => {
+    const fcSobras = sobras.focaccia[name];
+    html += `<tr>
+      <td class="product-name">${name}</td>
+      ${eCell(`fc-${name}-shop`, 4, 'ai')}
+      ${eCell(`fc-${name}-order`, 0, 'manual order-cell')}
+      <td class="sep"></td>
+      ${sobrasCell(fcSobras)}
+    </tr>`;
+  });
+  html += `</table>`;
+
+  // ===== COMMENTS =====
+  const sobrasComments = sobras.comments || '';
+  html += `<div class="section-header">💬 Comentarios sobras semana pasada</div>`;
+  if (sobrasLoading) {
+    html += `<div class="sobras-loading" style="padding:12px;">Cargando datos de sobras...</div>`;
+  } else if (sobrasComments) {
+    html += `<div style="background:white;border:1px solid #d5cfc7;border-radius:8px;padding:12px;font-size:13px;color:#555;max-width:600px;">
+      ${sobrasComments}
+    </div>`;
+  } else {
+    html += `<div style="background:white;border:1px solid #d5cfc7;border-radius:8px;padding:12px;font-size:13px;color:#999;max-width:600px;">
+      Sin comentarios de la semana pasada
+    </div>`;
+  }
+
+  document.getElementById('mainContent').innerHTML = html;
+
+  document.querySelectorAll('.editable input').forEach(input => {
+    input.addEventListener('change', function() {
+      editedCells[this.dataset.key] = true;
+      this.closest('td').className = 'editable edited';
+    });
+  });
+}
+
+// ===== SYNC WITH ROUNDING PREVIEW =====
+function collectRoundingChanges() {
+  const changes = [];
+
+  BREAD.forEach(item => {
+    if (!item.roundTo) return;
+    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    if (!input) return;
+    const val = parseInt(input.value) || 0;
+    const rounded = roundToNearest(val, item.roundTo);
+    if (val !== rounded && val > 0) {
+      changes.push({ product: item.name, field: 'Shop', original: val, rounded, mult: item.label });
+    }
+  });
+
+  const batchNames = { b1s: '1er lote Shop', b2s: '2do lote Shop', b3s: '3er lote Shop' };
+  PASTRY_GROUPS.flat().forEach(p => {
+    if (!p.roundTo) return;
+    ['b1s','b2s','b3s'].forEach(b => {
+      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
+      if (!input) return;
+      const val = parseInt(input.value) || 0;
+      const rounded = roundToNearest(val, p.roundTo);
+      if (val !== rounded && val > 0) {
+        changes.push({ product: p.name, field: batchNames[b], original: val, rounded, mult: p.label });
+      }
+    });
+  });
+
+  return changes;
+}
+
+function showSyncPreview() {
+  const changes = collectRoundingChanges();
+  const content = document.getElementById('syncPreviewContent');
+
+  if (changes.length === 0) {
+    content.innerHTML = `<p style="color:#2e7d32;font-weight:500;">✓ Todos los valores ya son múltiplos correctos. No se necesita redondeo.</p>`;
+  } else {
+    let html = '';
+    changes.forEach(c => {
+      html += `<div class="round-row">
+        <span>${c.product} <span style="color:#888;font-size:11px">${c.field}</span></span>
+        <span>
+          <span class="original">${c.original}</span>
+          <span class="arrow">→</span>
+          <span class="rounded">${c.rounded}</span>
+          <span class="round-badge">${c.mult}</span>
+        </span>
+      </div>`;
+    });
+    content.innerHTML = html;
+  }
+
+  document.getElementById('syncPreview').classList.add('show');
+}
+
+function closeSyncPreview() {
+  document.getElementById('syncPreview').classList.remove('show');
+}
+
+function confirmSync() {
+  closeSyncPreview();
+
+  BREAD.forEach(item => {
+    if (!item.roundTo) return;
+    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    if (!input) return;
+    const val = parseInt(input.value) || 0;
+    input.value = roundToNearest(val, item.roundTo);
+  });
+
+  PASTRY_GROUPS.flat().forEach(p => {
+    if (!p.roundTo) return;
+    ['b1s','b2s','b3s'].forEach(b => {
+      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
+      if (!input) return;
+      const val = parseInt(input.value) || 0;
+      input.value = roundToNearest(val, p.roundTo);
+    });
+  });
+
+  const btn = document.getElementById('syncBtn');
+  const status = document.getElementById('syncStatus');
+  btn.disabled = true;
+  btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg> Sincronizando...`;
+  setTimeout(() => {
+    btn.classList.add('synced');
+    btn.innerHTML = `✓ Sincronizado — ${currentDay}`;
+    status.innerHTML = `<strong>Última sync:</strong> ${new Date().toLocaleTimeString('es-ES')} — valores redondeados`;
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.classList.remove('synced');
+      btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
+    }, 2500);
+  }, 1500);
+}
+
+function switchDay(day) { currentDay = day; renderAll(); fetchSobrasForCurrentDay(); }
+function switchStore(store) { currentStore = store; editedCells = {}; renderAll(); fetchSobrasForCurrentDay(); }
+function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
+
+// Init
+(function() {
+  const savedUrl = getApiUrlProd();
+  if (savedUrl) {
+    document.getElementById('apiUrlConfig').value = savedUrl;
+    testApiConnection(savedUrl);
+    document.getElementById('configBanner').style.background = '#f0faf0';
+  }
+  renderAll();
+  fetchSobrasForCurrentDay();
+})();
+</script>
+</body>
+</html>
