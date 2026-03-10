@@ -986,30 +986,51 @@ async function confirmSync() {
   });
 
   // 3. Collect all values to sync (cell → value)
+  // Column mapping verified from actual production sheets:
+  //   Bread:  Shop → col G, Orders → col J  (rows 8-20)
+  //   Pastry: B1 Shop → G, B1 Orders → H,
+  //           B2 Shop → J, B2 Orders → K,
+  //           B3 Shop → M, B3 Orders → N  (rows 29-39+)
   const estimates = [];
 
-  // Bread: total = shop value (column D)
+  // Helper: extract row number from D-column cell ref (e.g. 'D8' → '8')
+  function cellRow(dCell) { return dCell.replace('D', ''); }
+
+  // Bread: shop → column G, orders → column J
   BREAD.forEach(item => {
     if (!item.key) return;
-    const cell = KEY_TO_CELL[item.key];
-    if (!cell) return;
-    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
-    if (!input) return;
-    const val = parseInt(input.value) || 0;
-    if (val > 0) estimates.push({ cell, value: val });
+    const dCell = KEY_TO_CELL[item.key];
+    if (!dCell) return;
+    const row = cellRow(dCell);
+
+    const shopInput = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    const orderInput = document.querySelector(`input[data-key="bread-${item.key}-order"]`);
+    const shopVal = shopInput ? (parseInt(shopInput.value) || 0) : 0;
+    const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+
+    if (shopVal > 0) estimates.push({ cell: 'G' + row, value: shopVal });
+    if (orderVal > 0) estimates.push({ cell: 'J' + row, value: orderVal });
   });
 
-  // Pastry: total = sum of all 3 batches (shop + orders) → column D
+  // Pastry: each batch has shop + orders in specific columns
+  // B1: G (shop), H (orders) | B2: J (shop), K (orders) | B3: M (shop), N (orders)
+  const PASTRY_COL_MAP = {
+    b1s: 'G', b1o: 'H',
+    b2s: 'J', b2o: 'K',
+    b3s: 'M', b3o: 'N',
+  };
+
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.key) return;
-    const cell = KEY_TO_CELL[p.key];
-    if (!cell) return;
-    let total = 0;
-    ['b1s','b1o','b2s','b2o','b3s','b3o'].forEach(b => {
-      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
-      if (input) total += parseInt(input.value) || 0;
-    });
-    if (total > 0) estimates.push({ cell, value: total });
+    const dCell = KEY_TO_CELL[p.key];
+    if (!dCell) return;
+    const row = cellRow(dCell);
+
+    for (const [suffix, col] of Object.entries(PASTRY_COL_MAP)) {
+      const input = document.querySelector(`input[data-key="pastry-${p.key}-${suffix}"]`);
+      const val = input ? (parseInt(input.value) || 0) : 0;
+      if (val > 0) estimates.push({ cell: col + row, value: val });
+    }
   });
 
   // 4. Show syncing state
