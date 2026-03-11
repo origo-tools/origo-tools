@@ -807,6 +807,12 @@ function restoreInputState() {
 }
 
 // ============ HELPERS ============
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 function eCell(key, value, cls) {
   const isEdited = editedCells[key];
   const cellCls = isEdited ? 'edited' : cls;
@@ -814,20 +820,36 @@ function eCell(key, value, cls) {
   return `<td class="editable ${cellCls}"><input type="text" data-key="${key}" value="${displayVal}" inputmode="numeric"></td>`;
 }
 
-// Bread sobras cell — simple: sobras count or sold-out time
+// Format a sold-out timestamp to just HH:MM
+// Input can be ISO string ("1899-12-30T22:56:44.000Z"), "HH:MM", or "HH:MM:SS"
+function formatSoldOutTime(raw) {
+  if (!raw) return '';
+  const str = String(raw);
+  // ISO timestamp — extract time part
+  if (str.includes('T')) {
+    try {
+      const d = new Date(str);
+      if (!isNaN(d)) return d.getUTCHours().toString().padStart(2,'0') + ':' + d.getUTCMinutes().toString().padStart(2,'0');
+    } catch(e) {}
+  }
+  // Already "HH:MM" or "HH:MM:SS" — keep just HH:MM
+  const m = str.match(/(\d{1,2}:\d{2})/);
+  return m ? m[1] : str;
+}
+
+// Bread sobras cell — simple: sobras count or sold-out indicator (no batches for bread)
 function sobrasCell(data) {
   if (!data) return `<td class="sobras-cell">—</td>`;
-  // Check if any batch sold out
-  const soldOuts = [];
-  if (data.b1SoldOut) soldOuts.push('1er ' + data.b1SoldOut);
-  if (data.b2SoldOut) soldOuts.push('2do ' + data.b2SoldOut);
-  if (data.b3SoldOut) soldOuts.push('3er ' + data.b3SoldOut);
+  const hasSobras = data.sobras !== null && data.sobras !== undefined && data.sobras !== '';
 
-  if (soldOuts.length > 0 && (data.sobras === null || data.sobras === undefined || data.sobras === '')) {
-    return `<td class="sobras-cell ran-out">⚡ ${soldOuts[0]}</td>`;
+  // For bread, any sold-out field just means it sold out (no batch distinction)
+  const soldOut = data.b1SoldOut || data.b2SoldOut || data.b3SoldOut;
+
+  if (soldOut && !hasSobras) {
+    return `<td class="sobras-cell ran-out">⚡ Agotado ${formatSoldOutTime(soldOut)}</td>`;
   }
-  if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">✓ 0</td>`;
-  if (data.sobras !== null && data.sobras !== undefined && data.sobras !== '') {
+  if (hasSobras) {
+    if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">✓ 0</td>`;
     return `<td class="sobras-cell leftover">${data.sobras}</td>`;
   }
   return `<td class="sobras-cell">—</td>`;
@@ -840,7 +862,7 @@ function pastryBatchSobras(data, batchNum) {
   const time = data[key];
   if (time) {
     const cls = batchNum === 1 ? 'b1' : batchNum === 2 ? 'b2' : 'b3';
-    return `<span class="batch-alert ${cls}">⚡ ${time}</span>`;
+    return `<span class="batch-alert ${cls}">⚡ ${formatSoldOutTime(time)}</span>`;
   }
   return '';
 }
@@ -863,9 +885,9 @@ function pastryTotalSobras(data) {
   if (hasSoldOuts && hasSobras) html += '<br>';
 
   if (hasSoldOuts) {
-    if (data.b1SoldOut) html += `<span class="batch-alert b1">1er ⚡${data.b1SoldOut}</span> `;
-    if (data.b2SoldOut) html += `<span class="batch-alert b2">2do ⚡${data.b2SoldOut}</span> `;
-    if (data.b3SoldOut) html += `<span class="batch-alert b3">3er ⚡${data.b3SoldOut}</span> `;
+    if (data.b1SoldOut) html += `<span class="batch-alert b1">1er ⚡${formatSoldOutTime(data.b1SoldOut)}</span> `;
+    if (data.b2SoldOut) html += `<span class="batch-alert b2">2do ⚡${formatSoldOutTime(data.b2SoldOut)}</span> `;
+    if (data.b3SoldOut) html += `<span class="batch-alert b3">3er ⚡${formatSoldOutTime(data.b3SoldOut)}</span> `;
   }
 
   if (!hasSobras && !hasSoldOuts) return `<td class="sobras-cell">—</td>`;
@@ -1041,7 +1063,7 @@ function renderMain() {
     html += `<div class="sobras-loading" style="padding:12px;">Cargando datos de sobras...</div>`;
   } else if (sobrasComments) {
     html += `<div style="background:white;border:1px solid #d5cfc7;border-radius:8px;padding:12px;font-size:13px;color:#555;max-width:600px;">
-      ${sobrasComments}
+      ${escapeHtml(sobrasComments)}
     </div>`;
   } else {
     html += `<div style="background:white;border:1px solid #d5cfc7;border-radius:8px;padding:12px;font-size:13px;color:#999;max-width:600px;">
@@ -1052,10 +1074,18 @@ function renderMain() {
   document.getElementById('mainContent').innerHTML = html;
 
   document.querySelectorAll('.editable input').forEach(input => {
+    // Strip non-numeric on input (allow digits only)
+    input.addEventListener('input', function() {
+      this.value = this.value.replace(/[^\d]/g, '');
+    });
+    // Validate, mark edited, and save on change (blur)
     input.addEventListener('change', function() {
+      this.value = this.value.replace(/[^\d]/g, '');
+      const v = parseInt(this.value) || 0;
+      this.value = Math.max(0, Math.min(9999, v)) || '';
       editedCells[this.dataset.key] = true;
       this.closest('td').className = 'editable edited';
-      saveInputState();  // auto-save on every change
+      saveInputState();
     });
   });
 
@@ -1228,17 +1258,22 @@ async function confirmSync() {
     }
   });
 
-  // Bocadillos (Sant Joan only): shop → G50, G51, G52
-  if (currentStore === 'santjoan') {
-    const BOCADILLO_ROWS = [50, 51, 52];
-    const store = STORE_CONFIG[currentStore];
-    store.fcNames.forEach((name, idx) => {
-      if (idx >= BOCADILLO_ROWS.length) return;
-      const input = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
-      const val = input ? (parseInt(input.value) || 0) : 0;
-      estimates.push({ cell: 'G' + BOCADILLO_ROWS[idx], value: val });
-    });
-  }
+  // Focaccia / Bocadillos: shop + orders → specific rows per store
+  // Milà & Sant Pau: Focaccia rows 48-52 (5 items), shop → G, orders → J
+  // Sant Joan: Bocadillo rows 50-52 (3 items), shop → G only
+  const FC_ROWS = currentStore === 'santjoan' ? [50, 51, 52] : [48, 49, 50, 51, 52];
+  const isBocadillo = STORES[currentStore].fcType === 'bocadillo';
+  STORES[currentStore].fcNames.forEach((name, idx) => {
+    if (idx >= FC_ROWS.length) return;
+    const shopInput = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+    const shopVal = shopInput ? (parseInt(shopInput.value) || 0) : 0;
+    estimates.push({ cell: 'G' + FC_ROWS[idx], value: shopVal });
+    if (!isBocadillo) {
+      const orderInput = document.querySelector(`input[data-key="fc-${idx}-order"]`);
+      const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+      estimates.push({ cell: 'J' + FC_ROWS[idx], value: orderVal });
+    }
+  });
 
   // 4. Show syncing state
   const btn = document.getElementById('syncBtn');
@@ -1281,7 +1316,7 @@ async function confirmSync() {
   }
 }
 
-function switchDay(day) { currentDay = day; renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
+function switchDay(day) { currentDay = day; editedCells = {}; renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
 function switchStore(store) { currentStore = store; editedCells = {}; renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
 function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
