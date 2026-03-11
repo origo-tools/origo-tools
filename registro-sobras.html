@@ -501,9 +501,13 @@ function saveVariableNames(store, names) {
 // ─── DAILY DATA PERSISTENCE ────────────────────────────────
 // Saves all in-progress productData, TGTG, and comments to localStorage
 // so nothing is lost if the app is closed mid-day
+function getLocalDateStr(d) {
+  d = d || new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 function getDailyStorageKey() {
-  const today = new Date().toISOString().split('T')[0];
-  return `origo_daily_${currentStore}_${today}`;
+  return `origo_daily_${currentStore}_${getLocalDateStr()}`;
 }
 
 function saveDailyData() {
@@ -553,6 +557,18 @@ function cleanOldDailyData() {
       if (diffDays > 3) localStorage.removeItem(key);
     });
   } catch(e) {}
+}
+
+// ─── SUBMITTED TODAY MARKER ────────────────────────────────
+// Tracks whether today's data was already sent, so staff sees a reminder
+function getSubmittedKey() {
+  return `origo_submitted_${currentStore}_${getLocalDateStr()}`;
+}
+function markSubmittedToday() {
+  try { localStorage.setItem(getSubmittedKey(), new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })); } catch(e) {}
+}
+function getSubmittedToday() {
+  try { return localStorage.getItem(getSubmittedKey()) || ''; } catch(e) { return ''; }
 }
 
 // Pending submissions (offline queue)
@@ -645,11 +661,15 @@ function startApp() {
   initDate();
   loadDailyData();
   renderProducts();
+  showSubmittedBanner();
   cleanOldDailyData();
 
-  // Auto-save TGTG and comments on every change
-  document.getElementById('tgtg').addEventListener('input', saveDailyData);
-  document.getElementById('comments').addEventListener('input', saveDailyData);
+  // Auto-save TGTG and comments on every change (attach only once)
+  if (!window._listenersAttached) {
+    document.getElementById('tgtg').addEventListener('input', saveDailyData);
+    document.getElementById('comments').addEventListener('input', saveDailyData);
+    window._listenersAttached = true;
+  }
 }
 
 function initDate() {
@@ -928,9 +948,14 @@ function updateBatchHint() {
 }
 
 function confirmTime() {
-  let h = document.getElementById('timeHour').value.padStart(2, '0');
-  let m = document.getElementById('timeMin').value.padStart(2, '0');
-  if (timeModalCallback) timeModalCallback(h, m);
+  let h = parseInt(document.getElementById('timeHour').value) || 0;
+  let m = parseInt(document.getElementById('timeMin').value) || 0;
+  // Clamp to valid range
+  h = Math.max(0, Math.min(23, h));
+  m = Math.max(0, Math.min(59, m));
+  const hStr = h.toString().padStart(2, '0');
+  const mStr = m.toString().padStart(2, '0');
+  if (timeModalCallback) timeModalCallback(hStr, mStr);
   closeTimeModal();
 }
 function closeTimeModal() {
@@ -939,12 +964,16 @@ function closeTimeModal() {
   timeModalCallback = null;
 }
 
-// Auto-advance from hour to minute field
+// Auto-advance from hour to minute field + strip non-numeric input
 document.getElementById('timeHour').addEventListener('input', function() {
+  this.value = this.value.replace(/\D/g, '').slice(0, 2);
   if (this.value.length === 2) document.getElementById('timeMin').focus();
   updateBatchHint();
 });
-document.getElementById('timeMin').addEventListener('input', updateBatchHint);
+document.getElementById('timeMin').addEventListener('input', function() {
+  this.value = this.value.replace(/\D/g, '').slice(0, 2);
+  updateBatchHint();
+});
 
 // ─── REMOVE a single batch sold-out ────────────────────────
 function removeBatchSoldOut(id, index) {
@@ -1007,6 +1036,14 @@ function closeEditModal() {
 
 // ─── UNDO ──────────────────────────────────────────────────
 function undoProduct(id) {
+  const data = productData[id];
+  // For pastry with multiple entries, confirm before wiping everything
+  if (data && data.batchSoldOuts) {
+    const entries = (data.batchSoldOuts ? data.batchSoldOuts.length : 0) + (data.sobras !== null && data.sobras !== undefined ? 1 : 0);
+    if (entries > 1) {
+      if (!confirm('¿Borrar todos los datos de este producto?')) return;
+    }
+  }
   delete productData[id];
   saveDailyData();
   renderProducts();
@@ -1044,7 +1081,7 @@ function buildSubmission() {
   const submission = {
     store: STORES[currentStore].name,
     store_id: currentStore,
-    date: now.toISOString().split('T')[0],
+    date: getLocalDateStr(now),
     day: days[now.getDay()],
     tgtg: parseInt(document.getElementById('tgtg').value) || 0,
     comments: document.getElementById('comments').value,
@@ -1099,19 +1136,40 @@ async function submitForm() {
   updateProgress();
 
   try {
+    // Try with CORS first (Apps Script supports this via redirect)
     const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(submission),
-      mode: 'no-cors'
+      redirect: 'follow'
     });
-    showSuccess(submission);
+
+    if (response.ok || response.type === 'opaque') {
+      // Verified success or opaque (no-cors fallback)
+      markSubmittedToday();
+      showSuccess(submission);
+    } else {
+      throw new Error(`Server error: ${response.status}`);
+    }
   } catch (err) {
-    console.warn('Send failed, queuing:', err);
-    const queue = getPendingQueue();
-    queue.push(submission);
-    savePendingQueue(queue);
-    showToast(`Sin conexión — guardado localmente (${queue.length} pendiente${queue.length > 1 ? 's' : ''})`);
+    // If CORS fails, retry with no-cors (can't verify but better than nothing)
+    try {
+      await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(submission),
+        mode: 'no-cors'
+      });
+      // Can't verify with no-cors, but likely sent
+      markSubmittedToday();
+      showSuccess(submission);
+      showToast('Enviado (sin confirmación del servidor)', 3000, 'info');
+    } catch (err2) {
+      console.warn('Send failed, queuing:', err2);
+      const queue = getPendingQueue();
+      queue.push(submission);
+      savePendingQueue(queue);
+      showToast(`Sin conexión — guardado localmente (${queue.length} pendiente${queue.length > 1 ? 's' : ''})`, 4000);
+    }
   }
 
   isSending = false;
@@ -1122,14 +1180,38 @@ function showSuccess(submission) {
   const now = new Date();
   document.getElementById('success-msg').textContent = `${STORES[currentStore].name} — ${now.getDate()} ${months[now.getMonth()]}`;
   document.getElementById('success').classList.add('active');
+  // Keep isSending true during animation to block double taps
+  isSending = true;
   setTimeout(() => {
     document.getElementById('success').classList.remove('active');
     productData = {};
     document.getElementById('tgtg').value = '0';
     document.getElementById('comments').value = '';
     clearDailyData();
+    isSending = false;
     renderProducts();
+    showSubmittedBanner();
   }, 2200);
+}
+
+// Show a subtle banner if today's data was already submitted
+function showSubmittedBanner() {
+  const time = getSubmittedToday();
+  const existing = document.getElementById('submittedBanner');
+  if (time) {
+    if (!existing) {
+      const banner = document.createElement('div');
+      banner.id = 'submittedBanner';
+      banner.style.cssText = 'background:#e8f5e9;color:#2e7d32;text-align:center;padding:8px;font-size:13px;font-weight:600;border-bottom:1px solid #c8e6c9;';
+      banner.textContent = `✓ Enviado hoy a las ${time}`;
+      const dateBar = document.querySelector('.date-bar');
+      dateBar.parentNode.insertBefore(banner, dateBar.nextSibling);
+    } else {
+      existing.textContent = `✓ Enviado hoy a las ${time}`;
+    }
+  } else if (existing) {
+    existing.remove();
+  }
 }
 
 // ─── OFFLINE QUEUE FLUSH ───────────────────────────────────
@@ -1143,14 +1225,18 @@ async function flushPendingQueue() {
   const remaining = [];
   for (const submission of queue) {
     try {
-      await fetch(apiUrl, {
+      const resp = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(submission),
-        mode: 'no-cors'
+        redirect: 'follow'
       });
+      if (!resp.ok && resp.type !== 'opaque') throw new Error('Server error');
     } catch (err) {
-      remaining.push(submission);
+      try {
+        await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(submission), mode: 'no-cors' });
+      } catch (err2) {
+        remaining.push(submission);
+      }
     }
   }
 
