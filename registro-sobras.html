@@ -5,8 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a3a2a">
+<meta name="mobile-web-app-capable" content="yes">
 <title>Registro de Sobras — Origo</title>
-<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%231a3a2a' width='100' height='100' rx='20'/><text x='50' y='68' text-anchor='middle' font-size='50'>🍞</text></svg>">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   body {
@@ -493,6 +498,63 @@ function saveVariableNames(store, names) {
   try { localStorage.setItem(`origo_varnames_${store}`, JSON.stringify(names)); } catch(e) {}
 }
 
+// ─── DAILY DATA PERSISTENCE ────────────────────────────────
+// Saves all in-progress productData, TGTG, and comments to localStorage
+// so nothing is lost if the app is closed mid-day
+function getDailyStorageKey() {
+  const today = new Date().toISOString().split('T')[0];
+  return `origo_daily_${currentStore}_${today}`;
+}
+
+function saveDailyData() {
+  if (!currentStore) return;
+  try {
+    const data = {
+      productData: productData,
+      tgtg: document.getElementById('tgtg') ? document.getElementById('tgtg').value : '0',
+      comments: document.getElementById('comments') ? document.getElementById('comments').value : '',
+      savedAt: new Date().toISOString()
+    };
+    localStorage.setItem(getDailyStorageKey(), JSON.stringify(data));
+  } catch(e) { console.warn('saveDailyData error:', e); }
+}
+
+function loadDailyData() {
+  if (!currentStore) return;
+  try {
+    const saved = localStorage.getItem(getDailyStorageKey());
+    if (!saved) return;
+    const data = JSON.parse(saved);
+    if (data.productData) productData = data.productData;
+    if (data.tgtg) document.getElementById('tgtg').value = data.tgtg;
+    if (data.comments) document.getElementById('comments').value = data.comments;
+  } catch(e) { console.warn('loadDailyData error:', e); }
+}
+
+function clearDailyData() {
+  if (!currentStore) return;
+  try { localStorage.removeItem(getDailyStorageKey()); } catch(e) {}
+}
+
+// Clean up old daily data (older than 3 days)
+function cleanOldDailyData() {
+  try {
+    const now = new Date();
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      keys.push(localStorage.key(i));
+    }
+    keys.forEach(key => {
+      if (!key.startsWith('origo_daily_')) return;
+      const dateMatch = key.match(/(\d{4}-\d{2}-\d{2})$/);
+      if (!dateMatch) return;
+      const keyDate = new Date(dateMatch[1]);
+      const diffDays = (now - keyDate) / (1000 * 60 * 60 * 24);
+      if (diffDays > 3) localStorage.removeItem(key);
+    });
+  } catch(e) {}
+}
+
 // Pending submissions (offline queue)
 function getPendingQueue() {
   try {
@@ -581,7 +643,13 @@ function openSettings() {
 function startApp() {
   document.getElementById('storeName').textContent = `Registro de Sobras — ${STORES[currentStore].name}`;
   initDate();
+  loadDailyData();
   renderProducts();
+  cleanOldDailyData();
+
+  // Auto-save TGTG and comments on every change
+  document.getElementById('tgtg').addEventListener('input', saveDailyData);
+  document.getElementById('comments').addEventListener('input', saveDailyData);
 }
 
 function initDate() {
@@ -744,6 +812,7 @@ function openSobras(id, name, isBatch) {
     } else {
       productData[id] = { type: 'leftover', value: val };
     }
+    saveDailyData();
     renderProducts();
   };
 }
@@ -783,6 +852,7 @@ function openTimePickerBread(id, name) {
 
   timeModalCallback = (h, m) => {
     productData[id] = { type: 'ran_out', time: `${h}:${m}` };
+    saveDailyData();
     renderProducts();
   };
 }
@@ -800,6 +870,7 @@ function editTimeBread(id, name) {
 
   timeModalCallback = (newH, newM) => {
     productData[id] = { type: 'ran_out', time: `${newH}:${newM}` };
+    saveDailyData();
     renderProducts();
   };
 }
@@ -839,6 +910,7 @@ function openTimePickerBatch(id, name) {
       productData[id].batchSoldOuts.sort((a, b) => a.batch - b.batch);
     }
 
+    saveDailyData();
     renderProducts();
   };
 }
@@ -883,6 +955,7 @@ function removeBatchSoldOut(id, index) {
   if (data.batchSoldOuts.length === 0 && (data.sobras === null || data.sobras === undefined)) {
     delete productData[id];
   }
+  saveDailyData();
   renderProducts();
 }
 
@@ -935,6 +1008,7 @@ function closeEditModal() {
 // ─── UNDO ──────────────────────────────────────────────────
 function undoProduct(id) {
   delete productData[id];
+  saveDailyData();
   renderProducts();
 }
 
@@ -1053,6 +1127,7 @@ function showSuccess(submission) {
     productData = {};
     document.getElementById('tgtg').value = '0';
     document.getElementById('comments').value = '';
+    clearDailyData();
     renderProducts();
   }, 2200);
 }
@@ -1083,6 +1158,15 @@ async function flushPendingQueue() {
   if (remaining.length === 0 && queue.length > 0) {
     showToast('✓ Registros pendientes enviados', 2000, 'info');
   }
+}
+
+// ─── PWA SERVICE WORKER REGISTRATION ─────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('SW registered:', reg.scope))
+      .catch(err => console.warn('SW registration failed:', err));
+  });
 }
 
 // ─── START ──────────────────────────────────────────────────
