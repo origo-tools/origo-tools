@@ -469,8 +469,9 @@ const dayLetters = ['D','L','M','X','J','V','S'];
 const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 
 // ─── API URL PERSISTENCE ───────────────────────────────────
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
 function getApiUrl() {
-  try { return localStorage.getItem('origo_api_url') || ''; } catch(e) { return ''; }
+  try { return localStorage.getItem('origo_api_url') || DEFAULT_API_URL; } catch(e) { return DEFAULT_API_URL; }
 }
 function setApiUrl(url) {
   try { localStorage.setItem('origo_api_url', url); } catch(e) {}
