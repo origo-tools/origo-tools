@@ -163,41 +163,42 @@
 
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-  .config-banner {
-    background: #fef3e2; padding: 8px 24px; display: flex; align-items: center; gap: 10px;
-    border-bottom: 1px solid #e0d8d0; font-size: 13px; color: #b7791f;
+  /* Settings gear button in top bar */
+  .settings-btn {
+    background: none; border: none; color: rgba(255,255,255,0.7); cursor: pointer;
+    padding: 4px; border-radius: 6px; display: flex; align-items: center; transition: all 0.2s;
   }
-  .config-banner input {
+  .settings-btn:hover { color: white; background: rgba(255,255,255,0.1); }
+  .settings-btn.open { color: #e8c547; }
+  .settings-btn svg { transition: transform 0.3s ease; }
+  .settings-btn.open svg { transform: rotate(90deg); }
+
+  /* Collapsible settings panel */
+  .settings-panel {
+    max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
+    border-bottom: 1px solid #e0d8d0;
+  }
+  .settings-panel.open { max-height: 200px; }
+  .settings-panel .settings-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 24px; font-size: 13px;
+  }
+  .settings-panel .settings-row:first-child { padding-top: 12px; }
+  .settings-panel .settings-row:last-child { padding-bottom: 12px; }
+  .settings-panel .settings-row label { font-weight: 600; white-space: nowrap; color: #555; min-width: 130px; }
+  .settings-panel input.settings-input {
     flex: 1; padding: 5px 10px; border: 1px solid #e0d8d0; border-radius: 6px;
-    font-size: 13px; font-family: inherit; max-width: 500px;
+    font-size: 13px; font-family: inherit; max-width: 450px;
   }
-  .config-banner input:focus { outline: none; border-color: #1a3a2a; }
-  .config-banner button {
+  .settings-panel input.settings-input:focus { outline: none; border-color: #1a3a2a; }
+  .settings-panel button.settings-save {
     padding: 5px 14px; background: #1a3a2a; color: white; border: none;
     border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
   }
-  .config-banner .status { font-weight: 600; }
-  .config-banner .status.ok { color: #2e7d32; }
-  .config-banner .status.err { color: #c0392b; }
+  .settings-panel button.settings-save:hover { background: #22503a; }
+  .settings-panel .status { font-weight: 600; font-size: 12px; }
+  .settings-panel .status.ok { color: #2e7d32; }
+  .settings-panel .status.err { color: #c0392b; }
   .sobras-loading { color: #888; font-style: italic; font-size: 12px; }
-
-  .pdm-bar {
-    display: flex; gap: 10px; padding: 8px 24px; background: #f8f0ff;
-    border-bottom: 1px solid #e0d8d0; align-items: center; font-size: 13px; color: #6d4c7a;
-  }
-  .pdm-bar label { font-weight: 600; white-space: nowrap; }
-  .pdm-bar input {
-    padding: 5px 10px; border: 1px solid #d5c8e0; border-radius: 6px;
-    font-size: 13px; font-family: inherit; width: 280px;
-  }
-  .pdm-bar input:focus { outline: none; border-color: #6d4c7a; }
-  .pdm-bar button {
-    padding: 5px 14px; background: #6d4c7a; color: white; border: none;
-    border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
-  }
-  .pdm-bar button:hover { background: #8b6998; }
-  .pdm-bar .pdm-status { font-weight: 600; font-size: 12px; }
-  .pdm-bar .pdm-status.ok { color: #2e7d32; }
 </style>
 </head>
 <body>
@@ -211,24 +212,30 @@
       <option value="mila">Milà</option>
       <option value="santjoan">Sant Joan</option>
     </select>
+    <button class="settings-btn" id="settingsBtn" onclick="toggleSettings()" title="Ajustes">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    </button>
   </div>
 </div>
-<div class="config-banner" id="configBanner">
-  <span>📡 API Estimaciones:</span>
-  <input type="text" id="forecastApiUrl" placeholder="https://script.google.com/macros/s/.../exec (Forecasting API)">
-  <button onclick="saveForecastApiConfig()">Conectar</button>
-  <span class="status" id="forecastApiStatus"></span>
-  &nbsp;&nbsp;|&nbsp;&nbsp;
-  <span>📋 API Sobras:</span>
-  <input type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec (Sobras API)" style="max-width:350px;">
-  <button onclick="saveApiConfig()">Conectar</button>
-  <span class="status" id="apiStatus"></span>
-</div>
-<div class="pdm-bar" id="pdmBar">
-  <label>🎂 Pastry del mes:</label>
-  <input type="text" id="pdmInput" placeholder="Nombre en Square (e.g. Tartaleta Pera)" onkeydown="if(event.key==='Enter')savePdm()">
-  <button onclick="savePdm()">Guardar</button>
-  <span class="pdm-status" id="pdmStatus"></span>
+<div class="settings-panel" id="settingsPanel">
+  <div class="settings-row">
+    <label>API Estimaciones</label>
+    <input class="settings-input" type="text" id="forecastApiUrl" placeholder="https://script.google.com/macros/s/.../exec">
+    <button class="settings-save" onclick="saveForecastApiConfig()">Conectar</button>
+    <span class="status" id="forecastApiStatus"></span>
+  </div>
+  <div class="settings-row">
+    <label>API Sobras</label>
+    <input class="settings-input" type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec">
+    <button class="settings-save" onclick="saveApiConfig()">Conectar</button>
+    <span class="status" id="apiStatus"></span>
+  </div>
+  <div class="settings-row">
+    <label>Pastry del mes</label>
+    <input class="settings-input" type="text" id="pdmInput" placeholder="Nombre en Square (e.g. Tartaleta Pera)" style="max-width:280px;" onkeydown="if(event.key==='Enter')savePdm()">
+    <button class="settings-save" onclick="savePdm()">Guardar</button>
+    <span class="status" id="pdmStatus"></span>
+  </div>
 </div>
 <div class="day-tabs" id="dayTabs"></div>
 <div class="alerts-bar" id="alertsBar"></div>
@@ -369,6 +376,13 @@ function setForecastApiUrl(url) {
   try { localStorage.setItem('origo_forecast_api_url', url); } catch(e) {}
 }
 
+function toggleSettings() {
+  const panel = document.getElementById('settingsPanel');
+  const btn = document.getElementById('settingsBtn');
+  panel.classList.toggle('open');
+  btn.classList.toggle('open');
+}
+
 function saveForecastApiConfig() {
   const input = document.getElementById('forecastApiUrl');
   const url = input.value.trim();
@@ -413,7 +427,7 @@ function savePdm() {
 
   const status = document.getElementById('pdmStatus');
   status.textContent = '✓ Guardado: ' + name;
-  status.className = 'pdm-status ok';
+  status.className = 'status ok';
 
   // Also save to server (Script Properties) so scheduled triggers use it
   const apiUrl = getForecastApiUrl();
@@ -436,7 +450,7 @@ function loadPdmSetting() {
     input.value = saved;
     const status = document.getElementById('pdmStatus');
     status.textContent = '✓ ' + saved;
-    status.className = 'pdm-status ok';
+    status.className = 'status ok';
   }
 }
 
@@ -1301,11 +1315,6 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
   if (savedUrl) {
     document.getElementById('apiUrlConfig').value = savedUrl;
     testApiConnection(savedUrl);
-  }
-
-  // If either API is configured, turn config banner green
-  if (savedForecastUrl || savedUrl) {
-    document.getElementById('configBanner').style.background = '#f0faf0';
   }
 
   // Load pastry del mes setting
