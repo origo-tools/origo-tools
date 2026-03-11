@@ -180,6 +180,24 @@
   .config-banner .status.ok { color: #2e7d32; }
   .config-banner .status.err { color: #c0392b; }
   .sobras-loading { color: #888; font-style: italic; font-size: 12px; }
+
+  .pdm-bar {
+    display: flex; gap: 10px; padding: 8px 24px; background: #f8f0ff;
+    border-bottom: 1px solid #e0d8d0; align-items: center; font-size: 13px; color: #6d4c7a;
+  }
+  .pdm-bar label { font-weight: 600; white-space: nowrap; }
+  .pdm-bar input {
+    padding: 5px 10px; border: 1px solid #d5c8e0; border-radius: 6px;
+    font-size: 13px; font-family: inherit; width: 280px;
+  }
+  .pdm-bar input:focus { outline: none; border-color: #6d4c7a; }
+  .pdm-bar button {
+    padding: 5px 14px; background: #6d4c7a; color: white; border: none;
+    border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .pdm-bar button:hover { background: #8b6998; }
+  .pdm-bar .pdm-status { font-weight: 600; font-size: 12px; }
+  .pdm-bar .pdm-status.ok { color: #2e7d32; }
 </style>
 </head>
 <body>
@@ -205,6 +223,12 @@
   <input type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec (Sobras API)" style="max-width:350px;">
   <button onclick="saveApiConfig()">Conectar</button>
   <span class="status" id="apiStatus"></span>
+</div>
+<div class="pdm-bar" id="pdmBar">
+  <label>🎂 Pastry del mes:</label>
+  <input type="text" id="pdmInput" placeholder="Nombre en Square (e.g. Tartaleta Pera)" onkeydown="if(event.key==='Enter')savePdm()">
+  <button onclick="savePdm()">Guardar</button>
+  <span class="pdm-status" id="pdmStatus"></span>
 </div>
 <div class="day-tabs" id="dayTabs"></div>
 <div class="alerts-bar" id="alertsBar"></div>
@@ -375,6 +399,47 @@ async function testForecastApiConnection(url) {
   }
 }
 
+// ── Pastry del mes ──────────────────────────────────────────
+
+function getPastryDelMes() {
+  return localStorage.getItem('origo-pastry-del-mes') || '';
+}
+
+function savePdm() {
+  const input = document.getElementById('pdmInput');
+  const name = input.value.trim();
+  if (!name) return;
+  localStorage.setItem('origo-pastry-del-mes', name);
+
+  const status = document.getElementById('pdmStatus');
+  status.textContent = '✓ Guardado: ' + name;
+  status.className = 'pdm-status ok';
+
+  // Also save to server (Script Properties) so scheduled triggers use it
+  const apiUrl = getForecastApiUrl();
+  if (apiUrl) {
+    fetch(apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'setPastryDelMes', name: name }),
+    }).catch(() => {});
+  }
+
+  // Refresh estimates with the new pastry del mes
+  forecastCache = {};
+  loadEstimatesForCurrentDay();
+}
+
+function loadPdmSetting() {
+  const input = document.getElementById('pdmInput');
+  const saved = getPastryDelMes();
+  if (saved) {
+    input.value = saved;
+    const status = document.getElementById('pdmStatus');
+    status.textContent = '✓ ' + saved;
+    status.className = 'pdm-status ok';
+  }
+}
+
 // Get the target date for a given day name — always NEXT WEEK
 // Estimates are for next week (generated progressively as each day's sobras come in)
 function getTargetDate(dayName) {
@@ -428,7 +493,9 @@ async function loadEstimatesForCurrentDay() {
   renderMain();
 
   try {
-    const url = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}`;
+    const pdm = getPastryDelMes();
+    const pdmParam = pdm ? `&pastryDelMes=${encodeURIComponent(pdm)}` : '';
+    const url = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}${pdmParam}`;
     const resp = await fetch(url);
     const data = await resp.json();
 
@@ -1240,6 +1307,9 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
   if (savedForecastUrl || savedUrl) {
     document.getElementById('configBanner').style.background = '#f0faf0';
   }
+
+  // Load pastry del mes setting
+  loadPdmSetting();
 
   renderAll();
   loadEstimatesForCurrentDay();
