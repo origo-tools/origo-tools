@@ -587,16 +587,24 @@ function getShopSuggestions() {
     if (est.type === 'bread') {
       result.bread[key] = est.estimate;
     } else if (est.type === 'pastry') {
-      // Distribute total across batches: ~50% b1, ~30% b2, ~20% b3
+      // Distribute total across batches using hourly sales data from BigQuery
+      // API provides batchSplit: { b1Pct, b2Pct, b3Pct } based on real hourly patterns
+      // Fallback to even 33/33/34 if no data available
       const total = est.estimate;
       const lata = est.lataSize || 12;
+      const split = est.batchSplit || { b1Pct: 0.33, b2Pct: 0.33, b3Pct: 0.34 };
+      // Lata rounding (always ceil) already provides a natural safety margin
+
       if (lata > 0) {
-        const b1 = Math.ceil(total * 0.5 / lata) * lata;
-        const b2 = Math.ceil(total * 0.3 / lata) * lata;
+        const b1 = Math.ceil((total * split.b1Pct) / lata) * lata;
+        const b2 = Math.ceil((total * split.b2Pct) / lata) * lata;
         const b3 = Math.max(0, total - b1 - b2);
         result.pastry[key] = { b1, b2, b3: Math.ceil(b3 / lata) * lata };
       } else {
-        result.pastry[key] = { b1: Math.ceil(total * 0.5), b2: Math.ceil(total * 0.3), b3: Math.max(0, total - Math.ceil(total * 0.5) - Math.ceil(total * 0.3)) };
+        const b1 = Math.ceil(total * split.b1Pct);
+        const b2 = Math.ceil(total * split.b2Pct);
+        const b3 = Math.max(0, total - b1 - b2);
+        result.pastry[key] = { b1, b2, b3 };
       }
     }
   }
@@ -1339,6 +1347,21 @@ async function confirmSync() {
       btn.classList.add('synced');
       btn.innerHTML = `✓ Sincronizado — ${currentDay} (${data.updatedCells} celdas)`;
       status.innerHTML = `<strong>Última sync:</strong> ${new Date().toLocaleTimeString('es-ES')} — ${storeName} · ${currentDay}`;
+
+      // Also record Rafa's approved values in BigQuery (fire-and-forget)
+      try {
+        fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action: 'recordApproval',
+            store: storeName,
+            dayOfWeek: currentDay,
+            estimates
+          })
+        }).catch(() => {}); // Non-blocking, ok if it fails
+      } catch(_) {}
+
       setTimeout(() => {
         btn.disabled = false;
         btn.classList.remove('synced');
