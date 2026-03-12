@@ -1163,21 +1163,49 @@ function collectRoundingChanges() {
     }
   });
 
-  // Pastry: per batch, round (shop + orders) total, guarantee orders covered
+  // Pastry: smart tray completion (move B3→B2 to complete trays) then round
   const batchNames = { b1: '1er lote', b2: '2do lote', b3: '3er lote' };
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
+    const lata = p.roundTo;
+
+    // Read current values for all 3 batches
+    const vals = {};
     ['b1','b2','b3'].forEach(b => {
       const shopInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`);
       const orderInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`);
-      if (!shopInput) return;
-      const shopVal = parseInt(shopInput.value) || 0;
-      const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
-      const total = shopVal + orderVal;
-      const rounded = roundWithOrderGuarantee(total, orderVal, p.roundTo);
+      vals[b] = {
+        shopInput,
+        orderInput,
+        shop: shopInput ? (parseInt(shopInput.value) || 0) : 0,
+        order: orderInput ? (parseInt(orderInput.value) || 0) : 0,
+      };
+      vals[b].total = vals[b].shop + vals[b].order;
+    });
+
+    // Smart tray completion: move units from B3 shop to B2 shop to fill B2's tray
+    if (vals.b2.total > 0 && vals.b3.shop > 0) {
+      const b2Remainder = vals.b2.total % lata;
+      if (b2Remainder > 0) {
+        const unitsNeeded = lata - b2Remainder;
+        const unitsToMove = Math.min(unitsNeeded, vals.b3.shop);
+        vals.b2.shop += unitsToMove;
+        vals.b2.total += unitsToMove;
+        vals.b3.shop -= unitsToMove;
+        vals.b3.total -= unitsToMove;
+      }
+    }
+
+    // Now round each batch and report changes
+    ['b1','b2','b3'].forEach(b => {
+      if (!vals[b].shopInput) return;
+      const total = vals[b].total;
+      const orderVal = vals[b].order;
+      const originalShop = parseInt(vals[b].shopInput.value) || 0;
+      const rounded = roundWithOrderGuarantee(total, orderVal, lata);
       if (total !== rounded && (total > 0 || orderVal > 0)) {
         const newShop = Math.max(0, rounded - orderVal);
-        changes.push({ product: p.name, field: batchNames[b], original: shopVal, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
+        changes.push({ product: p.name, field: batchNames[b], original: originalShop, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
       }
     });
   });
