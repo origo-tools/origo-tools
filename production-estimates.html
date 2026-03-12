@@ -1184,16 +1184,22 @@ function collectRoundingChanges() {
     });
 
     // Smart tray completion: move units from B3 shop to B2 shop to fill B2's tray
+    let unitsToMove = 0;
     if (vals.b2.total > 0 && vals.b3.shop > 0) {
       const b2Remainder = vals.b2.total % lata;
       if (b2Remainder > 0) {
         const unitsNeeded = lata - b2Remainder;
-        const unitsToMove = Math.min(unitsNeeded, vals.b3.shop);
+        unitsToMove = Math.min(unitsNeeded, vals.b3.shop);
         vals.b2.shop += unitsToMove;
         vals.b2.total += unitsToMove;
         vals.b3.shop -= unitsToMove;
         vals.b3.total -= unitsToMove;
       }
+    }
+
+    // If there was a transfer, add a transfer row for context
+    if (unitsToMove > 0) {
+      changes.push({ product: p.name, type: 'transfer', units: unitsToMove });
     }
 
     // Now round each batch and report changes
@@ -1203,7 +1209,8 @@ function collectRoundingChanges() {
       const orderVal = vals[b].order;
       const originalShop = parseInt(vals[b].shopInput.value) || 0;
       const rounded = roundWithOrderGuarantee(total, orderVal, lata);
-      if (total !== rounded && (total > 0 || orderVal > 0)) {
+      const wasTransferred = unitsToMove > 0 && (b === 'b2' || b === 'b3');
+      if ((total !== rounded && (total > 0 || orderVal > 0)) || (wasTransferred && originalShop !== Math.max(0, rounded - orderVal))) {
         const newShop = Math.max(0, rounded - orderVal);
         changes.push({ product: p.name, field: batchNames[b], original: originalShop, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
       }
@@ -1222,20 +1229,27 @@ function showSyncPreview() {
   } else {
     let html = '';
     changes.forEach(c => {
-      html += `<div class="round-row">
-        <span>${c.product} <span style="color:#888;font-size:11px">${c.field}</span></span>
-        <span>
-          <span style="color:#888;font-size:11px">total ${c.total}</span>
-          <span class="arrow">→</span>
-          <span style="color:#888;font-size:11px">${c.roundedTotal}</span>
-          <span style="margin:0 4px">·</span>
-          <span style="font-size:11px">shop</span>
-          <span class="original">${c.original}</span>
-          <span class="arrow">→</span>
-          <span class="rounded">${c.rounded}</span>
-          <span class="round-badge">${c.mult}</span>
-        </span>
-      </div>`;
+      if (c.type === 'transfer') {
+        html += `<div class="round-row" style="color:#1a5276;background:#eef6ff;border-radius:6px;padding:4px 8px;margin:6px 0 2px;">
+          <span>${c.product}</span>
+          <span style="font-size:12px;">↰ mover <strong>${c.units}</strong> uds del 3er → 2do lote para completar bandeja</span>
+        </div>`;
+      } else {
+        html += `<div class="round-row">
+          <span>${c.product} <span style="color:#888;font-size:11px">${c.field}</span></span>
+          <span>
+            <span style="color:#888;font-size:11px">total ${c.total}</span>
+            <span class="arrow">→</span>
+            <span style="color:#888;font-size:11px">${c.roundedTotal}</span>
+            <span style="margin:0 4px">·</span>
+            <span style="font-size:11px">shop</span>
+            <span class="original">${c.original}</span>
+            <span class="arrow">→</span>
+            <span class="rounded">${c.rounded}</span>
+            <span class="round-badge">${c.mult}</span>
+          </span>
+        </div>`;
+      }
     });
     content.innerHTML = html;
   }
