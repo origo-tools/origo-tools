@@ -591,30 +591,22 @@ function getShopSuggestions() {
       // API provides batchSplit: { b1Pct, b2Pct, b3Pct } based on real hourly patterns
       // Fallback to even 33/33/34 if no data available
       const total = est.estimate;
-      const lata = (est.lataSize != null) ? est.lataSize : 12;
       const split = est.batchSplit || { b1Pct: 0.33, b2Pct: 0.33, b3Pct: 0.34 };
 
+      // Show raw numbers to Rafa — rounding to lata multiples happens only at sync time
       // Special baking rules per product:
       // - Pastís llimona i ametlla: only baked once in B1
       // - Cookie chocolate: only B1 (08-13h) and B3 (13h-close), no B2
       if (est.product === 'Pastís llimona i ametlla') {
         result.pastry[key] = { b1: total, b2: 0, b3: 0 };
       } else if (est.product === 'Cookie chocolate') {
-        const b1 = Math.ceil(total * split.b1Pct);
+        const b1 = Math.round(total * split.b1Pct);
         const b3 = Math.max(0, total - b1);
         result.pastry[key] = { b1, b2: 0, b3 };
-      } else if (lata > 0) {
-        // Round B1 and B3 to nearest lata (not ceil), B2 gets the remainder
-        // This prevents B1+B2 from consuming everything on small totals (e.g. Mico)
-        const b1 = Math.round((total * split.b1Pct) / lata) * lata;
-        const b3 = Math.round((total * split.b3Pct) / lata) * lata;
-        const b2 = Math.max(0, total - b1 - b3);
-        result.pastry[key] = { b1, b2: Math.round(b2 / lata) * lata, b3 };
       } else {
-        // Per-unit items (uds): no lata rounding needed
         const b1 = Math.round(total * split.b1Pct);
-        const b3 = Math.max(0, total - b1 - Math.round(total * split.b2Pct));
-        const b2 = total - b1 - b3;
+        const b3 = Math.round(total * split.b3Pct);
+        const b2 = Math.max(0, total - b1 - b3);
         result.pastry[key] = { b1, b2, b3 };
       }
     }
