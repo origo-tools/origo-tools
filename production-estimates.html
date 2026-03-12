@@ -778,9 +778,12 @@ let currentStore = 'santpau';
 let currentDay = 'Miércoles';
 let editedCells = {};
 
-// ============ INPUT PERSISTENCE (localStorage) ============
+// ============ INPUT PERSISTENCE (localStorage + BigQuery) ============
 // Shop values: saved per store + specific date (reset when new AI estimates arrive)
 // Order values: saved per store + day of week (carry over week to week)
+// Both sync to BigQuery for cross-device persistence.
+
+const DAYS_TO_DOW = { 'Lunes': '1', 'Martes': '2', 'Miércoles': '3', 'Jueves': '4', 'Viernes': '5', 'Sábado': '6', 'Domingo': '0' };
 
 function getShopStorageKey() {
   const targetDate = getTargetDate(currentDay);
@@ -793,63 +796,127 @@ function getOrderStorageKey() {
   return `origo-orders-${currentStore}-${currentDay}`;
 }
 
+// Debounce timer for BigQuery sync (avoid flooding on rapid edits)
+let _bqSaveTimer = null;
+let _bqPendingInputs = [];
+
 function saveInputState() {
   const shopData = {};
   const orderData = {};
+  const changedInputs = [];
+
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const dow = DAYS_TO_DOW[currentDay] || '1';
 
   document.querySelectorAll('.editable input').forEach(input => {
     const key = input.dataset.key;
     const val = input.value;
     if (!key || val === '') return;
 
-    // Order inputs contain '-order' (bread) or end in 'o' for pastry batches (b1o, b2o, b3o)
     const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
     if (isOrder) {
       orderData[key] = val;
+      changedInputs.push({ key, type: 'order', dateKey: dow, value: val });
     } else {
       shopData[key] = val;
+      changedInputs.push({ key, type: 'shop', dateKey: dateStr, value: val });
     }
   });
 
+  // 1. Save to localStorage (instant)
   localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells }));
   localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData }));
+
+  // 2. Debounced save to BigQuery (non-blocking, 2s after last edit)
+  _bqPendingInputs = changedInputs;
+  clearTimeout(_bqSaveTimer);
+  _bqSaveTimer = setTimeout(() => syncInputsToBigQuery(_bqPendingInputs), 2000);
 }
 
-function restoreInputState() {
-  // 1. Restore shop values (per date — only if they exist for this week's estimate)
+async function syncInputsToBigQuery(inputs) {
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl || inputs.length === 0) return;
+
+  try {
+    await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'saveInputs',
+        store: currentStore,
+        inputs: inputs
+      })
+    });
+  } catch (e) {
+    console.warn('BigQuery sync failed (will retry on next edit):', e.message);
+  }
+}
+
+async function restoreInputState() {
+  // 1. Restore from localStorage first (instant)
+  let localShop = {}, localOrders = {};
   try {
     const shopSaved = localStorage.getItem(getShopStorageKey());
     if (shopSaved) {
       const { inputs, editedCells: savedEdited } = JSON.parse(shopSaved);
-      if (inputs) {
-        for (const [key, val] of Object.entries(inputs)) {
-          const input = document.querySelector(`input[data-key="${key}"]`);
-          if (input) {
-            input.value = val;
-            input.closest('td').className = 'editable edited';
-          }
-        }
-      }
+      if (inputs) localShop = inputs;
       if (savedEdited) Object.assign(editedCells, savedEdited);
     }
-  } catch(e) { console.warn('Failed to restore shop inputs:', e); }
-
-  // 2. Restore order values (per day of week — persist across weeks)
+  } catch(e) {}
   try {
     const orderSaved = localStorage.getItem(getOrderStorageKey());
     if (orderSaved) {
       const { inputs } = JSON.parse(orderSaved);
-      if (inputs) {
-        for (const [key, val] of Object.entries(inputs)) {
-          const input = document.querySelector(`input[data-key="${key}"]`);
-          if (input) {
-            input.value = val;
-            input.closest('td').className = 'editable edited';
-          }
-        }
+      if (inputs) localOrders = inputs;
+    }
+  } catch(e) {}
+
+  // Apply localStorage values immediately (so UI is responsive)
+  applyInputValues(localShop);
+  applyInputValues(localOrders);
+
+  // 2. Then load from BigQuery (async, overrides localStorage if newer)
+  try {
+    const apiUrl = getForecastApiUrl();
+    if (!apiUrl) return;
+
+    const targetDate = getTargetDate(currentDay);
+    const dateStr = formatDateStr(targetDate);
+    const dow = DAYS_TO_DOW[currentDay] || '1';
+
+    const resp = await fetch(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
+    const data = await resp.json();
+
+    if (data.success) {
+      // Merge BigQuery data — apply all values from the server
+      if (data.shop && Object.keys(data.shop).length > 0) {
+        applyInputValues(data.shop);
+        // Update localStorage with server data
+        const merged = { ...localShop, ...data.shop };
+        localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: merged, editedCells }));
+      }
+      if (data.orders && Object.keys(data.orders).length > 0) {
+        applyInputValues(data.orders);
+        const merged = { ...localOrders, ...data.orders };
+        localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
       }
     }
-  } catch(e) { console.warn('Failed to restore order inputs:', e); }
+  } catch(e) {
+    console.warn('BigQuery load failed (using localStorage):', e.message);
+  }
+}
+
+function applyInputValues(inputMap) {
+  if (!inputMap) return;
+  for (const [key, val] of Object.entries(inputMap)) {
+    const input = document.querySelector(`input[data-key="${key}"]`);
+    if (input) {
+      input.value = val;
+      input.closest('td').className = 'editable edited';
+      editedCells[key] = true;
+    }
+  }
 }
 
 // ============ HELPERS ============
