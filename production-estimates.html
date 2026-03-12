@@ -73,8 +73,9 @@
   }
   table.grid td.product-name {
     text-align: left; font-weight: 600; background: #faf8f5;
-    white-space: nowrap; min-width: 200px;
+    white-space: nowrap; min-width: 200px; cursor: default;
   }
+  table.grid td.product-name[title] { cursor: help; }
   table.grid td.product-name .mult {
     font-weight: 400; font-size: 11px; color: #888; margin-left: 4px;
   }
@@ -659,10 +660,40 @@ function getEstimateFactors() {
   const cacheKey = `${currentStore}-${dateStr}`;
   const cached = forecastCache[cacheKey];
   if (!cached) return null;
+
+  // Extract dominant context from per-product estimates
+  // (all products on same day share the same context type)
+  let contextType = 'none', contextReason = '', contextMultiplier = 1;
+  let learningActive = false, learningAvg = 1, learningSamples = 0;
+  let learningSum = 0, learningCount = 0;
+
+  if (cached.estimates && cached.estimates.length > 0) {
+    for (const est of cached.estimates) {
+      if (!est.factors) continue;
+      if (contextType === 'none' && est.factors.contextType !== 'none') {
+        contextType = est.factors.contextType;
+        contextReason = est.factors.contextReason;
+        contextMultiplier = est.factors.context;
+      }
+      if (est.factors.learning && est.factors.learning !== 1) {
+        learningActive = true;
+        learningSum += est.factors.learning;
+        learningSamples = Math.max(learningSamples, est.factors.learningSamples || 0);
+        learningCount++;
+      }
+    }
+    if (learningCount > 0) learningAvg = learningSum / learningCount;
+  }
+
   return {
     isHoliday: cached.isHoliday,
-    seasonalIndex: cached.seasonalIndex,
     weather: cached.weather,
+    contextType,
+    contextReason,
+    contextMultiplier,
+    learningActive,
+    learningAvg,
+    learningSamples,
   };
 }
 
@@ -1009,9 +1040,36 @@ function pastryTotalSobras(data) {
   return `<td class="sobras-cell ${cls}">${html}</td>`;
 }
 
-function productNameCell(name, label) {
+function getProductFactorTooltip(estKey) {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[cacheKey];
+  if (!cached || !cached.estimates) return '';
+
+  const est = cached.estimates.find(e => CELL_TO_KEY[e.cell] === estKey);
+  if (!est || !est.factors) return '';
+
+  const f = est.factors;
+  const parts = [];
+  if (f.trend !== 1) parts.push(`Tendencia: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
+  if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+  else if (f.contextType === 'schoolHoliday') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+  else if (f.contextType === 'yoyTransition') parts.push(`Interanual: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%`);
+  if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
+  if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
+  if (f.soldOut !== 1) parts.push(`Agotado: +${Math.round((f.soldOut - 1) * 100)}%`);
+  if (f.overproduction !== 1) parts.push(`Sobreproducción: ${Math.round((f.overproduction - 1) * 100)}%`);
+  if (f.learning !== 1) parts.push(`Aprendizaje: ${f.learning > 1 ? '+' : ''}${Math.round((f.learning - 1) * 100)}% (${f.learningSamples} sem.)`);
+  if (parts.length === 0) parts.push('Sin ajustes especiales');
+  return parts.join('\n');
+}
+
+function productNameCell(name, label, estKey) {
   const multHtml = label ? `<span class="mult">${label}</span>` : '';
-  return `<td class="product-name">${name}${multHtml}</td>`;
+  const tooltip = estKey ? getProductFactorTooltip(estKey) : '';
+  const titleAttr = tooltip ? ` title="${tooltip.replace(/"/g, '&quot;')}"` : '';
+  return `<td class="product-name"${titleAttr}>${name}${multHtml}</td>`;
 }
 
 // ============ RENDER ============
@@ -1035,15 +1093,35 @@ function renderAlertsBar() {
 
   if (factors) {
     if (factors.isHoliday) html += `<div class="event-badge high">🎉 Festivo — producción tipo sábado</div>`;
-    if (factors.seasonalIndex && factors.seasonalIndex !== 1.0) {
-      const pct = Math.round((factors.seasonalIndex - 1) * 100);
+
+    // Context-aware adjustment badge
+    if (factors.contextType === 'specialDate') {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      html += `<div class="event-badge high">📅 Fecha especial: ${sign}${pct}% (${factors.contextReason})</div>`;
+    } else if (factors.contextType === 'schoolHoliday') {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      const cls = pct < 0 ? 'medium' : 'info';
+      html += `<div class="event-badge ${cls}">🏖️ Vacaciones escolares: ${sign}${pct}% (${factors.contextReason})</div>`;
+    } else if (factors.contextType === 'yoyTransition') {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
       const sign = pct > 0 ? '+' : '';
       const cls = pct < -5 ? 'medium' : 'info';
-      html += `<div class="event-badge ${cls}">📊 Ajuste estacional: ${sign}${pct}%</div>`;
+      html += `<div class="event-badge ${cls}">📊 Tendencia interanual: ${sign}${pct}%</div>`;
     }
+
+    // Weather badge
     if (factors.weather && factors.weather.precipitation_mm > 3) {
       const adj = factors.weather.precipitation_mm > 10 ? '-10%' : '-5%';
       html += `<div class="event-badge medium">🌧️ Ajuste lluvia: ${adj}</div>`;
+    }
+
+    // Learning factor badge
+    if (factors.learningActive) {
+      const pct = Math.round((factors.learningAvg - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      html += `<div class="event-badge info">🧠 Aprendizaje: ${sign}${pct}% (${factors.learningSamples} sem.)</div>`;
     }
   }
 
@@ -1082,7 +1160,7 @@ function renderMain() {
     const orderVal = orders.bread[item.key] ?? '';
     const sobrasData = sobras.bread[item.key];
     html += `<tr>
-      ${productNameCell(item.name, item.label)}
+      ${productNameCell(item.name, item.label, item.key)}
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
       ${eCell(`bread-${item.key}-order`, orderVal, 'manual order-cell')}
       <td class="sep"></td>
@@ -1130,7 +1208,7 @@ function renderMain() {
       const b3Alert = pastryBatchSobras(sd, 3);
 
       html += `<tr>
-        ${productNameCell(p.name, p.label)}
+        ${productNameCell(p.name, p.label, p.key)}
         ${pastryTotalSobras(sd)}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
