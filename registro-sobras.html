@@ -255,6 +255,38 @@
   .success-screen h2 { font-size: 22px; font-weight: 700; }
   .success-screen p { font-size: 15px; opacity: 0.7; margin-top: 6px; }
 
+  /* Undo bar (cancel window after pressing Enviar) */
+  .undo-bar {
+    display: none; position: fixed; bottom: 0; left: 0; right: 0;
+    padding: 0 14px 0;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    background: #1a3a2a; z-index: 200;
+    flex-direction: column; gap: 0;
+  }
+  .undo-bar.active { display: flex; }
+  .undo-bar .undo-content {
+    display: flex; align-items: center; gap: 12px; padding: 14px 0 10px;
+  }
+  .undo-bar .undo-text {
+    flex: 1; color: white; font-size: 15px; font-weight: 600;
+  }
+  .undo-bar .undo-text .countdown { opacity: 0.7; font-weight: 400; }
+  .btn-undo {
+    padding: 10px 24px; border-radius: 10px;
+    background: white; color: #1a3a2a; font-size: 15px; font-weight: 800;
+    border: none; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .btn-undo:active { background: #e0d8d0; }
+  .undo-progress {
+    height: 3px; background: rgba(255,255,255,0.2); border-radius: 2px;
+    margin-bottom: 4px; overflow: hidden;
+  }
+  .undo-progress-fill {
+    height: 100%; background: white; border-radius: 2px;
+    transition: width linear;
+  }
+
   /* Error toast */
   .toast {
     display: none; position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -382,6 +414,15 @@
       <button class="btn-confirm" style="margin-top:10px;padding:10px;width:100%;font-size:14px;" onclick="saveApiUrl()">Guardar URL</button>
     </div>
   </div>
+</div>
+
+<!-- Undo bar (cancel window) -->
+<div class="undo-bar" id="undoBar">
+  <div class="undo-content">
+    <div class="undo-text">Enviando en <span class="countdown" id="undoCountdown">5</span>s...</div>
+    <button class="btn-undo" onclick="cancelSubmit()">CANCELAR</button>
+  </div>
+  <div class="undo-progress"><div class="undo-progress-fill" id="undoProgress"></div></div>
 </div>
 
 <!-- Success screen -->
@@ -1176,7 +1217,12 @@ function buildSubmission() {
   return submission;
 }
 
-// ─── SUBMIT ────────────────────────────────────────────────
+// ─── SUBMIT (with 5-second cancel window) ─────────────────
+let _undoTimer = null;
+let _undoCountdownInterval = null;
+let _pendingSubmission = null;
+const UNDO_SECONDS = 10;
+
 async function submitForm() {
   if (isSending) return;
   const variableProducts = getVariableProducts();
@@ -1195,12 +1241,72 @@ async function submitForm() {
     return;
   }
 
-  const submission = buildSubmission();
+  // Build the submission but DON'T send yet — show cancel window
+  _pendingSubmission = { data: buildSubmission(), apiUrl };
   isSending = true;
   updateProgress();
+  showUndoBar();
+}
+
+function showUndoBar() {
+  const bar = document.getElementById('undoBar');
+  const countdown = document.getElementById('undoCountdown');
+  const progress = document.getElementById('undoProgress');
+
+  bar.classList.add('active');
+  // Hide the submit bar while undo is showing
+  document.querySelector('.submit-bar').style.display = 'none';
+
+  let remaining = UNDO_SECONDS;
+  countdown.textContent = remaining;
+  progress.style.transition = 'none';
+  progress.style.width = '100%';
+
+  // Animate the progress bar
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      progress.style.transition = `width ${UNDO_SECONDS}s linear`;
+      progress.style.width = '0%';
+    });
+  });
+
+  // Countdown text
+  _undoCountdownInterval = setInterval(() => {
+    remaining--;
+    if (remaining > 0) {
+      countdown.textContent = remaining;
+    }
+  }, 1000);
+
+  // After UNDO_SECONDS, actually send
+  _undoTimer = setTimeout(() => {
+    hideUndoBar();
+    doActualSubmit();
+  }, UNDO_SECONDS * 1000);
+}
+
+function hideUndoBar() {
+  document.getElementById('undoBar').classList.remove('active');
+  document.querySelector('.submit-bar').style.display = '';
+  if (_undoCountdownInterval) { clearInterval(_undoCountdownInterval); _undoCountdownInterval = null; }
+}
+
+function cancelSubmit() {
+  // User pressed CANCELAR — abort everything
+  if (_undoTimer) { clearTimeout(_undoTimer); _undoTimer = null; }
+  hideUndoBar();
+  _pendingSubmission = null;
+  isSending = false;
+  updateProgress();
+  showToast('Cancelado — nada se ha enviado', 2500, 'info');
+}
+
+async function doActualSubmit() {
+  if (!_pendingSubmission) { isSending = false; updateProgress(); return; }
+  const { data: submission, apiUrl } = _pendingSubmission;
+  _pendingSubmission = null;
 
   try {
-    // Try with CORS first (Apps Script supports this via redirect)
     const response = await fetch(apiUrl, {
       method: 'POST',
       body: JSON.stringify(submission),
@@ -1208,14 +1314,12 @@ async function submitForm() {
     });
 
     if (response.ok || response.type === 'opaque') {
-      // Verified success or opaque (no-cors fallback)
       markSubmittedToday();
       showSuccess(submission);
     } else {
       throw new Error(`Server error: ${response.status}`);
     }
   } catch (err) {
-    // If CORS fails, retry with no-cors (can't verify but better than nothing)
     try {
       await fetch(apiUrl, {
         method: 'POST',
@@ -1223,7 +1327,6 @@ async function submitForm() {
         body: JSON.stringify(submission),
         mode: 'no-cors'
       });
-      // Can't verify with no-cors, but likely sent
       markSubmittedToday();
       showSuccess(submission);
       showToast('Enviado (sin confirmación del servidor)', 3000, 'info');
