@@ -1481,23 +1481,40 @@ function collectRoundingChanges() {
       vals[b].total = vals[b].shop + vals[b].order;
     });
 
-    // Smart tray completion: move units from B3 shop to B2 shop to fill B2's tray
-    let unitsToMove = 0;
+    // Cascading tray completion: fill trays top-down to minimize waste
+    // Step 1: Move units from B2 shop → B1 to complete B1's tray
+    let b2ToB1 = 0;
+    if (vals.b1.total > 0 && vals.b2.shop > 0) {
+      const b1Remainder = vals.b1.total % lata;
+      if (b1Remainder > 0) {
+        const unitsNeeded = lata - b1Remainder;
+        b2ToB1 = Math.min(unitsNeeded, vals.b2.shop);
+        vals.b1.shop += b2ToB1;
+        vals.b1.total += b2ToB1;
+        vals.b2.shop -= b2ToB1;
+        vals.b2.total -= b2ToB1;
+      }
+    }
+    // Step 2: Move units from B3 shop → B2 to complete B2's tray
+    let b3ToB2 = 0;
     if (vals.b2.total > 0 && vals.b3.shop > 0) {
       const b2Remainder = vals.b2.total % lata;
       if (b2Remainder > 0) {
         const unitsNeeded = lata - b2Remainder;
-        unitsToMove = Math.min(unitsNeeded, vals.b3.shop);
-        vals.b2.shop += unitsToMove;
-        vals.b2.total += unitsToMove;
-        vals.b3.shop -= unitsToMove;
-        vals.b3.total -= unitsToMove;
+        b3ToB2 = Math.min(unitsNeeded, vals.b3.shop);
+        vals.b2.shop += b3ToB2;
+        vals.b2.total += b3ToB2;
+        vals.b3.shop -= b3ToB2;
+        vals.b3.total -= b3ToB2;
       }
     }
 
-    // If there was a transfer, add a transfer row for context
-    if (unitsToMove > 0) {
-      changes.push({ product: p.name, type: 'transfer', units: unitsToMove });
+    // If there were transfers, add context rows
+    if (b2ToB1 > 0) {
+      changes.push({ product: p.name, type: 'transfer', units: b2ToB1, from: '2do', to: '1er' });
+    }
+    if (b3ToB2 > 0) {
+      changes.push({ product: p.name, type: 'transfer', units: b3ToB2, from: '3er', to: '2do' });
     }
 
     // Now round each batch and report changes
@@ -1507,7 +1524,7 @@ function collectRoundingChanges() {
       const orderVal = vals[b].order;
       const originalShop = parseInt(vals[b].shopInput.value) || 0;
       const rounded = roundWithOrderGuarantee(total, orderVal, lata);
-      const wasTransferred = unitsToMove > 0 && (b === 'b2' || b === 'b3');
+      const wasTransferred = (b2ToB1 > 0 && b === 'b1') || (b2ToB1 > 0 && b === 'b2') || (b3ToB2 > 0 && (b === 'b2' || b === 'b3'));
       if ((total !== rounded && (total > 0 || orderVal > 0)) || (wasTransferred && originalShop !== Math.max(0, rounded - orderVal))) {
         const newShop = Math.max(0, rounded - orderVal);
         changes.push({ product: p.name, field: batchNames[b], original: originalShop, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
@@ -1530,7 +1547,7 @@ function showSyncPreview() {
       if (c.type === 'transfer') {
         html += `<div class="round-row" style="color:#1a5276;background:#eef6ff;border-radius:6px;padding:4px 8px;margin:6px 0 2px;">
           <span>${c.product}</span>
-          <span style="font-size:12px;">↰ mover <strong>${c.units}</strong> uds del 3er → 2do lote para completar bandeja</span>
+          <span style="font-size:12px;">↰ mover <strong>${c.units}</strong> uds del ${c.from} → ${c.to} lote para completar bandeja</span>
         </div>`;
       } else {
         html += `<div class="round-row">
@@ -1585,10 +1602,13 @@ async function confirmSync() {
     shopInput.value = rounded - orderVal;  // add rounding difference to shop
   });
 
-  // 2. Apply rounding to pastry — smart tray completion to minimize waste
-  // Before rounding each batch independently, move units from B3 to B2 to complete trays.
-  // Example: B2=3, B3=19, lata=12 → move 9 from B3 to B2 → B2=12, B3=10
-  // This gives 12+12=24 (2 extra) vs naive 12+24=36 (14 extra)
+  // 2. Apply rounding to pastry — cascading tray completion to minimize waste
+  // Fill trays top-down: B2→B1 first, then B3→B2, then round B3 normally.
+  // Example: B1=10, B2=15, B3=19, lata=12
+  //   Step 1: move 2 from B2→B1 → B1=12, B2=13
+  //   Step 2: move 11 from B3→B2 → B2=24, B3=8
+  //   Step 3: round B3=8→12
+  //   Result: 12+24+12=48 vs naive 12+24+24=60 (12 extra saved)
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
     const lata = p.roundTo;
@@ -1607,20 +1627,33 @@ async function confirmSync() {
       vals[b].total = vals[b].shop + vals[b].order;
     });
 
-    // Smart tray completion: move units from B3 shop to B2 shop to fill B2's tray
+    // Cascading tray completion: fill trays top-down
+    // Step 1: Move units from B2 shop → B1 to complete B1's tray
+    if (vals.b1.total > 0 && vals.b2.shop > 0) {
+      const b1Remainder = vals.b1.total % lata;
+      if (b1Remainder > 0) {
+        const unitsNeeded = lata - b1Remainder;
+        const move = Math.min(unitsNeeded, vals.b2.shop);
+        vals.b1.shop += move;
+        vals.b1.total += move;
+        vals.b2.shop -= move;
+        vals.b2.total -= move;
+      }
+    }
+    // Step 2: Move units from B3 shop → B2 to complete B2's tray
     if (vals.b2.total > 0 && vals.b3.shop > 0) {
       const b2Remainder = vals.b2.total % lata;
       if (b2Remainder > 0) {
         const unitsNeeded = lata - b2Remainder;
-        const unitsToMove = Math.min(unitsNeeded, vals.b3.shop);
-        vals.b2.shop += unitsToMove;
-        vals.b2.total += unitsToMove;
-        vals.b3.shop -= unitsToMove;
-        vals.b3.total -= unitsToMove;
+        const move = Math.min(unitsNeeded, vals.b3.shop);
+        vals.b2.shop += move;
+        vals.b2.total += move;
+        vals.b3.shop -= move;
+        vals.b3.total -= move;
       }
     }
 
-    // Now round each batch to lata multiples
+    // Now round each batch to lata multiples (B3 gets standard rounding)
     ['b1','b2','b3'].forEach(b => {
       if (!vals[b].shopInput) return;
       const rounded = roundWithOrderGuarantee(vals[b].total, vals[b].order, lata);
