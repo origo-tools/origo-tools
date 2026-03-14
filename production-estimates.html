@@ -600,7 +600,10 @@ async function loadInitBundle() {
       if (data.estimates.weather) weatherCache[dateStr] = data.estimates.weather;
     }
 
-    // 3. Apply inputs
+    // 2b. If AI generated newer estimates, clear stale shop edits
+    clearEditsIfNewAIRun(dateStr);
+
+    // 3. Apply inputs (only user-edited cells survive the AI-run check above)
     if (data.inputs && data.inputs.success) {
       const fetchKey = `${currentStore}-${dateStr}`;
       _inputsFetched.add(fetchKey);
@@ -645,10 +648,11 @@ async function loadEstimatesForCurrentDay() {
       console.warn('Forecast API error:', data.error);
     } else {
       forecastCache[cacheKey] = data;
-      // Cache weather data too
       if (data.weather) {
         weatherCache[dateStr] = data.weather;
       }
+      // If AI generated newer estimates, clear stale shop edits
+      clearEditsIfNewAIRun(dateStr);
     }
   } catch(e) {
     console.warn('Failed to fetch estimates:', e);
@@ -656,6 +660,37 @@ async function loadEstimatesForCurrentDay() {
 
   forecastLoading = false;
   renderAll();
+}
+
+/**
+ * Check if AI estimates are newer than what we had before.
+ * If yes, clear all saved shop edits for this store+date — the AI "owns"
+ * the shop column until Rafa explicitly edits a cell.
+ * This ensures each weekly AI run starts fresh.
+ */
+function clearEditsIfNewAIRun(dateStr) {
+  const storeDateKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[storeDateKey];
+  if (!cached || !cached.generatedAt) return;
+
+  const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
+  const lastKnown = localStorage.getItem(genKey);
+
+  if (lastKnown !== cached.generatedAt) {
+    // New AI run detected — clear all shop edits for this store+date
+    const shopKey = getShopStorageKey();
+    localStorage.removeItem(shopKey);
+
+    // Clear editedCells for shop keys (keep order edits)
+    for (const key of Object.keys(editedCells)) {
+      if (!key.includes('-order') && !/-(b[123]o)$/.test(key)) {
+        delete editedCells[key];
+      }
+    }
+
+    // Remember this AI run so we don't clear edits again until next run
+    localStorage.setItem(genKey, cached.generatedAt);
+  }
 }
 
 // Get cached estimates for current day, or return defaults
@@ -937,6 +972,10 @@ function saveInputState() {
     const val = input.value;
     if (!key || val === '') return;
 
+    // Only save cells that were explicitly edited by the user.
+    // This prevents saving AI-generated values (or failed 0s) as manual overrides.
+    if (!editedCells[key]) return;
+
     const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
     if (isOrder) {
       orderData[key] = val;
@@ -981,13 +1020,15 @@ const _inputsFetched = new Set();
 
 async function restoreInputState() {
   // 1. Restore from localStorage first (instant)
+  // IMPORTANT: Only restore cells the user explicitly edited — not AI values or stale 0s
   let localShop = {}, localOrders = {};
+  let savedEdited = {};
   try {
     const shopSaved = localStorage.getItem(getShopStorageKey());
     if (shopSaved) {
-      const { inputs, editedCells: savedEdited } = JSON.parse(shopSaved);
-      if (inputs) localShop = inputs;
-      if (savedEdited) Object.assign(editedCells, savedEdited);
+      const parsed = JSON.parse(shopSaved);
+      if (parsed.inputs) localShop = parsed.inputs;
+      if (parsed.editedCells) savedEdited = parsed.editedCells;
     }
   } catch(e) {}
   try {
@@ -998,8 +1039,15 @@ async function restoreInputState() {
     }
   } catch(e) {}
 
-  // Apply localStorage values immediately (so UI is responsive)
-  applyInputValues(localShop);
+  // Only restore shop inputs that were explicitly user-edited
+  const filteredShop = {};
+  for (const [key, val] of Object.entries(localShop)) {
+    if (savedEdited[key]) {
+      filteredShop[key] = val;
+      editedCells[key] = true;
+    }
+  }
+  applyInputValues(filteredShop);
   applyInputValues(localOrders);
 
   // 2. Then load from BigQuery — but only ONCE per store+day (not on every re-render)
@@ -1019,13 +1067,18 @@ async function restoreInputState() {
     const data = await resp.json();
 
     if (data.success) {
-      // Merge BigQuery data — apply all values from the server
+      // Only restore BQ shop inputs that are already marked as user-edited
+      // (If a new AI run cleared edits, these stale BQ values should NOT reappear)
       if (data.shop && Object.keys(data.shop).length > 0) {
-        applyInputValues(data.shop);
-        // Update localStorage with server data
-        const merged = { ...localShop, ...data.shop };
-        localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: merged, editedCells }));
+        const filteredBqShop = {};
+        for (const [key, val] of Object.entries(data.shop)) {
+          if (editedCells[key]) filteredBqShop[key] = val;
+        }
+        if (Object.keys(filteredBqShop).length > 0) {
+          applyInputValues(filteredBqShop);
+        }
       }
+      // Orders are always restored (they're weekly recurring, not tied to AI runs)
       if (data.orders && Object.keys(data.orders).length > 0) {
         applyInputValues(data.orders);
         const merged = { ...localOrders, ...data.orders };
@@ -1714,6 +1767,19 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
   }
 
   loadPdmSetting();
+
+  // Migration v4.1: clear stale localStorage shop data that was saved before
+  // the fix that only saves user-edited cells. Old saves included AI values and
+  // broken 0s, which would overwrite fresh AI suggestions on load.
+  if (!localStorage.getItem('origo-input-fix-v41')) {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('origo-shop-')) keysToRemove.push(k);
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('origo-input-fix-v41', '1');
+  }
 
   // 1. Try to load generatedDates from localStorage cache (instant)
   const hadCachedDates = loadGeneratedDatesFromCache();
