@@ -280,7 +280,7 @@ const STORES = {
 // ===== PRODUCT DEFINITIONS (updated to match Square / production sheet) =====
 const BREAD = [
   { name: 'ORIGO', key: 'origo', roundTo: null },
-  { name: 'ORIGO MOLDE', key: 'origoMolde', roundTo: null },
+  { name: 'MOTLLE', key: 'origoMolde', roundTo: 3, label: 'x3' },
   { spacer: true },
   { name: 'ORIGO INTEGRAL', key: 'origoIntegral', roundTo: null },
   { sep: true },
@@ -330,7 +330,7 @@ function roundWithOrderGuarantee(total, orderVal, multiple) {
 // ===== PRODUCT NAME → KEY MAPPING (for sobras data from API) =====
 const PRODUCT_NAME_TO_KEY = {
   // Bread
-  'ORIGO': 'origo', 'ORIGO MOLDE': 'origoMolde', 'ORIGO INTEGRAL': 'origoIntegral',
+  'ORIGO': 'origo', 'ORIGO MOLDE': 'origoMolde', 'MOTLLE': 'origoMolde', 'ORIGO INTEGRAL': 'origoIntegral',
   'ESPECIAL': 'especial', 'LLAVORS': 'llavors', 'SÈGOL INTEGRAL': 'segolIntegral',
   'COPENHAGUE': 'copenhague', 'BAGUETTE': 'baguette', 'FOCACCIA': 'focaccia',
   'ESPELTA PETITA': 'espeltaPetita',
