@@ -802,10 +802,10 @@ function getEstimateFactors() {
         contextReason = est.factors.contextReason;
         contextMultiplier = est.factors.context;
       }
-      if (est.factors.learning && est.factors.learning !== 1) {
+      if (est.factors.feedback && est.factors.feedback !== 1) {
         learningActive = true;
-        learningSum += est.factors.learning;
-        learningSamples = Math.max(learningSamples, est.factors.learningSamples || 0);
+        learningSum += est.factors.feedback;
+        learningSamples = Math.max(learningSamples, est.factors.feedbackWeeks || 0);
         learningCount++;
       }
     }
@@ -1208,12 +1208,11 @@ function getProductFactorTooltip(estKey) {
   if (f.trend !== 1) parts.push(`Tendencia: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
   if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'schoolHoliday') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
-  else if (f.contextType === 'yoyTransition') parts.push(`Interanual: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%`);
+  else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
   if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
   if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
   if (f.soldOut !== 1) parts.push(`Agotado: +${Math.round((f.soldOut - 1) * 100)}%`);
-  if (f.overproduction !== 1) parts.push(`Sobreproducción: ${Math.round((f.overproduction - 1) * 100)}%`);
-  if (f.learning !== 1) parts.push(`Aprendizaje: ${f.learning > 1 ? '+' : ''}${Math.round((f.learning - 1) * 100)}% (${f.learningSamples} sem.)`);
+  if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (parts.length === 0) parts.push('Sin ajustes especiales');
   return parts.join('\n');
 }
