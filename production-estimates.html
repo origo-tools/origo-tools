@@ -693,6 +693,47 @@ function clearEditsIfNewAIRun(dateStr) {
   }
 }
 
+// Get the shipping split for a Sant Joan bread product from cached estimates
+function getBreadShippingSplit(breadKey) {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[cacheKey];
+  if (!cached || !cached.estimates) return null;
+  // Map bread key → product sheet name
+  const KEY_TO_PRODUCT = {
+    origo: 'ORIGO', origoMolde: 'MOTLLE', origoIntegral: 'ORIGO INTEGRAL',
+    especial: 'ESPECIAL', llavors: 'LLAVORS', segolIntegral: 'SÈGOL INTEGRAL',
+    copenhague: 'COPENHAGUE', baguette: 'BAGUETTE', focaccia: 'FOCACCIA',
+    espeltaPetita: 'ESPELTA PETITA',
+  };
+  const productName = KEY_TO_PRODUCT[breadKey];
+  if (!productName) return null;
+  const est = cached.estimates.find(e => e.product === productName);
+  if (est && est.shippingSplit) return est.shippingSplit;
+  return null;
+}
+
+// Get the active Especial variety for the current target date from cached estimates
+function getActiveEspecialVariety() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[cacheKey];
+  if (!cached || !cached.estimates) return null;
+  const est = cached.estimates.find(e => e.product === 'ESPECIAL');
+  if (est && est.activeVariety) return est.activeVariety;
+  // Fallback: compute locally using same ISO week logic as backend
+  const d = new Date(targetDate);
+  const dayNum = d.getDay() || 7;
+  const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+  const isoWeek = Math.ceil((((tmp - yearStart) / 86400000) + 1) / 7);
+  const varieties = ['Marbrejat', 'Sèsam'];
+  return varieties[isoWeek % varieties.length];
+}
+
 // Get cached estimates for current day, or return defaults
 function getShopSuggestions() {
   const targetDate = getTargetDate(currentDay);
@@ -1211,8 +1252,11 @@ function getProductFactorTooltip(estKey) {
   else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
   if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
   if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
-  if (f.soldOut !== 1) parts.push(`Agotado: +${Math.round((f.soldOut - 1) * 100)}%`);
+  if (f.soldOut !== 1) parts.push(`Agotado: +${Math.round((f.soldOut - 1) * 100)}% total`);
+  if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
+  if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
+  if (est.activeVariety) parts.push(`🔄 Variedad: ${est.activeVariety}`);
   if (parts.length === 0) parts.push('Sin ajustes especiales');
   return parts.join('\n');
 }
@@ -1256,11 +1300,11 @@ function renderAlertsBar() {
       const sign = pct > 0 ? '+' : '';
       const cls = pct < 0 ? 'medium' : 'info';
       html += `<div class="event-badge ${cls}">🏖️ Vacaciones escolares: ${sign}${pct}% (${factors.contextReason})</div>`;
-    } else if (factors.contextType === 'yoyTransition') {
+    } else if (factors.contextType === 'yoyTransition' && factors.contextMultiplier !== 1) {
       const pct = Math.round((factors.contextMultiplier - 1) * 100);
       const sign = pct > 0 ? '+' : '';
       const cls = pct < -5 ? 'medium' : 'info';
-      html += `<div class="event-badge ${cls}">📊 Tendencia interanual: ${sign}${pct}%</div>`;
+      html += `<div class="event-badge ${cls}">📊 Tendencia estacional: ${sign}${pct}%</div>`;
     }
 
     // Weather badge
@@ -1273,7 +1317,7 @@ function renderAlertsBar() {
     if (factors.learningActive) {
       const pct = Math.round((factors.learningAvg - 1) * 100);
       const sign = pct > 0 ? '+' : '';
-      html += `<div class="event-badge info">🧠 Aprendizaje: ${sign}${pct}% (${factors.learningSamples} sem.)</div>`;
+      html += `<div class="event-badge info">🧠 Feedback: ${sign}${pct}% (${factors.learningSamples} sem.)</div>`;
     }
   }
 
@@ -1296,25 +1340,48 @@ function renderMain() {
   }
 
   // ===== BREAD =====
+  const isSantJoan = currentStore === 'santjoan';
   html += `<div class="section-header">🍞 Pan — A hornear el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px"></th>
-    <th class="shop-header">Shop</th>
-    <th class="orders-header">Pedidos</th>
+    <th class="shop-header">${isSantJoan ? 'Envío 1' : 'Shop'}</th>
+    <th class="orders-header">${isSantJoan ? 'Envío 2' : 'Pedidos'}</th>
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
   </tr>`;
+  if (isSantJoan) {
+    html += '<tr><td colspan="5" style="font-size:11px;color:#888;padding:2px 8px;border:none;">Envío 1: llega 07:30 · Envío 2: llega 14:30</td></tr>';
+  }
 
   BREAD.forEach(item => {
     if (item.sep) { html += `<tr><td colspan="5" class="group-sep"></td></tr>`; return; }
     if (item.spacer) { html += `<tr><td class="product-name"></td><td></td><td class="order-cell"></td><td class="sep"></td><td class="sobras-cell"></td></tr>`; return; }
-    const shopVal = shop.bread[item.key] ?? '';
-    const orderVal = orders.bread[item.key] ?? '';
+
+    let shopVal = shop.bread[item.key] ?? '';
+    let orderVal = orders.bread[item.key] ?? '';
+
+    // Sant Joan: use shipping split (envío 1 / envío 2) from backend
+    if (isSantJoan) {
+      const split = getBreadShippingSplit(item.key);
+      if (split) {
+        shopVal = split.envio1;
+        orderVal = split.envio2;
+      }
+    }
+
     const sobrasData = sobras.bread[item.key];
+
+    // Show active variety for Especial rotation
+    let displayName = item.name;
+    if (item.key === 'especial') {
+      const variety = getActiveEspecialVariety();
+      if (variety) displayName = `ESPECIAL <span style="font-weight:400;font-size:12px;color:#666">(${variety})</span>`;
+    }
+
     html += `<tr>
-      ${productNameCell(item.name, item.label, item.key)}
+      ${productNameCell(displayName, item.label, item.key)}
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
-      ${eCell(`bread-${item.key}-order`, orderVal, 'manual order-cell')}
+      ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell')}
       <td class="sep"></td>
       ${sobrasCell(sobrasData)}
     </tr>`;
@@ -1372,8 +1439,8 @@ function renderMain() {
         ${eCell(`pastry-${p.key}-b3s`, s.b3, 'ai')}
         ${eCell(`pastry-${p.key}-b3o`, o.b3, 'manual order-cell')}
         <td class="sep"></td>
-        <td style="color:#2d6a4f;font-weight:600">${totalShop || ''}</td>
-        <td class="total-col">${totalAll || ''}</td>
+        <td style="color:#2d6a4f;font-weight:600" data-total-shop="${p.key}">${totalShop || ''}</td>
+        <td class="total-col" data-total-all="${p.key}">${totalAll || ''}</td>
       </tr>`;
     });
   });
@@ -1420,10 +1487,29 @@ function renderMain() {
 
   document.getElementById('mainContent').innerHTML = html;
 
+  // Recalculate pastry row totals from current input values
+  function recalcPastryTotals() {
+    PASTRY_GROUPS.flat().forEach(p => {
+      if (!p.key) return;
+      let shopTotal = 0, allTotal = 0;
+      ['b1','b2','b3'].forEach(b => {
+        const sv = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`) || {}).value) || 0;
+        const ov = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`) || {}).value) || 0;
+        shopTotal += sv;
+        allTotal += sv + ov;
+      });
+      const shopCell = document.querySelector(`td[data-total-shop="${p.key}"]`);
+      const allCell = document.querySelector(`td[data-total-all="${p.key}"]`);
+      if (shopCell) shopCell.textContent = shopTotal || '';
+      if (allCell) allCell.textContent = allTotal || '';
+    });
+  }
+
   document.querySelectorAll('.editable input').forEach(input => {
-    // Strip non-numeric on input (allow digits only)
+    // Strip non-numeric on input (allow digits only) + recalculate totals live
     input.addEventListener('input', function() {
       this.value = this.value.replace(/[^\d]/g, '');
+      recalcPastryTotals();
     });
     // Validate, mark edited, and save on change (blur)
     input.addEventListener('change', function() {
@@ -1433,6 +1519,7 @@ function renderMain() {
       editedCells[this.dataset.key] = true;
       this.closest('td').className = 'editable edited';
       saveInputState();
+      recalcPastryTotals();
     });
   });
 
