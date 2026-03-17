@@ -932,18 +932,22 @@ async function fetchSobrasForCurrentDay() {
   const date = getLastWeekDate(currentDay);
   const cacheKey = `${currentStore}-${date}`;
 
-  if (sobrasCache[cacheKey]) return;
+  // Only skip if cache has real data (not an empty fallback from a failed fetch)
+  if (sobrasCache[cacheKey] && sobrasCache[cacheKey]._hasData) return;
 
   sobrasLoading = true;
   renderMain();
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
     const url = `${apiUrl}?action=getSobras&store=${currentStore}&date=${date}`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
     const data = await resp.json();
 
     // Transform API v2 response into internal format
-    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0 };
+    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0, _hasData: true };
     const products = data.products || {};
 
     for (const [name, pData] of Object.entries(products)) {
@@ -968,7 +972,7 @@ async function fetchSobrasForCurrentDay() {
     sobrasCache[cacheKey] = result;
   } catch(e) {
     console.warn('Failed to fetch sobras:', e);
-    sobrasCache[cacheKey] = { bread: {}, pastry: {}, focaccia: {}, comments: '', tgtg: 0 };
+    // Don't cache failures — allow retry on next render/switch
   }
 
   sobrasLoading = false;
@@ -1966,15 +1970,24 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
   // Run data loading and sobras fetch in parallel
   Promise.all([loadData(), fetchSobrasForCurrentDay()]).then(() => {
-    // If estimates still empty after first load, retry once after 3s
-    // (handles Apps Script cold start where first call times out)
     const targetDate = getTargetDate(currentDay);
     const dateStr = formatDateStr(targetDate);
     const cacheKey = `${currentStore}-${dateStr}`;
-    if (!forecastCache[cacheKey]) {
+    const sobrasDate = getLastWeekDate(currentDay);
+    const sobrasCacheKey = `${currentStore}-${sobrasDate}`;
+
+    // Auto-retry after 3s for anything that failed on first attempt
+    // (handles Apps Script cold start where first call times out)
+    const needsEstimateRetry = !forecastCache[cacheKey];
+    const needsSobrasRetry = !sobrasCache[sobrasCacheKey] || !sobrasCache[sobrasCacheKey]._hasData;
+
+    if (needsEstimateRetry || needsSobrasRetry) {
       setTimeout(async () => {
-        const retryOk = await loadInitBundle();
-        if (!retryOk) await loadEstimatesForCurrentDay();
+        if (needsEstimateRetry) {
+          const retryOk = await loadInitBundle();
+          if (!retryOk) await loadEstimatesForCurrentDay();
+        }
+        if (needsSobrasRetry) await fetchSobrasForCurrentDay();
       }, 3000);
     }
   });
