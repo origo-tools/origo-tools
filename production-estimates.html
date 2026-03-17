@@ -1024,19 +1024,22 @@ function saveInputState() {
   document.querySelectorAll('.editable input').forEach(input => {
     const key = input.dataset.key;
     const val = input.value;
-    if (!key || val === '') return;
+    if (!key) return;
 
     // Only save cells that were explicitly edited by the user.
     // This prevents saving AI-generated values (or failed 0s) as manual overrides.
     if (!editedCells[key]) return;
 
+    // Treat cleared fields as 0 so the old value in BigQuery gets overwritten
+    const saveVal = val === '' ? '0' : val;
+
     const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
     if (isOrder) {
-      orderData[key] = val;
-      changedInputs.push({ key, type: 'order', dateKey: dow, value: val });
+      orderData[key] = saveVal;
+      changedInputs.push({ key, type: 'order', dateKey: dow, value: saveVal });
     } else {
-      shopData[key] = val;
-      changedInputs.push({ key, type: 'shop', dateKey: dateStr, value: val });
+      shopData[key] = saveVal;
+      changedInputs.push({ key, type: 'shop', dateKey: dateStr, value: saveVal });
     }
   });
 
@@ -1995,12 +1998,4 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
         if (needsEstimateRetry) {
           const retryOk = await loadInitBundle();
           if (!retryOk) await loadEstimatesForCurrentDay();
-        }
-        if (needsSobrasRetry) await fetchSobrasForCurrentDay();
-      }, 3000);
-    }
-  });
-})();
-</script>
-</body>
-</html>
+        
