@@ -606,15 +606,14 @@ async function loadInitBundle() {
       if (data.estimates.weather) weatherCache[dateStr] = data.estimates.weather;
     }
 
-    // 2b. If AI generated newer estimates, clear stale shop edits
+    // 2b. If target date changed (new week), clear stale shop edits
     clearEditsIfNewAIRun(dateStr);
 
-    // 3. Apply inputs (only user-edited cells survive the AI-run check above)
+    // 3. Cache BQ inputs so restoreInputState (called inside renderAll) can use them
     if (data.inputs && data.inputs.success) {
       const fetchKey = `${currentStore}-${dateStr}`;
       _inputsFetched.add(fetchKey);
-      if (data.inputs.shop) applyInputValues(data.inputs.shop);
-      if (data.inputs.orders) applyInputValues(data.inputs.orders);
+      _cachedBqInputs[fetchKey] = data.inputs;
     }
 
     forecastLoading = false;
@@ -1074,6 +1073,7 @@ async function syncInputsToBigQuery(inputs) {
 
 // Track which store+day combos have already fetched from BigQuery this session
 const _inputsFetched = new Set();
+const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
 
 async function restoreInputState() {
   // 1. Restore from localStorage first (instant)
@@ -1107,44 +1107,42 @@ async function restoreInputState() {
   applyInputValues(filteredShop);
   applyInputValues(localOrders);
 
-  // 2. Then load from BigQuery — but only ONCE per store+day (not on every re-render)
+  // 2. Load from BigQuery — use pre-cached init bundle data if available,
+  //    otherwise fetch once per store+day (not on every re-render)
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
   const fetchKey = `${currentStore}-${dateStr}`;
-  if (_inputsFetched.has(fetchKey)) return;
-  _inputsFetched.add(fetchKey);
 
-  try {
-    const apiUrl = getForecastApiUrl();
-    if (!apiUrl) { _inputsFetched.delete(fetchKey); return; }
+  let bqData = null;
 
-    const dow = DAYS_TO_DOW[currentDay] || '1';
-
-    const resp = await fetch(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
-    const data = await resp.json();
-
-    if (data.success) {
-      // Only restore BQ shop inputs that are already marked as user-edited
-      // (If a new AI run cleared edits, these stale BQ values should NOT reappear)
-      if (data.shop && Object.keys(data.shop).length > 0) {
-        const filteredBqShop = {};
-        for (const [key, val] of Object.entries(data.shop)) {
-          if (editedCells[key]) filteredBqShop[key] = val;
-        }
-        if (Object.keys(filteredBqShop).length > 0) {
-          applyInputValues(filteredBqShop);
-        }
-      }
-      // Orders are always restored (they're weekly recurring, not tied to AI runs)
-      if (data.orders && Object.keys(data.orders).length > 0) {
-        applyInputValues(data.orders);
-        const merged = { ...localOrders, ...data.orders };
-        localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
-      }
+  if (_cachedBqInputs[fetchKey]) {
+    // Use inputs already fetched by init bundle — no extra network call
+    bqData = _cachedBqInputs[fetchKey];
+  } else if (!_inputsFetched.has(fetchKey)) {
+    _inputsFetched.add(fetchKey);
+    try {
+      const apiUrl = getForecastApiUrl();
+      if (!apiUrl) { _inputsFetched.delete(fetchKey); return; }
+      const dow = DAYS_TO_DOW[currentDay] || '1';
+      const resp = await fetch(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
+      bqData = await resp.json();
+    } catch(e) {
+      _inputsFetched.delete(fetchKey);
+      console.warn('BigQuery load failed (using localStorage):', e.message);
     }
-  } catch(e) {
-    _inputsFetched.delete(fetchKey); // Allow retry on error
-    console.warn('BigQuery load failed (using localStorage):', e.message);
+  }
+
+  if (bqData && bqData.success) {
+    // Restore shop inputs — always apply (user edits should persist)
+    if (bqData.shop && Object.keys(bqData.shop).length > 0) {
+      applyInputValues(bqData.shop);
+    }
+    // Orders are always restored (weekly recurring, not tied to AI runs)
+    if (bqData.orders && Object.keys(bqData.orders).length > 0) {
+      applyInputValues(bqData.orders);
+      const merged = { ...localOrders, ...bqData.orders };
+      localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
+    }
   }
 }
 
@@ -1158,6 +1156,10 @@ function applyInputValues(inputMap) {
 
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
+      // Skip restoring 0 for shop cells — 0 means user cleared it, so show AI value
+      const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+      if (!isOrder && (val === 0 || val === '0')) continue;
+
       input.value = val;
       input.closest('td').className = 'editable edited';
       editedCells[key] = true;
@@ -1998,4 +2000,12 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
         if (needsEstimateRetry) {
           const retryOk = await loadInitBundle();
           if (!retryOk) await loadEstimatesForCurrentDay();
-        
+        }
+        if (needsSobrasRetry) await fetchSobrasForCurrentDay();
+      }, 3000);
+    }
+  });
+})();
+</script>
+</body>
+</html>
