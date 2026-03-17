@@ -558,6 +558,9 @@ async function loadInitBundle() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return false;
 
+  forecastLoading = true;
+  renderMain();
+
   const storeName = STORE_API_NAMES[currentStore];
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
@@ -567,7 +570,10 @@ async function loadInitBundle() {
 
   try {
     const url = `${apiUrl}?action=init&store=${encodeURIComponent(storeName)}&date=${dateStr}&dayOfWeek=${dow}${pdmParam}`;
-    const data = await fetch(url).then(r => r.json());
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
+    const data = await fetch(url, { signal: controller.signal }).then(r => r.json());
+    clearTimeout(timeout);
 
     // 1. Apply generatedDates
     if (data.generatedDates && data.generatedDates.dates) {
@@ -611,10 +617,13 @@ async function loadInitBundle() {
       if (data.inputs.orders) applyInputValues(data.inputs.orders);
     }
 
+    forecastLoading = false;
     renderAll();
     return true;
   } catch(e) {
     console.warn('Init bundle failed, falling back to separate calls:', e);
+    forecastLoading = false;
+    renderMain();
     return false;
   }
 }
@@ -973,7 +982,7 @@ function getSobras() {
 }
 
 // ============ STATE ============
-let currentStore = 'santpau';
+let currentStore = localStorage.getItem('origo-current-store') || 'santpau';
 let currentDay = 'Miércoles';
 let editedCells = {};
 
@@ -1346,21 +1355,23 @@ function renderMain() {
 
   // ===== BREAD =====
   const isSantJoan = currentStore === 'santjoan';
+  const breadColCount = 6; // name, sobras, sep, shop/envío1, orders/envío2, total
   html += `<div class="section-header">🍞 Pan — A hornear el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px"></th>
+    <th class="sobras-header">Sem. pasada</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="shop-header">${isSantJoan ? 'Envío 1' : 'Shop'}</th>
     <th class="orders-header">${isSantJoan ? 'Envío 2' : 'Pedidos'}</th>
-    <th class="sep" style="background:#f5f0eb;border:none"></th>
-    <th class="sobras-header">Sem. pasada</th>
+    <th>Total</th>
   </tr>`;
   if (isSantJoan) {
-    html += '<tr><td colspan="5" style="font-size:11px;color:#888;padding:2px 8px;border:none;">Envío 1: llega 07:30 · Envío 2: llega 14:30</td></tr>';
+    html += `<tr><td colspan="${breadColCount}" style="font-size:11px;color:#888;padding:2px 8px;border:none;">Envío 1: llega 07:30 · Envío 2: llega 14:30</td></tr>`;
   }
 
   BREAD.forEach(item => {
-    if (item.sep) { html += `<tr><td colspan="5" class="group-sep"></td></tr>`; return; }
-    if (item.spacer) { html += `<tr><td class="product-name"></td><td></td><td class="order-cell"></td><td class="sep"></td><td class="sobras-cell"></td></tr>`; return; }
+    if (item.sep) { html += `<tr><td colspan="${breadColCount}" class="group-sep"></td></tr>`; return; }
+    if (item.spacer) { html += `<tr><td class="product-name"></td><td class="sobras-cell"></td><td class="sep"></td><td></td><td class="order-cell"></td><td></td></tr>`; return; }
 
     let shopVal = shop.bread[item.key] ?? '';
     let orderVal = orders.bread[item.key] ?? '';
@@ -1375,6 +1386,9 @@ function renderMain() {
     }
 
     const sobrasData = sobras.bread[item.key];
+    const shopNum = parseInt(shopVal) || 0;
+    const orderNum = parseInt(orderVal) || 0;
+    const total = shopNum + orderNum;
 
     // Show active variety for Especial rotation
     let displayName = item.name;
@@ -1385,10 +1399,11 @@ function renderMain() {
 
     html += `<tr>
       ${productNameCell(displayName, item.label, item.key)}
+      ${sobrasCell(sobrasData)}
+      <td class="sep"></td>
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
       ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell')}
-      <td class="sep"></td>
-      ${sobrasCell(sobrasData)}
+      <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
     </tr>`;
   });
   html += `</table>`;
@@ -1492,6 +1507,17 @@ function renderMain() {
 
   document.getElementById('mainContent').innerHTML = html;
 
+  // Recalculate bread row totals from current input values
+  function recalcBreadTotals() {
+    BREAD.forEach(item => {
+      if (!item.key) return;
+      const sv = parseInt((document.querySelector(`input[data-key="bread-${item.key}-shop"]`) || {}).value) || 0;
+      const ov = parseInt((document.querySelector(`input[data-key="bread-${item.key}-order"]`) || {}).value) || 0;
+      const totalCell = document.querySelector(`td[data-bread-total="${item.key}"]`);
+      if (totalCell) totalCell.textContent = (sv + ov) || '';
+    });
+  }
+
   // Recalculate pastry row totals from current input values
   function recalcPastryTotals() {
     PASTRY_GROUPS.flat().forEach(p => {
@@ -1514,6 +1540,7 @@ function renderMain() {
     // Strip non-numeric on input (allow digits only) + recalculate totals live
     input.addEventListener('input', function() {
       this.value = this.value.replace(/[^\d]/g, '');
+      recalcBreadTotals();
       recalcPastryTotals();
     });
     // Validate, mark edited, and save on change (blur)
@@ -1524,6 +1551,7 @@ function renderMain() {
       editedCells[this.dataset.key] = true;
       this.closest('td').className = 'editable edited';
       saveInputState();
+      recalcBreadTotals();
       recalcPastryTotals();
     });
   });
@@ -1874,7 +1902,7 @@ async function confirmSync() {
 }
 
 function switchDay(day) { currentDay = day; editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
-function switchStore(store) { currentStore = store; editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
+function switchStore(store) { currentStore = store; localStorage.setItem('origo-current-store', store); editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
 function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
 // Init
@@ -1891,6 +1919,9 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
   }
 
   loadPdmSetting();
+
+  // Restore store selector to match persisted value
+  document.getElementById('storeSelect').value = currentStore;
 
   // Migration v4.1: clear stale localStorage shop data that was saved before
   // the fix that only saves user-edited cells. Old saves included AI values and
@@ -1918,19 +1949,35 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
   }
   currentDay = defaultDay;
 
-  // 3. Render immediately with cached data
+  // 3. Render immediately with cached data (instant — no waiting for API)
   renderAll();
 
-  // 4. Use combined init endpoint (1 API call instead of 3)
-  // Sobras comes from the production API (different server), so it runs in parallel
-  const initOk = await loadInitBundle();
-  fetchSobrasForCurrentDay();
+  // 4. Fire all API calls in parallel (non-blocking)
+  // Sobras comes from a different server, so it runs concurrently
+  async function loadData() {
+    const initOk = await loadInitBundle();
 
-  // 5. If init bundle failed (e.g. old backend version), fall back to separate calls
-  if (!initOk) {
-    if (!hadCachedDates) await loadGeneratedDates();
-    loadEstimatesForCurrentDay();
+    // If init bundle failed (e.g. old backend version), fall back to separate calls
+    if (!initOk) {
+      if (!hadCachedDates) await loadGeneratedDates();
+      await loadEstimatesForCurrentDay();
+    }
   }
+
+  // Run data loading and sobras fetch in parallel
+  Promise.all([loadData(), fetchSobrasForCurrentDay()]).then(() => {
+    // If estimates still empty after first load, retry once after 3s
+    // (handles Apps Script cold start where first call times out)
+    const targetDate = getTargetDate(currentDay);
+    const dateStr = formatDateStr(targetDate);
+    const cacheKey = `${currentStore}-${dateStr}`;
+    if (!forecastCache[cacheKey]) {
+      setTimeout(async () => {
+        const retryOk = await loadInitBundle();
+        if (!retryOk) await loadEstimatesForCurrentDay();
+      }, 3000);
+    }
+  });
 })();
 </script>
 </body>
