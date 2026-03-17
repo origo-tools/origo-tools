@@ -1160,6 +1160,9 @@ function applyInputValues(inputMap) {
       editedCells[key] = true;
     }
   }
+  // Recalculate totals after input values change
+  recalcBreadTotals();
+  recalcPastryTotals();
 }
 
 // ============ HELPERS ============
@@ -1343,6 +1346,35 @@ function renderAlertsBar() {
   document.getElementById('alertsBar').innerHTML = html;
 }
 
+// Recalculate bread row totals from current input values (global for use in applyInputValues)
+function recalcBreadTotals() {
+  BREAD.forEach(item => {
+    if (!item.key) return;
+    const sv = parseInt((document.querySelector(`input[data-key="bread-${item.key}-shop"]`) || {}).value) || 0;
+    const ov = parseInt((document.querySelector(`input[data-key="bread-${item.key}-order"]`) || {}).value) || 0;
+    const totalCell = document.querySelector(`td[data-bread-total="${item.key}"]`);
+    if (totalCell) totalCell.textContent = (sv + ov) || '';
+  });
+}
+
+// Recalculate pastry row totals from current input values (global for use in applyInputValues)
+function recalcPastryTotals() {
+  PASTRY_GROUPS.flat().forEach(p => {
+    if (!p.key) return;
+    let shopTotal = 0, allTotal = 0;
+    ['b1','b2','b3'].forEach(b => {
+      const sv = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`) || {}).value) || 0;
+      const ov = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`) || {}).value) || 0;
+      shopTotal += sv;
+      allTotal += sv + ov;
+    });
+    const shopCell = document.querySelector(`td[data-total-shop="${p.key}"]`);
+    const allCell = document.querySelector(`td[data-total-all="${p.key}"]`);
+    if (shopCell) shopCell.textContent = shopTotal || '';
+    if (allCell) allCell.textContent = allTotal || '';
+  });
+}
+
 function renderMain() {
   const store = STORES[currentStore];
   const shop = getShopSuggestions();
@@ -1359,7 +1391,7 @@ function renderMain() {
 
   // ===== BREAD =====
   const isSantJoan = currentStore === 'santjoan';
-  const breadColCount = 6; // name, sobras, sep, shop/envío1, orders/envío2, total
+  const breadColCount = 7; // name, sobras, sep, shop/envío1, orders/envío2, sep, total
   html += `<div class="section-header">🍞 Pan — A hornear el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px"></th>
@@ -1367,6 +1399,7 @@ function renderMain() {
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="shop-header">${isSantJoan ? 'Envío 1' : 'Shop'}</th>
     <th class="orders-header">${isSantJoan ? 'Envío 2' : 'Pedidos'}</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th>Total</th>
   </tr>`;
   if (isSantJoan) {
@@ -1375,7 +1408,7 @@ function renderMain() {
 
   BREAD.forEach(item => {
     if (item.sep) { html += `<tr><td colspan="${breadColCount}" class="group-sep"></td></tr>`; return; }
-    if (item.spacer) { html += `<tr><td class="product-name"></td><td class="sobras-cell"></td><td class="sep"></td><td></td><td class="order-cell"></td><td></td></tr>`; return; }
+    if (item.spacer) { html += `<tr><td class="product-name"></td><td class="sobras-cell"></td><td class="sep"></td><td></td><td class="order-cell"></td><td class="sep"></td><td></td></tr>`; return; }
 
     let shopVal = shop.bread[item.key] ?? '';
     let orderVal = orders.bread[item.key] ?? '';
@@ -1407,6 +1440,7 @@ function renderMain() {
       <td class="sep"></td>
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
       ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell')}
+      <td class="sep"></td>
       <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
     </tr>`;
   });
@@ -1511,34 +1545,9 @@ function renderMain() {
 
   document.getElementById('mainContent').innerHTML = html;
 
-  // Recalculate bread row totals from current input values
-  function recalcBreadTotals() {
-    BREAD.forEach(item => {
-      if (!item.key) return;
-      const sv = parseInt((document.querySelector(`input[data-key="bread-${item.key}-shop"]`) || {}).value) || 0;
-      const ov = parseInt((document.querySelector(`input[data-key="bread-${item.key}-order"]`) || {}).value) || 0;
-      const totalCell = document.querySelector(`td[data-bread-total="${item.key}"]`);
-      if (totalCell) totalCell.textContent = (sv + ov) || '';
-    });
-  }
-
-  // Recalculate pastry row totals from current input values
-  function recalcPastryTotals() {
-    PASTRY_GROUPS.flat().forEach(p => {
-      if (!p.key) return;
-      let shopTotal = 0, allTotal = 0;
-      ['b1','b2','b3'].forEach(b => {
-        const sv = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`) || {}).value) || 0;
-        const ov = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`) || {}).value) || 0;
-        shopTotal += sv;
-        allTotal += sv + ov;
-      });
-      const shopCell = document.querySelector(`td[data-total-shop="${p.key}"]`);
-      const allCell = document.querySelector(`td[data-total-all="${p.key}"]`);
-      if (shopCell) shopCell.textContent = shopTotal || '';
-      if (allCell) allCell.textContent = allTotal || '';
-    });
-  }
+  // Recalculate all totals after rendering
+  recalcBreadTotals();
+  recalcPastryTotals();
 
   document.querySelectorAll('.editable input').forEach(input => {
     // Strip non-numeric on input (allow digits only) + recalculate totals live
