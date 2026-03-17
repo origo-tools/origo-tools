@@ -1135,6 +1135,11 @@ async function restoreInputState() {
 function applyInputValues(inputMap) {
   if (!inputMap) return;
   for (const [key, val] of Object.entries(inputMap)) {
+    // Sant Joan: bread shop/order inputs are algorithm-driven envío 1/2 values,
+    // so don't overwrite them with stale manual data
+    if (currentStore === 'santjoan' && key.startsWith('bread-') &&
+        (key.endsWith('-order') || key.endsWith('-shop'))) continue;
+
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
       input.value = val;
