@@ -166,6 +166,9 @@
   .numpad .num { background: #f5f0eb; color: #2c2c2c; }
   .numpad .num:active { background: #e0d8d0; }
   .numpad .del { background: #fde8e8; color: #c0392b; font-size: 16px; }
+  .numpad .half { background: #e8f0e8; color: #1a3a2a; font-size: 20px; font-weight: 800; }
+  .numpad .half:active { background: #d0e0d0; }
+  .numpad .half.active { background: #1a3a2a; color: white; }
   .num-display { text-align: center; font-size: 44px; font-weight: 800; padding: 12px; color: #1a3a2a; min-height: 70px; }
   .modal-actions { display: flex; gap: 8px; margin-top: 14px; }
   .modal-actions button {
@@ -348,7 +351,7 @@
   <div class="modal">
     <h3 id="num-modal-title">Sobras</h3>
     <div class="num-display" id="num-display">0</div>
-    <div class="numpad">
+    <div class="numpad" id="numpadGrid">
       <button class="num" onclick="numInput(1)">1</button>
       <button class="num" onclick="numInput(2)">2</button>
       <button class="num" onclick="numInput(3)">3</button>
@@ -360,8 +363,10 @@
       <button class="num" onclick="numInput(9)">9</button>
       <button class="del" onclick="numDelete()">⌫</button>
       <button class="num" onclick="numInput(0)">0</button>
-      <button class="num" style="background:#1a3a2a;color:white;font-size:18px;" onclick="numConfirm()">✓</button>
+      <button class="half" id="numHalfBtn" style="display:none;" onclick="numToggleHalf()">½</button>
+      <button class="num" id="numConfirmInGrid" style="background:#1a3a2a;color:white;font-size:18px;" onclick="numConfirm()">✓</button>
     </div>
+    <button id="numConfirmBar" style="display:none;width:100%;max-width:260px;margin:10px auto 0;padding:14px;border-radius:12px;font-size:17px;font-weight:700;border:none;cursor:pointer;background:#1a3a2a;color:white;" onclick="numConfirm()">Confirmar ✓</button>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeNumModal()">Cancelar</button>
     </div>
@@ -502,6 +507,8 @@ let currentStore = null;
 //   For PASTRY (hasBatches): { batchSoldOuts: [{ batch: 2, time: '11:30' }], sobras: null | N }
 let productData = {};
 let numValue = '';
+let numHasHalf = false;
+let numIsBread = false;
 let numModalCallback = null;
 let timeModalCallback = null;
 let timeModalProductId = null; // Track which product opened the time modal
@@ -784,14 +791,15 @@ function renderCard(product) {
     const isRanOut = data.type === 'ran_out';
     const cardClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'complete' : 'leftover-positive');
     const tagClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'perfect' : 'leftover');
-    const tagText = isRanOut ? `⏱ ${data.time}` : (data.value === 0 ? '✓ 0 sobras' : `${data.value} sobras`);
+    const displayVal = (data.value % 1 === 0.5) ? `${Math.floor(data.value)}½` : data.value;
+    const tagText = isRanOut ? `⏱ ${data.time}` : (data.value === 0 ? '✓ 0 sobras' : `${displayVal} sobras`);
 
     return `
       <div class="product-card ${cardClass}" data-product-id="${product.id}">
         <div class="card-top">
           <div class="product-name">${product.name}</div>
           <div class="product-result">
-            <span class="result-tag ${tagClass}" onclick="${isRanOut ? `editTimeBread('${product.id}', '${escapedName}')` : `openSobras('${product.id}', '${escapedName}', false)`}">${tagText}</span>
+            <span class="result-tag ${tagClass}" onclick="${isRanOut ? `editTimeBread('${product.id}', '${escapedName}')` : `openSobras('${product.id}', '${escapedName}', false, true)`}">${tagText}</span>
             <button class="btn-undo" onclick="undoProduct('${product.id}')">✕</button>
           </div>
         </div>
@@ -803,7 +811,7 @@ function renderCard(product) {
       <div class="card-top">
         <div class="product-name">${product.name}</div>
         <div class="product-actions">
-          <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false)">Sobras</button>
+          <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>
           <button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>
         </div>
       </div>
@@ -864,10 +872,27 @@ function renderBatchCard(product, data, escapedName) {
 }
 
 // ─── SOBRAS (number modal) — simple products ───────────────
-function openSobras(id, name, isBatch) {
+function openSobras(id, name, isBatch, isBread) {
   numValue = '';
+  numHasHalf = false;
+  numIsBread = !!isBread;
   document.getElementById('num-display').textContent = '0';
   document.getElementById('num-modal-title').textContent = `Sobras — ${name}`;
+  const halfBtn = document.getElementById('numHalfBtn');
+  const confirmInGrid = document.getElementById('numConfirmInGrid');
+  const confirmBar = document.getElementById('numConfirmBar');
+  halfBtn.classList.remove('active');
+  if (numIsBread) {
+    // Bread: show ½ in grid, hide ✓ from grid, show confirm bar below
+    halfBtn.style.display = '';
+    confirmInGrid.style.display = 'none';
+    confirmBar.style.display = 'block';
+  } else {
+    // Pastry: hide ½, show ✓ in grid, hide confirm bar
+    halfBtn.style.display = 'none';
+    confirmInGrid.style.display = '';
+    confirmBar.style.display = 'none';
+  }
   document.getElementById('numModal').classList.add('active');
   numModalCallback = (val) => {
     if (isBatch) {
@@ -883,20 +908,36 @@ function openSobras(id, name, isBatch) {
 }
 
 function openSobrasBatch(id, name) {
-  openSobras(id, name, true);
+  openSobras(id, name, true, false);
 }
 
+function numUpdateDisplay() {
+  let display = numValue || '0';
+  if (numHasHalf) display += '½';
+  document.getElementById('num-display').textContent = display;
+}
 function numInput(n) {
   if (numValue.length >= 3) return;
   numValue += n.toString();
-  document.getElementById('num-display').textContent = numValue || '0';
+  numUpdateDisplay();
 }
 function numDelete() {
-  numValue = numValue.slice(0, -1);
-  document.getElementById('num-display').textContent = numValue || '0';
+  if (numHasHalf) {
+    numHasHalf = false;
+    document.getElementById('numHalfBtn').classList.remove('active');
+  } else {
+    numValue = numValue.slice(0, -1);
+  }
+  numUpdateDisplay();
+}
+function numToggleHalf() {
+  numHasHalf = !numHasHalf;
+  document.getElementById('numHalfBtn').classList.toggle('active', numHasHalf);
+  numUpdateDisplay();
 }
 function numConfirm() {
-  const val = parseInt(numValue) || 0;
+  let val = parseInt(numValue) || 0;
+  if (numHasHalf) val += 0.5;
   if (numModalCallback) numModalCallback(val);
   closeNumModal();
 }
