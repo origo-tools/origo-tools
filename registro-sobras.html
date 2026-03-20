@@ -264,12 +264,30 @@
   .success-screen {
     display: none; position: fixed; inset: 0; background: #1a3a2a;
     z-index: 300; flex-direction: column; align-items: center;
-    justify-content: center; color: white;
+    justify-content: space-between; color: white;
+    padding: 60px 32px 40px;
+    padding-top: max(60px, calc(env(safe-area-inset-top) + 40px));
+    padding-bottom: max(40px, env(safe-area-inset-bottom));
+    cursor: pointer;
   }
   .success-screen.active { display: flex; }
-  .success-screen .checkmark { font-size: 72px; margin-bottom: 16px; }
-  .success-screen h2 { font-size: 22px; font-weight: 700; }
-  .success-screen p { font-size: 15px; opacity: 0.7; margin-top: 6px; }
+  .success-top { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .success-screen .checkmark { font-size: 64px; margin-bottom: 8px; }
+  .success-screen h2 { font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+  .success-screen .success-store { font-size: 14px; opacity: 0.6; font-weight: 500; }
+  .success-divider { width: 40px; height: 2px; background: rgba(255,255,255,0.25); border-radius: 2px; }
+  .success-stat {
+    font-size: 17px; font-weight: 700; text-align: center;
+    background: rgba(255,255,255,0.12); border-radius: 20px;
+    padding: 10px 22px; letter-spacing: 0.2px;
+  }
+  .success-quote-block { text-align: center; max-width: 300px; }
+  .success-quote {
+    font-size: 16px; font-style: italic; line-height: 1.6;
+    opacity: 0.9; margin-bottom: 8px; display: block;
+  }
+  .success-author { font-size: 13px; opacity: 0.5; font-weight: 600; letter-spacing: 0.5px; }
+  .success-hint { font-size: 12px; opacity: 0.35; letter-spacing: 0.5px; text-transform: uppercase; }
 
   /* Undo bar (cancel window after pressing Enviar) */
   .undo-bar {
@@ -459,10 +477,20 @@
 </div>
 
 <!-- Success screen -->
-<div class="success-screen" id="success">
-  <div class="checkmark">✓</div>
-  <h2>¡Enviado!</h2>
-  <p id="success-msg">Registro guardado correctamente</p>
+<div class="success-screen" id="success" onclick="dismissSuccess()">
+  <div class="success-top">
+    <div class="checkmark">✓</div>
+    <h2>¡Bien hecho!</h2>
+    <div class="success-store" id="success-msg"></div>
+  </div>
+  <div class="success-divider"></div>
+  <div class="success-stat" id="success-stat"></div>
+  <div class="success-divider"></div>
+  <div class="success-quote-block">
+    <span class="success-quote" id="success-quote"></span>
+    <span class="success-author" id="success-author"></span>
+  </div>
+  <div class="success-hint">Toca para continuar</div>
 </div>
 
 <!-- Error toast -->
@@ -1447,22 +1475,113 @@ async function doActualSubmit() {
   updateProgress();
 }
 
+// ─── QUOTES ────────────────────────────────────────────────
+const QUOTES = [
+  { text: "Ningún acto de bondad, por pequeño que sea, se desperdicia jamás.", author: "— Esopo" },
+  { text: "No hay camino hacia la felicidad. La felicidad es el camino.", author: "— Thich Nhat Hanh" },
+  { text: "El secreto de la felicidad no se encuentra en buscar más, sino en desarrollar la capacidad de disfrutar con menos.", author: "— Anónimo" },
+  { text: "El éxito generalmente llega a quienes están demasiado ocupados para buscarlo.", author: "— Anónimo" },
+  { text: "Detrás de cada experiencia verdaderamente extraordinaria hay alguien que persigue incansablemente la perfección.", author: "— Garry Tan" },
+  { text: "La visión con acción puede cambiar el mundo.", author: "— Nelson Mandela" },
+  { text: "Un mar en calma nunca hizo a un marinero hábil.", author: "— Proverbio" },
+  { text: "Si estás pasando por el infierno, sigue adelante.", author: "— Winston Churchill" },
+  { text: "El mundo contiene lo suficiente para las necesidades de todos, pero no lo suficiente para la codicia de todos.", author: "— Gandhi" },
+  { text: "Cuando el último árbol haya sido talado, el último río envenenado, el último pez pescado, descubriréis que el dinero no se come.", author: "— Alanis Obomsawin" },
+  { text: "Ser uno mismo en un mundo que constantemente intenta hacerte otra cosa es el mayor logro.", author: "— Ralph Waldo Emerson" },
+  { text: "La autodisciplina es como un músculo; cuanto más lo ejercitas, más fuerte se vuelve.", author: "— Daniel Goldstein" },
+  { text: "El odio no puede coexistir con la bondad amorosa.", author: "— Buda" },
+  { text: "Los detalles no son los detalles. Los detalles son el diseño.", author: "— Charles Eames" },
+  { text: "La calidad nunca es un accidente; siempre es el resultado de un esfuerzo inteligente.", author: "— John Ruskin" },
+  { text: "Hay dos formas de vivir: una es como si nada fuera un milagro; la otra es como si todo lo fuera.", author: "— Albert Einstein" },
+  { text: "El pan compartido sabe mejor.", author: "— Proverbio popular" },
+  { text: "Primero el pan.", author: "— Bertolt Brecht" },
+  { text: "Dime qué comes y te diré quién eres.", author: "— Brillat-Savarin" },
+  { text: "Sé la razón por la que alguien sonríe hoy.", author: "— Anónimo" },
+  { text: "La alegría más grande es hacer feliz a otra persona.", author: "— Booker T. Washington" },
+  { text: "Actúa con bondad, pero no esperes gratitud.", author: "— Confucio" },
+  { text: "No heredamos la tierra de nuestros padres; la tomamos prestada de nuestros hijos.", author: "— Proverbio indígena" },
+];
+
+function getDailyQuote() {
+  const now = new Date();
+  const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
+  return QUOTES[dayOfYear % QUOTES.length];
+}
+
+function getSuccessStat(submission) {
+  const products = submission.products || {};
+
+  // Count sell-outs (bread: type='ran_out'; pastry: batchSoldOuts recorded)
+  let soldOutCount = 0;
+  let totalBreadSobras = 0;
+  let totalPastrySobras = 0;
+
+  for (const [name, data] of Object.entries(products)) {
+    if (data.category === 'bread') {
+      if (data.type === 'ran_out') {
+        soldOutCount++;
+      } else if (typeof data.value === 'number') {
+        totalBreadSobras += data.value;
+      }
+    } else {
+      // Pastry
+      if (data.batchSoldOuts && data.batchSoldOuts.length > 0) {
+        soldOutCount++;
+      }
+      if (typeof data.sobras === 'number') {
+        totalPastrySobras += data.sobras;
+      }
+    }
+  }
+
+  // Priority 1: everything sold out
+  const allSoldOut = Object.values(products).every(d =>
+    d.type === 'ran_out' || (d.batchSoldOuts && d.batchSoldOuts.length > 0)
+  );
+  if (allSoldOut && Object.keys(products).length > 0) {
+    return "¡Todo vendido hoy! 🔥";
+  }
+
+  // Priority 2: at least one sell-out
+  if (soldOutCount > 0) {
+    return soldOutCount === 1
+      ? "1 producto agotado hoy 🔥"
+      : `${soldOutCount} productos agotados hoy 🔥`;
+  }
+
+  // Priority 3: poca merma (bread < 6, pastry < 20 — only recorded products)
+  const hasAnySobras = totalBreadSobras > 0 || totalPastrySobras > 0;
+  if (hasAnySobras && totalBreadSobras < 6 && totalPastrySobras < 20) {
+    return "Poca merma hoy 👍";
+  }
+
+  // Fallback
+  const count = Object.keys(products).length;
+  return count === 1 ? "1 producto registrado" : `${count} productos registrados`;
+}
+
 function showSuccess(submission) {
   const now = new Date();
-  document.getElementById('success-msg').textContent = `${STORES[currentStore].name} — ${now.getDate()} ${months[now.getMonth()]}`;
+  const storeName = STORES[currentStore] ? STORES[currentStore].name : '';
+  document.getElementById('success-msg').textContent =
+    `${storeName} — ${now.getDate()} ${months[now.getMonth()]}`;
+  document.getElementById('success-stat').textContent = getSuccessStat(submission);
+  const q = getDailyQuote();
+  document.getElementById('success-quote').textContent = `"${q.text}"`;
+  document.getElementById('success-author').textContent = q.author;
   document.getElementById('success').classList.add('active');
-  // Keep isSending true during animation to block double taps
-  isSending = true;
-  setTimeout(() => {
-    document.getElementById('success').classList.remove('active');
-    productData = {};
-    document.getElementById('tgtg').value = '0';
-    document.getElementById('comments').value = '';
-    clearDailyData();
-    isSending = false;
-    renderProducts();
-    showSubmittedBanner();
-  }, 2200);
+  isSending = true;  // block double taps
+}
+
+function dismissSuccess() {
+  document.getElementById('success').classList.remove('active');
+  productData = {};
+  document.getElementById('tgtg').value = '0';
+  document.getElementById('comments').value = '';
+  clearDailyData();
+  isSending = false;
+  renderProducts();
+  showSubmittedBanner();
 }
 
 // Show a subtle banner if today's data was already submitted
