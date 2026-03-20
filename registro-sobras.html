@@ -204,14 +204,27 @@
     font-size: 12px; font-weight: 700; flex-shrink: 0;
   }
 
-  /* Submit bar */
+  /* Submit bar (progress only — button moved to bottom of page) */
   .submit-bar {
     position: fixed; bottom: 0; left: 0; right: 0;
     padding: 10px 14px;
     padding-bottom: max(10px, env(safe-area-inset-bottom));
     background: white; border-top: 1px solid #e0d8d0; z-index: 100;
-    display: flex; gap: 10px; align-items: center;
+    display: flex; gap: 10px; align-items: center; justify-content: center;
   }
+  /* Inline submit button at bottom of content */
+  .submit-section {
+    padding: 16px 16px 8px;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  .btn-submit-inline {
+    width: 100%; padding: 18px; border-radius: 14px;
+    font-size: 17px; font-weight: 800; border: none; cursor: pointer;
+    background: #ccc; color: white; letter-spacing: 1px; text-transform: uppercase;
+    transition: background 0.2s;
+  }
+  .btn-submit-inline.ready { background: #1a3a2a; }
+  .btn-submit-inline:active { opacity: 0.85; }
   .progress-text { font-size: 12px; color: #999; white-space: nowrap; }
   .progress-text strong { color: #1a3a2a; font-size: 15px; }
   .btn-submit {
@@ -341,9 +354,13 @@
   <textarea class="comments-input" id="comments" placeholder="Notas del día..."></textarea>
 </div>
 
+<!-- Inline submit button — at the very bottom so staff must scroll past all products -->
+<div class="submit-section">
+  <button class="btn-submit-inline" id="submitBtnInline" onclick="submitForm()">Enviar</button>
+</div>
+
 <div class="submit-bar">
-  <div class="progress-text"><strong id="progress-count">0</strong> / <span id="progress-total">0</span></div>
-  <button class="btn-submit" id="submitBtn" onclick="submitForm()">ENVIAR</button>
+  <div class="progress-text"><strong id="progress-count">0</strong> / <span id="progress-total">0</span> productos registrados</div>
 </div>
 
 <!-- Number input modal (Sobras) -->
@@ -417,6 +434,17 @@
       <input type="url" id="apiUrlInput" placeholder="https://script.google.com/macros/s/.../exec" value="">
       <div class="hint">Pega aquí la URL del Apps Script desplegado</div>
       <button class="btn-confirm" style="margin-top:10px;padding:10px;width:100%;font-size:14px;" onclick="saveApiUrl()">Guardar URL</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirmation modal for incomplete submissions -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <p id="confirmMsg" style="text-align:center;font-size:15px;color:#2c2c2c;margin-bottom:20px;line-height:1.6;"></p>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-cancel" style="flex:1;" onclick="closeConfirmModal()">Volver</button>
+      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#1a3a2a;color:white;" onclick="confirmSubmitAnyway()">Enviar</button>
     </div>
   </div>
 </div>
@@ -1213,9 +1241,20 @@ function updateProgress() {
   document.getElementById('progress-count').textContent = filled;
   document.getElementById('progress-total').textContent = total;
 
-  const btn = document.getElementById('submitBtn');
-  btn.classList.toggle('ready', filled > 0 && !isSending);
-  btn.textContent = isSending ? 'ENVIANDO...' : (filled === total ? 'ENVIAR ✓' : 'ENVIAR');
+  const btn = document.getElementById('submitBtnInline');
+  if (btn) {
+    const isComplete = filled === total;
+    btn.classList.toggle('ready', filled > 0 && !isSending);
+    if (isSending) {
+      btn.textContent = 'Enviando...';
+    } else if (isComplete) {
+      btn.textContent = '✓ Enviar todo';
+    } else if (filled > 0) {
+      btn.textContent = `Enviar (${filled}/${total} productos)`;
+    } else {
+      btn.textContent = 'Enviar';
+    }
+  }
 }
 
 // ─── BUILD SUBMISSION ──────────────────────────────────────
@@ -1268,6 +1307,7 @@ async function submitForm() {
   if (isSending) return;
   const variableProducts = getVariableProducts();
   const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
+  const total = allProducts.length;
   const filled = allProducts.filter(p => {
     const d = productData[p.id];
     if (!d) return false;
@@ -1282,6 +1322,29 @@ async function submitForm() {
     return;
   }
 
+  // If incomplete, ask for confirmation before proceeding
+  if (filled < total) {
+    const missing = total - filled;
+    document.getElementById('confirmMsg').textContent =
+      `Has registrado ${filled} de ${total} productos.`;
+    document.getElementById('confirmModal').classList.add('active');
+    return;
+  }
+
+  _doSubmit(apiUrl);
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirmModal').classList.remove('active');
+}
+
+function confirmSubmitAnyway() {
+  closeConfirmModal();
+  const apiUrl = getApiUrl();
+  if (apiUrl) _doSubmit(apiUrl);
+}
+
+function _doSubmit(apiUrl) {
   // Build the submission but DON'T send yet — show cancel window
   _pendingSubmission = { data: buildSubmission(), apiUrl };
   isSending = true;
