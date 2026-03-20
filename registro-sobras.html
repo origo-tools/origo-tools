@@ -288,6 +288,14 @@
   }
   .success-author { font-size: 13px; opacity: 0.5; font-weight: 600; letter-spacing: 0.5px; }
   .success-hint { font-size: 12px; opacity: 0.35; letter-spacing: 0.5px; text-transform: uppercase; }
+  .success-footer { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .success-countdown-text { font-size: 13px; opacity: 0.5; letter-spacing: 0.3px; }
+  .btn-cancel-success {
+    padding: 11px 32px; border-radius: 30px; font-size: 14px; font-weight: 700;
+    border: 2px solid rgba(255,255,255,0.3); background: transparent; color: white;
+    cursor: pointer; letter-spacing: 0.3px;
+  }
+  .btn-cancel-success:active { background: rgba(255,255,255,0.1); }
 
   /* Undo bar (cancel window after pressing Enviar) */
   .undo-bar {
@@ -467,14 +475,7 @@
   </div>
 </div>
 
-<!-- Undo bar (cancel window) -->
-<div class="undo-bar" id="undoBar">
-  <div class="undo-content">
-    <div class="undo-text">Enviando en <span class="countdown" id="undoCountdown">5</span>s...</div>
-    <button class="btn-undo" onclick="cancelSubmit()">CANCELAR</button>
-  </div>
-  <div class="undo-progress"><div class="undo-progress-fill" id="undoProgress"></div></div>
-</div>
+<!-- Undo bar removed — countdown now lives inside the success screen -->
 
 <!-- Success screen -->
 <div class="success-screen" id="success" onclick="dismissSuccess()">
@@ -490,7 +491,9 @@
     <span class="success-quote" id="success-quote"></span>
     <span class="success-author" id="success-author"></span>
   </div>
-  <div class="success-hint">Toca para continuar</div>
+  <div class="success-footer" id="success-footer">
+    <!-- Filled dynamically: countdown+cancel during pending, hint after sent -->
+  </div>
 </div>
 
 <!-- Error toast -->
@@ -1372,69 +1375,58 @@ function confirmSubmitAnyway() {
   if (apiUrl) _doSubmit(apiUrl);
 }
 
+let _successPending = false; // true while countdown is running (not yet sent)
+
 function _doSubmit(apiUrl) {
-  // Build the submission but DON'T send yet — show cancel window
   _pendingSubmission = { data: buildSubmission(), apiUrl };
   isSending = true;
+  _successPending = true;
   updateProgress();
-  showUndoBar();
+  // Show success screen immediately with countdown
+  _showSuccessScreen(_pendingSubmission.data);
+  _startCountdown();
 }
 
-function showUndoBar() {
-  const bar = document.getElementById('undoBar');
-  const countdown = document.getElementById('undoCountdown');
-  const progress = document.getElementById('undoProgress');
-
-  bar.classList.add('active');
-  // Hide the submit bar while undo is showing
-  document.querySelector('.submit-bar').style.display = 'none';
-
+function _startCountdown() {
+  const footer = document.getElementById('success-footer');
   let remaining = UNDO_SECONDS;
-  countdown.textContent = remaining;
-  progress.style.transition = 'none';
-  progress.style.width = '100%';
 
-  // Animate the progress bar
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      progress.style.transition = `width ${UNDO_SECONDS}s linear`;
-      progress.style.width = '0%';
-    });
-  });
+  function renderCountdown() {
+    footer.innerHTML = `
+      <div class="success-countdown-text">Enviando en ${remaining}s...</div>
+      <button class="btn-cancel-success" onclick="cancelSubmitFromSuccess(event)">Cancelar</button>
+    `;
+  }
+  renderCountdown();
 
-  // Countdown text
   _undoCountdownInterval = setInterval(() => {
     remaining--;
     if (remaining > 0) {
-      countdown.textContent = remaining;
+      renderCountdown();
     }
   }, 1000);
 
-  // After UNDO_SECONDS, actually send
   _undoTimer = setTimeout(() => {
-    hideUndoBar();
+    clearInterval(_undoCountdownInterval);
+    _undoCountdownInterval = null;
     doActualSubmit();
   }, UNDO_SECONDS * 1000);
 }
 
-function hideUndoBar() {
-  document.getElementById('undoBar').classList.remove('active');
-  document.querySelector('.submit-bar').style.display = '';
-  if (_undoCountdownInterval) { clearInterval(_undoCountdownInterval); _undoCountdownInterval = null; }
-}
-
-function cancelSubmit() {
-  // User pressed CANCELAR — abort everything
+function cancelSubmitFromSuccess(e) {
+  e.stopPropagation(); // don't trigger dismissSuccess
   if (_undoTimer) { clearTimeout(_undoTimer); _undoTimer = null; }
-  hideUndoBar();
+  if (_undoCountdownInterval) { clearInterval(_undoCountdownInterval); _undoCountdownInterval = null; }
   _pendingSubmission = null;
+  _successPending = false;
   isSending = false;
+  document.getElementById('success').classList.remove('active');
   updateProgress();
   showToast('Cancelado — nada se ha enviado', 2500, 'info');
 }
 
 async function doActualSubmit() {
-  if (!_pendingSubmission) { isSending = false; updateProgress(); return; }
+  if (!_pendingSubmission) { isSending = false; _successPending = false; updateProgress(); return; }
   const { data: submission, apiUrl } = _pendingSubmission;
   _pendingSubmission = null;
 
@@ -1447,7 +1439,7 @@ async function doActualSubmit() {
 
     if (response.ok || response.type === 'opaque') {
       markSubmittedToday();
-      showSuccess(submission);
+      _successConfirmed();
     } else {
       throw new Error(`Server error: ${response.status}`);
     }
@@ -1460,19 +1452,21 @@ async function doActualSubmit() {
         mode: 'no-cors'
       });
       markSubmittedToday();
-      showSuccess(submission);
+      _successConfirmed();
       showToast('Enviado (sin confirmación del servidor)', 3000, 'info');
     } catch (err2) {
       console.warn('Send failed, queuing:', err2);
+      // Hide success screen on failure — data saved locally
+      document.getElementById('success').classList.remove('active');
+      _successPending = false;
+      isSending = false;
+      updateProgress();
       const queue = getPendingQueue();
       queue.push(submission);
       savePendingQueue(queue);
       showToast(`Sin conexión — guardado localmente (${queue.length} pendiente${queue.length > 1 ? 's' : ''})`, 4000);
     }
   }
-
-  isSending = false;
-  updateProgress();
 }
 
 // ─── QUOTES ────────────────────────────────────────────────
@@ -1560,7 +1554,7 @@ function getSuccessStat(submission) {
   return count === 1 ? "1 producto registrado" : `${count} productos registrados`;
 }
 
-function showSuccess(submission) {
+function _showSuccessScreen(submission) {
   const now = new Date();
   const storeName = STORES[currentStore] ? STORES[currentStore].name : '';
   document.getElementById('success-msg').textContent =
@@ -1569,11 +1563,21 @@ function showSuccess(submission) {
   const q = getDailyQuote();
   document.getElementById('success-quote').textContent = `"${q.text}"`;
   document.getElementById('success-author').textContent = q.author;
+  document.getElementById('success-footer').innerHTML = ''; // countdown rendered by _startCountdown
   document.getElementById('success').classList.add('active');
-  isSending = true;  // block double taps
+}
+
+function _successConfirmed() {
+  // Submission sent — transform footer to dismiss hint
+  _successPending = false;
+  isSending = false;
+  document.getElementById('success-footer').innerHTML =
+    '<div class="success-hint">Toca para continuar</div>';
+  updateProgress();
 }
 
 function dismissSuccess() {
+  if (_successPending) return; // can't dismiss while countdown is running
   document.getElementById('success').classList.remove('active');
   productData = {};
   document.getElementById('tgtg').value = '0';
