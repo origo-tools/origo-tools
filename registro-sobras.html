@@ -480,13 +480,13 @@ const STORES = {
 // Default flavor lists — used as fallback when the forecasting API is not configured
 // or when the fetch fails.  The forecasting API (action=getflavors) is the source of
 // truth; these defaults reflect the current flavors confirmed in BigQuery.
-const DEFAULT_FOCACCIA_NAMES  = ['Mortadella', 'Panceta & crème fraîche', 'Chorizo', 'Olivas', 'Berenjena'];
-const DEFAULT_BOCADILLO_NAMES = ['Mortadella pesto', 'Pernil i formatge', 'Berenjena pesto'];
+const DEFAULT_FOCACCIA_NAMES  = ['Mortadella Stracciatella i festuc', 'Xoriço picant i fonoll', 'Panxeta, creme fraiche i cibulet', 'Alberginia escalivada', 'Olivada, tomates secos y alcaparras', 'Temporada'];
+const DEFAULT_BOCADILLO_NAMES = ['Mortadel·la i pesto de festuc', 'Pernil i formatge', 'albergínia escalivada i pesto vermell'];
 
 // Bump this string whenever the default flavor lists above change.
 // On startup, if the stored version doesn't match, all cached flavor names
 // (origo_varnames_*) are cleared so the new defaults (or fresh API data) take effect.
-const FLAVOR_CACHE_VERSION = 'v2-2026-03-23';
+const FLAVOR_CACHE_VERSION = 'v3-2026-03-23';
 
 /**
  * Clear any stale flavor-name caches whose version doesn't match FLAVOR_CACHE_VERSION.
@@ -610,7 +610,8 @@ async function fetchAndUpdateFlavors(store) {
     const flavors = type === 'bocadillo' ? (data.bocadillo || []) : (data.focaccia || []);
     if (flavors.length === 0) return;
 
-    const names = flavors.map(f => f.displayName);
+    // Use the Square name (suffix) directly — Square is the source of truth for display names
+    const names = flavors.map(f => f.suffix || f.displayName);
     saveVariableNames(store, names);
     // Re-render so the updated list is visible immediately
     renderProducts();
