@@ -1748,6 +1748,54 @@ function closeSyncPreview() {
 const KEY_TO_CELL = {};
 for (const [cell, key] of Object.entries(CELL_TO_KEY)) { KEY_TO_CELL[key] = cell; }
 
+/**
+ * Allocate whole focaccias to flavors using the largest-remainder method.
+ *
+ * Steps:
+ *  1. Sum all flavor portions → totalPortions
+ *  2. ceil(totalPortions / 15) → totalFocaccias  (rounds the TOTAL up, not each flavor)
+ *  3. Give each flavor a proportional share:
+ *       rawShare_i = portions_i / totalPortions × totalFocaccias
+ *  4. Each flavor starts with floor(rawShare_i).
+ *  5. Remaining focaccias (due to flooring) are given one-by-one to the flavors
+ *     with the largest fractional remainders — so the most in-demand flavors
+ *     get priority.
+ *
+ * Example:  {A:15, B:12, C:8, D:6, E:4, F:2} → total=47 → 4 focaccias
+ *   Shares:   1.28   1.02  0.68  0.51  0.34  0.17
+ *   Floors:      1      1     0     0     0     0   → sum=2, need 2 more
+ *   Remainders: .28   .02  .68   .51   .34   .17
+ *   Top-2 rem: C(.68), D(.51) → get +1 each
+ *   Result:  {A:1, B:1, C:1, D:1, E:0, F:0}
+ *
+ * @param {Object} flavorsPortions  { flavorName: portionsEstimate, … }
+ * @returns {Object}                { flavorName: wholeForaccias, … }
+ */
+function allocateFocaccias(flavorsPortions) {
+  const PORTIONS_PER_FOCACCIA = 15;
+  const names    = Object.keys(flavorsPortions);
+  const portions = names.map(n => Math.max(0, parseInt(flavorsPortions[n]) || 0));
+  const total    = portions.reduce((s, v) => s + v, 0);
+
+  const out = {};
+  if (total === 0) { names.forEach(n => out[n] = 0); return out; }
+
+  const totalFocaccias = Math.ceil(total / PORTIONS_PER_FOCACCIA);
+  const shares         = portions.map(p => p / total * totalFocaccias);
+  const floors         = shares.map(Math.floor);
+  const remainders     = shares.map((s, i) => s - floors[i]);
+
+  // Distribute leftover focaccias (caused by flooring) to highest remainders
+  let remaining = totalFocaccias - floors.reduce((s, v) => s + v, 0);
+  remainders
+    .map((r, i) => ({ i, r }))
+    .sort((a, b) => b.r - a.r)
+    .forEach(({ i }) => { if (remaining-- > 0) floors[i]++; });
+
+  names.forEach((n, i) => out[n] = floors[i]);
+  return out;
+}
+
 async function confirmSync() {
   closeSyncPreview();
 
@@ -1841,8 +1889,10 @@ async function confirmSync() {
   function cellRow(dCell) { return dCell.replace('D', ''); }
 
   // Bread: shop → column G, orders → column J
+  // Skip 'focaccia' here — it is handled below in the per-flavor section,
+  // which writes individual rows (48-55) AND calculates the correct G19 total.
   BREAD.forEach(item => {
-    if (!item.key) return;
+    if (!item.key || item.key === 'focaccia') return;
     const dCell = KEY_TO_CELL[item.key];
     if (!dCell) return;
     const row = cellRow(dCell);
@@ -1877,22 +1927,65 @@ async function confirmSync() {
     }
   });
 
-  // Focaccia / Bocadillos: shop + orders → specific rows per store
-  // Milà & Sant Pau: Focaccia rows 48-52 (5 items), shop → G, orders → J
-  // Sant Joan: Bocadillo rows 50-52 (3 items), shop → G only
-  const FC_ROWS = currentStore === 'santjoan' ? [50, 51, 52] : [48, 49, 50, 51, 52];
+  // Focaccia / Bocadillos: rows 48-55 reserved for per-flavor entries.
+  // Each row: B = flavor name, G = shop count, H = orders.
+  //
+  // Focaccia allocation (not per-flavor rounding — that would over-produce massively):
+  //   1. Sum all flavor portions → totalPortions
+  //   2. ceil(totalPortions / 15) → totalFocaccias  (rounds the WHOLE, not each flavor)
+  //   3. Distribute focaccias to flavors by demand using largest-remainder method
+  //      → most popular flavors get priority; low-demand flavors may get 0
+  //   4. G19 = totalFocaccias (for dough calculation)
+  //
+  // Bocadillo: values are direct unit counts (no conversion).
+  // Unused rows are cleared to prevent stale data from previous weeks.
+  const FC_ROWS = [48, 49, 50, 51, 52, 53, 54, 55]; // 8-row reserved block
   const isBocadillo = STORES[currentStore].fcType === 'bocadillo';
-  STORES[currentStore].fcNames.forEach((name, idx) => {
+  const fcNames = getFcNames();
+
+  // Build shop + order allocations upfront (only for focaccia; bocadillo uses direct counts)
+  let shopAllocation = {}, orderAllocation = {};
+  let totalFocaccias = 0;
+
+  if (!isBocadillo) {
+    const shopPortionsMap = {}, orderPortionsMap = {};
+    fcNames.forEach((name, idx) => {
+      const sInput = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+      const oInput = document.querySelector(`input[data-key="fc-${idx}-order"]`);
+      shopPortionsMap[name]  = sInput ? (parseInt(sInput.value)  || 0) : 0;
+      orderPortionsMap[name] = oInput ? (parseInt(oInput.value)  || 0) : 0;
+    });
+    shopAllocation  = allocateFocaccias(shopPortionsMap);
+    orderAllocation = allocateFocaccias(orderPortionsMap);
+    totalFocaccias  = Object.values(shopAllocation).reduce((s, v) => s + v, 0);
+  }
+
+  fcNames.forEach((name, idx) => {
     if (idx >= FC_ROWS.length) return;
-    const shopInput = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
-    const shopVal = shopInput ? (parseInt(shopInput.value) || 0) : 0;
-    estimates.push({ cell: 'G' + FC_ROWS[idx], value: shopVal });
+    const row = FC_ROWS[idx];
+    const shopInput   = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+    const shopCount   = isBocadillo
+      ? (shopInput ? (parseInt(shopInput.value) || 0) : 0)
+      : (shopAllocation[name] || 0);
+    estimates.push({ cell: 'B' + row, value: name });
+    estimates.push({ cell: 'G' + row, value: shopCount });
     if (!isBocadillo) {
-      const orderInput = document.querySelector(`input[data-key="fc-${idx}-order"]`);
-      const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
-      estimates.push({ cell: 'J' + FC_ROWS[idx], value: orderVal });
+      estimates.push({ cell: 'H' + row, value: orderAllocation[name] || 0 });
     }
   });
+
+  // Clear unused rows so stale data never lingers
+  for (let i = fcNames.length; i < FC_ROWS.length; i++) {
+    const row = FC_ROWS[i];
+    estimates.push({ cell: 'B' + row, value: '' });
+    estimates.push({ cell: 'G' + row, value: '' });
+    if (!isBocadillo) estimates.push({ cell: 'H' + row, value: '' });
+  }
+
+  // For focaccia stores: write total whole-focaccia count to G19 (used for dough)
+  if (!isBocadillo) {
+    estimates.push({ cell: 'G19', value: totalFocaccias });
+  }
 
   // 4. Show syncing state
   const btn = document.getElementById('syncBtn');
