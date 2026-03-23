@@ -272,9 +272,9 @@
 const DAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
 
 const STORES = {
-  santpau: { name: 'Sant Pau', fcType: 'focaccia', fcNames: ['Mortadella','Panceta & crème fraîche','Chorizo','Olivas','Berenjena'] },
-  mila:    { name: 'Milà', fcType: 'focaccia', fcNames: ['Mortadella','Panceta & crème fraîche','Chorizo','Olivas','Berenjena'] },
-  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo', fcNames: ['Mortadella','Berenjena','Jamón y queso'] }
+  santpau: { name: 'Sant Pau',  fcType: 'focaccia',   fcNames: ['Mortadella Stracciatella i festuc','Xoriço picant i fonoll','Panxeta, creme fraiche i cibulet','Alberginia escalivada','Olivada, tomates secos y alcaparras','Temporada'] },
+  mila:    { name: 'Milà',      fcType: 'focaccia',   fcNames: ['Mortadella Stracciatella i festuc','Xoriço picant i fonoll','Panxeta, creme fraiche i cibulet','Alberginia escalivada','Olivada, tomates secos y alcaparras','Temporada'] },
+  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo',  fcNames: ['Mortadel·la i pesto de festuc','Pernil i formatge','albergínia escalivada i pesto vermell'] }
 };
 
 // ===== PRODUCT DEFINITIONS (updated to match Square / production sheet) =====
@@ -749,13 +749,18 @@ function getShopSuggestions() {
   const cacheKey = `${currentStore}-${dateStr}`;
   const cached = forecastCache[cacheKey];
 
-  const result = { bread: {}, pastry: {} };
+  const result = { bread: {}, pastry: {}, flavors: {} };
 
   // Default all to 0
   BREAD.forEach(item => { if (item.key) result.bread[item.key] = 0; });
   PASTRY_GROUPS.flat().forEach(p => { if (p.key) result.pastry[p.key] = { b1: 0, b2: 0, b3: 0 }; });
 
   if (!cached || !cached.estimates) return result;
+
+  // Extract per-flavor focaccia / bocadillo estimates (flavorName set, cell is null)
+  for (const est of cached.estimates) {
+    if (est.flavorName) result.flavors[est.flavorName] = est.estimate;
+  }
 
   for (const est of cached.estimates) {
     const key = CELL_TO_KEY[est.cell];
@@ -1380,6 +1385,24 @@ function recalcPastryTotals() {
   });
 }
 
+/**
+ * Returns the current list of focaccia/bocadillo flavor names for the active store.
+ * Prefers the live per-flavor estimates from the API (so the list always matches
+ * Square), with STORES.fcNames as a fallback while estimates are loading.
+ */
+function getFcNames() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cached = forecastCache[`${currentStore}-${dateStr}`];
+  if (cached && cached.estimates) {
+    const fromEstimates = cached.estimates
+      .filter(e => e.flavorName && e.type === 'bread')
+      .map(e => e.flavorName);
+    if (fromEstimates.length > 0) return fromEstimates;
+  }
+  return STORES[currentStore].fcNames;
+}
+
 function renderMain() {
   const store = STORES[currentStore];
   const shop = getShopSuggestions();
@@ -1519,14 +1542,22 @@ function renderMain() {
     <th class="shop-header">Shop</th>
     ${isBocadillo ? '' : '<th class="orders-header">Pedidos</th>'}
     <th class="sep" style="background:#f5f0eb;border:none"></th>
+    <th>Total</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
   </tr>`;
-  store.fcNames.forEach((name, idx) => {
+  getFcNames().forEach((name, idx) => {
     const fcSobras = sobras.focaccia[name];
+    const shopVal = shop.flavors[name] ?? '';
+    const orderVal = 0;
+    const shopNum = parseInt(shopVal) || 0;
+    const total = shopNum + orderVal;
     html += `<tr>
       <td class="product-name">${name}</td>
-      ${eCell(`fc-${idx}-shop`, 4, 'ai')}
-      ${isBocadillo ? '' : eCell(`fc-${idx}-order`, 0, 'manual order-cell')}
+      ${eCell(`fc-${idx}-shop`, shopVal, 'ai')}
+      ${isBocadillo ? '' : eCell(`fc-${idx}-order`, orderVal, 'manual order-cell')}
+      <td class="sep"></td>
+      <td class="total-col" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
       <td class="sep"></td>
       ${sobrasCell(fcSobras)}
     </tr>`;
