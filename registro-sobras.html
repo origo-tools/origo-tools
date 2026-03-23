@@ -137,11 +137,6 @@
     font-size: 12px; font-weight: 700; color: #666;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .btn-edit-names {
-    font-size: 11px; color: #1a3a2a; background: none; border: none;
-    text-decoration: underline; cursor: pointer; font-weight: 600;
-  }
-
   /* Modals */
   .modal-overlay {
     display: none; position: fixed; inset: 0;
@@ -189,19 +184,6 @@
   .batch-hint {
     text-align: center; font-size: 13px; color: #457b9d; font-weight: 600;
     padding: 6px; background: #eef0f8; border-radius: 8px; margin-bottom: 10px;
-  }
-
-  /* Edit names modal */
-  .edit-name-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .edit-name-input {
-    flex: 1; padding: 12px; border-radius: 10px; border: 2px solid #e0d8d0;
-    font-size: 15px; font-family: inherit; font-weight: 600;
-  }
-  .edit-name-input:focus { outline: none; border-color: #1a3a2a; }
-  .edit-name-num {
-    width: 28px; height: 28px; border-radius: 50%; background: #1a3a2a;
-    color: white; display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 700; flex-shrink: 0;
   }
 
   /* Submit bar (progress only — button moved to bottom of page) */
@@ -433,18 +415,6 @@
   </div>
 </div>
 
-<!-- Edit names modal -->
-<div class="modal-overlay" id="editModal">
-  <div class="modal">
-    <h3 id="edit-modal-title">Editar nombres</h3>
-    <div id="edit-names-list"></div>
-    <div class="modal-actions" style="margin-top:16px;">
-      <button class="btn-cancel" onclick="closeEditModal()">Cancelar</button>
-      <button class="btn-confirm" onclick="saveEditNames()">Guardar</button>
-    </div>
-  </div>
-</div>
-
 <!-- Settings modal (store selection + API config) -->
 <div class="modal-overlay" id="settingsModal">
   <div class="modal" style="text-align:center;">
@@ -512,6 +482,34 @@ const STORES = {
 // truth; these defaults reflect the current flavors confirmed in BigQuery.
 const DEFAULT_FOCACCIA_NAMES  = ['Mortadella', 'Panceta & crème fraîche', 'Chorizo', 'Olivas', 'Berenjena'];
 const DEFAULT_BOCADILLO_NAMES = ['Mortadella pesto', 'Pernil i formatge', 'Berenjena pesto'];
+
+// Bump this string whenever the default flavor lists above change.
+// On startup, if the stored version doesn't match, all cached flavor names
+// (origo_varnames_*) are cleared so the new defaults (or fresh API data) take effect.
+const FLAVOR_CACHE_VERSION = 'v2-2026-03-23';
+
+/**
+ * Clear any stale flavor-name caches whose version doesn't match FLAVOR_CACHE_VERSION.
+ * This ensures that after a code deploy updating DEFAULT_FOCACCIA_NAMES /
+ * DEFAULT_BOCADILLO_NAMES, users see the correct names immediately instead of
+ * old manually-edited values from localStorage.
+ */
+function clearStaleFlavorCaches() {
+  try {
+    const stored = localStorage.getItem('origo_flavor_cache_ver');
+    if (stored !== FLAVOR_CACHE_VERSION) {
+      // Remove all per-store flavor caches
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('origo_varnames_')) keysToRemove.push(k);
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
+      localStorage.setItem('origo_flavor_cache_ver', FLAVOR_CACHE_VERSION);
+      console.log(`[Origo] Flavor cache cleared (was ${stored || 'unset'}, now ${FLAVOR_CACHE_VERSION})`);
+    }
+  } catch(e) {}
+}
 
 // ─── PRODUCT LISTS (updated to match Square/production sheet) ───
 const BREAD = [
@@ -805,6 +803,9 @@ function openSettings() {
 
 function startApp() {
   document.getElementById('storeName').textContent = `Registro de Sobras — ${STORES[currentStore].name}`;
+  // Clear stale flavor caches before first render so old manually-saved names
+  // don't override the updated defaults.
+  clearStaleFlavorCaches();
   initDate();
   loadDailyData();
   renderProducts();
@@ -857,7 +858,6 @@ function renderProducts() {
   // Focaccia / Bocadillo
   html += `<div class="sub-section"><div class="sub-section-header">`;
   html += `<div class="sub-section-title">${sectionLabel}</div>`;
-  html += `<button class="btn-edit-names" onclick="openEditNames()">editar nombres</button>`;
   html += `</div></div>`;
   html += `<div class="products">`;
   variableProducts.forEach(p => html += renderCard(p));
@@ -1231,52 +1231,6 @@ function removeBatchSoldOut(id, index) {
   }
   saveDailyData();
   renderProducts();
-}
-
-// ─── EDIT NAMES ────────────────────────────────────────────
-function openEditNames() {
-  const names = getVariableNames(currentStore);
-  const type = STORES[currentStore].variableType;
-  const label = type === 'bocadillo' ? 'Bocadillos' : 'Focaccias';
-  document.getElementById('edit-modal-title').textContent = `Editar ${label}`;
-
-  const list = document.getElementById('edit-names-list');
-  list.innerHTML = '';
-  names.forEach((name, i) => {
-    list.innerHTML += `
-      <div class="edit-name-row">
-        <div class="edit-name-num">${i + 1}</div>
-        <input class="edit-name-input" id="editname_${i}" value="${name}">
-      </div>`;
-  });
-  list.innerHTML += `
-    <div class="edit-name-row">
-      <div class="edit-name-num" style="background:#ccc;">+</div>
-      <input class="edit-name-input" id="editname_${names.length}" value="" placeholder="Añadir nuevo...">
-    </div>`;
-
-  document.getElementById('editModal').classList.add('active');
-}
-
-function saveEditNames() {
-  const names = [];
-  let i = 0;
-  while (true) {
-    const el = document.getElementById(`editname_${i}`);
-    if (!el) break;
-    const val = el.value.trim();
-    if (val) names.push(val);
-    i++;
-  }
-  if (names.length > 0) {
-    saveVariableNames(currentStore, names);
-    renderProducts();
-  }
-  closeEditModal();
-}
-
-function closeEditModal() {
-  document.getElementById('editModal').classList.remove('active');
 }
 
 // ─── UNDO ──────────────────────────────────────────────────
