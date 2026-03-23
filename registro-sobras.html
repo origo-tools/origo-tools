@@ -507,8 +507,11 @@ const STORES = {
   santjoan: { name: 'Sant Joan', variableType: 'bocadillo' }
 };
 
-const DEFAULT_FOCACCIA_NAMES = ['Mortadella', 'Panceta & crème fraîche', 'Chorizo', 'Olivas', 'Berenjena'];
-const DEFAULT_BOCADILLO_NAMES = ['Mortadella', 'Berenjena', 'Jamón y queso'];
+// Default flavor lists — used as fallback when the forecasting API is not configured
+// or when the fetch fails.  The forecasting API (action=getflavors) is the source of
+// truth; these defaults reflect the current flavors confirmed in BigQuery.
+const DEFAULT_FOCACCIA_NAMES  = ['Mortadella', 'Panceta & crème fraîche', 'Chorizo', 'Olivas', 'Berenjena'];
+const DEFAULT_BOCADILLO_NAMES = ['Mortadella pesto', 'Pernil i formatge', 'Berenjena pesto'];
 
 // ─── PRODUCT LISTS (updated to match Square/production sheet) ───
 const BREAD = [
@@ -584,6 +587,40 @@ function getApiUrl() {
 }
 function setApiUrl(url) {
   try { localStorage.setItem('origo_api_url', url); } catch(e) {}
+}
+
+// Forecasting API — used for action=getflavors (flavor sync from Square).
+const FORECASTING_API_URL = 'https://script.google.com/macros/s/AKfycbwFWN1OIzAmisOOTJ6OxorrIExpMNu1FtN-8WdAq5CVYOWzEV3_d_e1Lxp2p4NnYf8x/exec';
+
+/**
+ * Fetch active flavors from the forecasting API and update the stored names
+ * for the current store.  If the fetch fails the existing stored names
+ * (or hardcoded defaults) are used unchanged.
+ * Re-renders the product list after a successful update.
+ */
+async function fetchAndUpdateFlavors(store) {
+  if (!store) return;
+
+  try {
+    const storeId = STORES[store].name;  // e.g. 'Sant Pau'
+    const res = await fetch(`${FORECASTING_API_URL}?action=getflavors&store=${encodeURIComponent(storeId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.error) return;
+
+    const type = STORES[store].variableType;
+    const flavors = type === 'bocadillo' ? (data.bocadillo || []) : (data.focaccia || []);
+    if (flavors.length === 0) return;
+
+    const names = flavors.map(f => f.displayName);
+    saveVariableNames(store, names);
+    // Re-render so the updated list is visible immediately
+    renderProducts();
+    console.log(`[Origo] Flavors updated from API: ${names.join(', ')}`);
+  } catch(e) {
+    // Silently ignore — network errors should not break the app
+    console.warn('[Origo] fetchAndUpdateFlavors failed:', e.message);
+  }
 }
 
 // ─── STORE PERSISTENCE ─────────────────────────────────────
@@ -772,6 +809,9 @@ function startApp() {
   loadDailyData();
   renderProducts();
   showSubmittedBanner();
+  // Async: fetch current flavors from Square (via forecasting API) and re-render if changed.
+  // Runs silently in the background — no spinner, no error shown on failure.
+  fetchAndUpdateFlavors(currentStore);
   cleanOldDailyData();
 
   // Auto-save TGTG and comments on every change (attach only once)
