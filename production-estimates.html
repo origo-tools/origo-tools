@@ -1092,7 +1092,9 @@ function saveInputState() {
 
   // 1. Save to localStorage (instant)
   localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells }));
-  localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData }));
+  // savedAt timestamp lets restoreInputState discard orders older than 8 days,
+  // preventing stale/contaminated data from persisting across weeks indefinitely.
+  localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData, savedAt: Date.now() }));
 
   // 2. Debounced save to BigQuery (non-blocking, 2s after last edit)
   _bqPendingInputs = changedInputs;
@@ -1139,8 +1141,11 @@ async function restoreInputState() {
   try {
     const orderSaved = localStorage.getItem(getOrderStorageKey());
     if (orderSaved) {
-      const { inputs } = JSON.parse(orderSaved);
-      if (inputs) localOrders = inputs;
+      const parsed = JSON.parse(orderSaved);
+      const MAX_ORDER_AGE_MS = 8 * 24 * 60 * 60 * 1000; // 8 days
+      const isStale = parsed.savedAt && (Date.now() - parsed.savedAt > MAX_ORDER_AGE_MS);
+      if (parsed.inputs && !isStale) localOrders = parsed.inputs;
+      if (isStale) localStorage.removeItem(getOrderStorageKey()); // Self-heal stale entry
     }
   } catch(e) {}
 
