@@ -494,14 +494,39 @@ function getThisWeekDate(dayName) {
   return target;
 }
 
-// Get the target date for a given day — next week if estimates have been generated, else this week
+// Get the target date for a given day — next week if estimates have been generated, else this week.
+// Includes a day-of-week sanity check: if the computed date falls on the wrong weekday
+// (which can happen when generatedDatesSet has stale/unexpected values), we fall back
+// to this week's safe date rather than silently returning a wrong day's date.
 function getTargetDate(dayName) {
+  // DAYS[0]=Lunes(Mon)…DAYS[6]=Domingo(Sun). Convert to JS getDay() (0=Sun,1=Mon…6=Sat).
+  const dayIdx = DAYS.indexOf(dayName);
+  const expectedJsDow = dayIdx === 6 ? 0 : dayIdx + 1; // Lunes→1, …, Sábado→6, Domingo→0
+
   const nextWeek = getNextWeekDate(dayName);
   const nextWeekStr = formatDateStr(nextWeek);
   if (generatedDatesSet.has(nextWeekStr)) {
-    return nextWeek;
+    // Sanity check: the date must actually fall on the expected day of the week
+    if (nextWeek.getDay() === expectedJsDow) {
+      return nextWeek;
+    }
+    console.warn(`getTargetDate(${dayName}): next-week date ${nextWeekStr} falls on wrong weekday (${nextWeek.getDay()} ≠ ${expectedJsDow}), falling back to this week`);
   }
-  return getThisWeekDate(dayName);
+  const thisWeek = getThisWeekDate(dayName);
+  // Sanity check on this-week date too
+  if (thisWeek.getDay() !== expectedJsDow) {
+    console.warn(`getTargetDate(${dayName}): this-week date also falls on wrong weekday, recalculating`);
+    // Force-compute the correct date from today's real Monday
+    const today = new Date();
+    const todayDay = today.getDay();
+    const daysSinceMon = todayDay === 0 ? 6 : todayDay - 1;
+    const mon = new Date(today);
+    mon.setDate(today.getDate() - daysSinceMon);
+    const safe = new Date(mon);
+    safe.setDate(mon.getDate() + dayIdx);
+    return safe;
+  }
+  return thisWeek;
 }
 
 // Check if a day is showing next week's date (i.e. estimates have been generated)
@@ -562,6 +587,8 @@ async function loadInitBundle() {
   renderMain();
 
   const storeName = STORE_API_NAMES[currentStore];
+  const requestDay = currentDay;   // Capture day at request time — guards against race conditions
+  const requestStore = currentStore;
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
   const dow = DAYS_TO_DOW[currentDay] || '1';
@@ -574,6 +601,12 @@ async function loadInitBundle() {
     const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
     const data = await fetch(url, { signal: controller.signal }).then(r => r.json());
     clearTimeout(timeout);
+
+    // If the user switched day or store while the request was in flight, discard stale data.
+    if (currentDay !== requestDay || currentStore !== requestStore) {
+      forecastLoading = false;
+      return false;
+    }
 
     // 1. Apply generatedDates
     if (data.generatedDates && data.generatedDates.dates) {
@@ -632,6 +665,8 @@ async function loadEstimatesForCurrentDay() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return;
 
+  const requestDay = currentDay;    // Capture at request time — race condition guard
+  const requestStore = currentStore;
   const storeName = STORE_API_NAMES[currentStore];
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
@@ -651,6 +686,12 @@ async function loadEstimatesForCurrentDay() {
     const url = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}${pdmParam}`;
     const resp = await fetch(url);
     const data = await resp.json();
+
+    // Discard if day or store changed while the request was in flight
+    if (currentDay !== requestDay || currentStore !== requestStore) {
+      forecastLoading = false;
+      return;
+    }
 
     if (data.error) {
       console.warn('Forecast API error:', data.error);
@@ -1004,7 +1045,9 @@ const DAYS_TO_DOW = { 'Lunes': '1', 'Martes': '2', 'Miércoles': '3', 'Jueves': 
 function getShopStorageKey() {
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
-  return `origo-shop-${currentStore}-${dateStr}`;
+  // Include day name so Friday and Saturday can never share the same localStorage
+  // entry even if getTargetDate transiently resolves to the wrong date.
+  return `origo-shop-${currentStore}-${currentDay}-${dateStr}`;
 }
 
 function getOrderStorageKey() {
