@@ -356,8 +356,9 @@ const CELL_TO_KEY = {
   'D46': 'pastisLlimona'
 };
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
-function getForecastApiUrl() { return API_URL; }
+const FORECAST_API_URL = 'https://script.google.com/macros/s/AKfycbwFWN1OIzAmisOOTJ6OxorrIExpMNu1FtN-8WdAq5CVYOWzEV3_d_e1Lxp2p4NnYf8x/exec';
+const SOBRAS_API_URL   = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
+function getForecastApiUrl() { return FORECAST_API_URL; }
 
 function toggleSettings() {
   const panel = document.getElementById('settingsPanel');
@@ -875,7 +876,7 @@ function getEstimateFactors() {
 let sobrasCache = {};
 let sobrasLoading = false;
 
-function getApiUrlProd() { return API_URL; }
+function getApiUrlProd() { return SOBRAS_API_URL; }
 
 function getLastWeekDate(dayName) {
   const targetDate = getTargetDate(dayName);
