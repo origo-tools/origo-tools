@@ -1008,7 +1008,7 @@ function saveInputState() {
   });
 
   // 1. Save to localStorage (instant)
-  localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells }));
+  localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells, savedAt: Date.now() }));
   // savedAt timestamp lets restoreInputState discard orders older than 8 days,
   // preventing stale/contaminated data from persisting across weeks indefinitely.
   localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData, savedAt: Date.now() }));
@@ -1051,8 +1051,22 @@ async function restoreInputState() {
     const shopSaved = localStorage.getItem(getShopStorageKey());
     if (shopSaved) {
       const parsed = JSON.parse(shopSaved);
-      if (parsed.inputs) localShop = parsed.inputs;
-      if (parsed.editedCells) savedEdited = parsed.editedCells;
+      // Skip localStorage shop edits if they're older than the current AI generation.
+      // After a regeneration, stale edits in localStorage would overwrite fresh AI values.
+      const targetDate = getTargetDate(currentDay);
+      const dateStr = formatDateStr(targetDate);
+      const cacheKey = `${currentStore}-${dateStr}`;
+      const aiGenAt = forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt
+        ? new Date(forecastCache[cacheKey].generatedAt).getTime() : 0;
+      const shopSavedAt = parsed.savedAt || 0;
+      const isStaleEdit = aiGenAt && (!shopSavedAt || shopSavedAt < aiGenAt);
+      if (isStaleEdit) {
+        // Edits predate the AI run (or have no timestamp) — discard them
+        localStorage.removeItem(getShopStorageKey());
+      } else {
+        if (parsed.inputs) localShop = parsed.inputs;
+        if (parsed.editedCells) savedEdited = parsed.editedCells;
+      }
     }
   } catch(e) {}
   try {
