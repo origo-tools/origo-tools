@@ -663,6 +663,10 @@ async function loadEstimatesForCurrentDay() {
  * the shop column until Rafa explicitly edits a cell.
  * This ensures each weekly AI run starts fresh.
  */
+// Tracks store+date combos where a new AI run was detected this session.
+// When set, restoreInputState skips BQ shop inputs (they're stale, from before regen).
+const _aiRunCleared = new Set();
+
 function clearEditsIfNewAIRun(dateStr) {
   const storeDateKey = `${currentStore}-${dateStr}`;
   const cached = forecastCache[storeDateKey];
@@ -683,6 +687,9 @@ function clearEditsIfNewAIRun(dateStr) {
         delete editedCells[key];
       }
     }
+
+    // Flag this store+date so restoreInputState skips stale BQ shop inputs
+    _aiRunCleared.add(storeDateKey);
 
     // Remember this AI run so we don't clear edits again until next run
     localStorage.setItem(genKey, cached.generatedAt);
@@ -1096,8 +1103,11 @@ async function restoreInputState() {
   }
 
   if (bqData && bqData.success) {
-    // Restore shop inputs — always apply (user edits should persist)
-    if (bqData.shop && Object.keys(bqData.shop).length > 0) {
+    // Restore shop inputs — but skip if a new AI run just cleared edits for this date.
+    // The BQ-stored shop values are from before the regeneration and would overwrite
+    // the fresh AI estimates, turning them red again.
+    const skipShop = _aiRunCleared.has(fetchKey);
+    if (!skipShop && bqData.shop && Object.keys(bqData.shop).length > 0) {
       applyInputValues(bqData.shop);
     }
     // Orders are always restored (weekly recurring, not tied to AI runs)
