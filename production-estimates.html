@@ -21,7 +21,6 @@
     color: white; padding: 6px 12px; border-radius: 6px; font-size: 14px; cursor: pointer;
   }
   .top-bar select option { color: #2c2c2c; background: white; }
-  .top-bar .week-label { font-size: 14px; opacity: 0.85; }
 
   .day-tabs { display: flex; background: #22503a; padding: 0 16px; gap: 2px; overflow-x: auto; }
   .day-tab {
@@ -74,8 +73,9 @@
   }
   table.grid td.product-name {
     text-align: left; font-weight: 600; background: #faf8f5;
-    white-space: nowrap; min-width: 200px;
+    white-space: nowrap; min-width: 200px; cursor: default;
   }
+  table.grid td.product-name[title] { cursor: help; }
   table.grid td.product-name .mult {
     font-weight: 400; font-size: 11px; color: #888; margin-left: 4px;
   }
@@ -163,22 +163,41 @@
 
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-  .config-banner {
-    background: #fef3e2; padding: 8px 24px; display: flex; align-items: center; gap: 10px;
-    border-bottom: 1px solid #e0d8d0; font-size: 13px; color: #b7791f;
+  /* Settings gear button in top bar */
+  .settings-btn {
+    background: none; border: none; color: rgba(255,255,255,0.7); cursor: pointer;
+    padding: 4px; border-radius: 6px; display: flex; align-items: center; transition: all 0.2s;
   }
-  .config-banner input {
+  .settings-btn:hover { color: white; background: rgba(255,255,255,0.1); }
+  .settings-btn.open { color: #e8c547; }
+  .settings-btn svg { transition: transform 0.3s ease; }
+  .settings-btn.open svg { transform: rotate(90deg); }
+
+  /* Collapsible settings panel */
+  .settings-panel {
+    max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
+    border-bottom: 1px solid #e0d8d0;
+  }
+  .settings-panel.open { max-height: 200px; }
+  .settings-panel .settings-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 24px; font-size: 13px;
+  }
+  .settings-panel .settings-row:first-child { padding-top: 12px; }
+  .settings-panel .settings-row:last-child { padding-bottom: 12px; }
+  .settings-panel .settings-row label { font-weight: 600; white-space: nowrap; color: #555; min-width: 130px; }
+  .settings-panel input.settings-input {
     flex: 1; padding: 5px 10px; border: 1px solid #e0d8d0; border-radius: 6px;
-    font-size: 13px; font-family: inherit; max-width: 500px;
+    font-size: 13px; font-family: inherit; max-width: 450px;
   }
-  .config-banner input:focus { outline: none; border-color: #1a3a2a; }
-  .config-banner button {
+  .settings-panel input.settings-input:focus { outline: none; border-color: #1a3a2a; }
+  .settings-panel button.settings-save {
     padding: 5px 14px; background: #1a3a2a; color: white; border: none;
     border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
   }
-  .config-banner .status { font-weight: 600; }
-  .config-banner .status.ok { color: #2e7d32; }
-  .config-banner .status.err { color: #c0392b; }
+  .settings-panel button.settings-save:hover { background: #22503a; }
+  .settings-panel .status { font-weight: 600; font-size: 12px; }
+  .settings-panel .status.ok { color: #2e7d32; }
+  .settings-panel .status.err { color: #c0392b; }
   .sobras-loading { color: #888; font-style: italic; font-size: 12px; }
 </style>
 </head>
@@ -187,24 +206,35 @@
 <div class="top-bar">
   <div><h1>origo — estimaciones de producción</h1></div>
   <div class="store-selector">
-    <span class="week-label">Cargando...</span>
     <select id="storeSelect" onchange="switchStore(this.value)">
       <option value="santpau">Sant Pau</option>
       <option value="mila">Milà</option>
       <option value="santjoan">Sant Joan</option>
     </select>
+    <button class="settings-btn" id="settingsBtn" onclick="toggleSettings()" title="Ajustes">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    </button>
   </div>
 </div>
-<div class="config-banner" id="configBanner">
-  <span>📡 API Estimaciones:</span>
-  <input type="text" id="forecastApiUrl" placeholder="https://script.google.com/macros/s/.../exec (Forecasting API)">
-  <button onclick="saveForecastApiConfig()">Conectar</button>
-  <span class="status" id="forecastApiStatus"></span>
-  &nbsp;&nbsp;|&nbsp;&nbsp;
-  <span>📋 API Sobras:</span>
-  <input type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec (Sobras API)" style="max-width:350px;">
-  <button onclick="saveApiConfig()">Conectar</button>
-  <span class="status" id="apiStatus"></span>
+<div class="settings-panel" id="settingsPanel">
+  <div class="settings-row">
+    <label>API Estimaciones</label>
+    <input class="settings-input" type="text" id="forecastApiUrl" placeholder="https://script.google.com/macros/s/.../exec">
+    <button class="settings-save" onclick="saveForecastApiConfig()">Conectar</button>
+    <span class="status" id="forecastApiStatus"></span>
+  </div>
+  <div class="settings-row">
+    <label>API Sobras</label>
+    <input class="settings-input" type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec">
+    <button class="settings-save" onclick="saveApiConfig()">Conectar</button>
+    <span class="status" id="apiStatus"></span>
+  </div>
+  <div class="settings-row">
+    <label>Pastry del mes</label>
+    <input class="settings-input" type="text" id="pdmInput" placeholder="Nombre en Square (e.g. Tartaleta Pera)" style="max-width:280px;" onkeydown="if(event.key==='Enter')savePdm()">
+    <button class="settings-save" onclick="savePdm()">Guardar</button>
+    <span class="status" id="pdmStatus"></span>
+  </div>
 </div>
 <div class="day-tabs" id="dayTabs"></div>
 <div class="alerts-bar" id="alertsBar"></div>
@@ -242,15 +272,15 @@
 const DAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
 
 const STORES = {
-  santpau: { name: 'Sant Pau', fcType: 'focaccia', fcNames: ['Mortadella','Panceta & crème fraîche','Chorizo','Olivas','Berenjena'] },
-  mila:    { name: 'Milà', fcType: 'focaccia', fcNames: ['Mortadella','Panceta & crème fraîche','Chorizo','Olivas','Berenjena'] },
-  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo', fcNames: ['Mortadella','Berenjena','Jamón y queso'] }
+  santpau: { name: 'Sant Pau',  fcType: 'focaccia',   fcNames: ['Mortadella Stracciatella i festuc','Xoriço picant i fonoll','Panxeta, creme fraiche i cibulet','Alberginia escalivada','Olivada, tomates secos y alcaparras','Temporada'] },
+  mila:    { name: 'Milà',      fcType: 'focaccia',   fcNames: ['Mortadella Stracciatella i festuc','Xoriço picant i fonoll','Panxeta, creme fraiche i cibulet','Alberginia escalivada','Olivada, tomates secos y alcaparras','Temporada'] },
+  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo',  fcNames: ['Mortadel·la i pesto de festuc','Pernil i formatge','albergínia escalivada i pesto vermell'] }
 };
 
 // ===== PRODUCT DEFINITIONS (updated to match Square / production sheet) =====
 const BREAD = [
   { name: 'ORIGO', key: 'origo', roundTo: null },
-  { name: 'ORIGO MOLDE', key: 'origoMolde', roundTo: null },
+  { name: 'MOTLLE', key: 'origoMolde', roundTo: 3, label: 'x3' },
   { spacer: true },
   { name: 'ORIGO INTEGRAL', key: 'origoIntegral', roundTo: null },
   { sep: true },
@@ -274,10 +304,10 @@ const PASTRY_GROUPS = [
    { name: 'Napolitana pernil i formatge', key: 'napolitana', roundTo: 12, label: 'x12' }],
   [{ name: 'Mico', key: 'mico', roundTo: 6, label: 'x6' },
    { name: 'Niu de temporada', key: 'niuTemporada', roundTo: 12, label: 'x12' }],
-  [{ name: "Croissant d'ametlla", key: 'croissantAmetlla', roundTo: 12, label: 'x12', stJoanOnly: true }],
-  [{ name: 'Cookie chocolate', key: 'cookieChocolate', roundTo: null, label: 'uds', stJoanOnly: true },
-   { name: 'Pastry del mes', key: 'pastryMes', roundTo: null, label: 'uds', stJoanOnly: true }],
-  [{ name: 'Pastís llimona i ametlla', key: 'pastisLlimona', roundTo: null, stJoanOnly: true }]
+  [{ name: "Croissant d'ametlla", key: 'croissantAmetlla', roundTo: 12, label: 'x12' }],
+  [{ name: 'Cookie chocolate', key: 'cookieChocolate', roundTo: null, label: 'uds' },
+   { name: 'Pastry del mes', key: 'pastryMes', roundTo: null, label: 'uds' }],
+  [{ name: 'Pastís llimona i ametlla', key: 'pastisLlimona', roundTo: null }]
 ];
 
 function roundToNearest(value, multiple) {
@@ -285,10 +315,22 @@ function roundToNearest(value, multiple) {
   return Math.round(value / multiple) * multiple;
 }
 
+// Round total (shop+orders) to nearest multiple, but:
+// 1. Never round a non-zero total to 0
+// 2. Always guarantee orders are covered (round up if needed)
+function roundWithOrderGuarantee(total, orderVal, multiple) {
+  if (!multiple) return total;
+  if (total === 0) return orderVal > 0 ? Math.ceil(orderVal / multiple) * multiple : 0;
+  const rounded = Math.round(total / multiple) * multiple;
+  // Never round non-zero to 0, and always cover orders
+  if (rounded === 0 || rounded < orderVal) return Math.ceil(total / multiple) * multiple;
+  return rounded;
+}
+
 // ===== PRODUCT NAME → KEY MAPPING (for sobras data from API) =====
 const PRODUCT_NAME_TO_KEY = {
   // Bread
-  'ORIGO': 'origo', 'ORIGO MOLDE': 'origoMolde', 'ORIGO INTEGRAL': 'origoIntegral',
+  'ORIGO': 'origo', 'ORIGO MOLDE': 'origoMolde', 'MOTLLE': 'origoMolde', 'ORIGO INTEGRAL': 'origoIntegral',
   'ESPECIAL': 'especial', 'LLAVORS': 'llavors', 'SÈGOL INTEGRAL': 'segolIntegral',
   'COPENHAGUE': 'copenhague', 'BAGUETTE': 'baguette', 'FOCACCIA': 'focaccia',
   'ESPELTA PETITA': 'espeltaPetita',
@@ -326,11 +368,27 @@ const CELL_TO_KEY = {
   'D46': 'pastisLlimona'
 };
 
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
 function getForecastApiUrl() {
-  try { return localStorage.getItem('origo_forecast_api_url') || ''; } catch(e) { return ''; }
+  try { return localStorage.getItem('origo_forecast_api_url') || DEFAULT_API_URL; } catch(e) { return DEFAULT_API_URL; }
 }
 function setForecastApiUrl(url) {
   try { localStorage.setItem('origo_forecast_api_url', url); } catch(e) {}
+}
+
+function toggleSettings() {
+  const panel = document.getElementById('settingsPanel');
+  const btn = document.getElementById('settingsBtn');
+  const opening = !panel.classList.contains('open');
+  panel.classList.toggle('open');
+  btn.classList.toggle('open');
+  // Run connection tests only when opening the panel
+  if (opening) {
+    const fUrl = getForecastApiUrl();
+    if (fUrl) testForecastApiConnection(fUrl);
+    const pUrl = getApiUrlProd();
+    if (pUrl) testApiConnection(pUrl);
+  }
 }
 
 function saveForecastApiConfig() {
@@ -363,23 +421,118 @@ async function testForecastApiConnection(url) {
   }
 }
 
-// Get the target date for a given day name — always NEXT WEEK
-// Estimates are for next week (generated progressively as each day's sobras come in)
-function getTargetDate(dayName) {
-  const dayIdx = DAYS.indexOf(dayName); // 0=Lunes(Mon)...5=Sábado(Sat), 6=Domingo(Sun)
-  const today = new Date();
-  const todayDay = today.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+// ── Pastry del mes ──────────────────────────────────────────
 
-  // Find next week's Monday
-  // Mon(1)→+7, Tue(2)→+6, Wed(3)→+5, ..., Sat(6)→+2, Sun(0)→+1
+function getPastryDelMes() {
+  return localStorage.getItem('origo-pastry-del-mes') || '';
+}
+
+function savePdm() {
+  const input = document.getElementById('pdmInput');
+  const name = input.value.trim();
+  if (!name) return;
+  localStorage.setItem('origo-pastry-del-mes', name);
+
+  const status = document.getElementById('pdmStatus');
+  status.textContent = '✓ Guardado: ' + name;
+  status.className = 'status ok';
+
+  // Also save to server (Script Properties) so scheduled triggers use it
+  const apiUrl = getForecastApiUrl();
+  if (apiUrl) {
+    fetch(apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'setPastryDelMes', name: name }),
+    }).catch(() => {});
+  }
+
+  // Refresh estimates with the new pastry del mes
+  forecastCache = {};
+  loadEstimatesForCurrentDay();
+}
+
+function loadPdmSetting() {
+  const input = document.getElementById('pdmInput');
+  const saved = getPastryDelMes();
+  if (saved) {
+    input.value = saved;
+    const status = document.getElementById('pdmStatus');
+    status.textContent = '✓ ' + saved;
+    status.className = 'status ok';
+  }
+}
+
+// ===== DATE LOGIC =====
+// Generated dates cache: populated on init by calling ?action=generatedDates
+// Contains the dates for which the trigger has successfully generated estimates
+let generatedDatesSet = new Set(); // Set of 'YYYY-MM-DD' strings
+
+// Get NEXT WEEK's date for a given day
+function getNextWeekDate(dayName) {
+  const dayIdx = DAYS.indexOf(dayName);
+  const today = new Date();
+  const todayDay = today.getDay();
   const daysUntilNextMon = todayDay === 0 ? 1 : (8 - todayDay);
   const nextMon = new Date(today);
   nextMon.setDate(today.getDate() + daysUntilNextMon);
-
-  // Target = next Monday + dayIdx (Lunes=0, Martes=1, etc.)
   const target = new Date(nextMon);
   target.setDate(nextMon.getDate() + dayIdx);
   return target;
+}
+
+// Get THIS WEEK's date for a given day
+function getThisWeekDate(dayName) {
+  const dayIdx = DAYS.indexOf(dayName);
+  const today = new Date();
+  const todayDay = today.getDay();
+  // Find this week's Monday
+  const daysSinceMonday = todayDay === 0 ? 6 : (todayDay - 1);
+  const thisMon = new Date(today);
+  thisMon.setDate(today.getDate() - daysSinceMonday);
+  const target = new Date(thisMon);
+  target.setDate(thisMon.getDate() + dayIdx);
+  return target;
+}
+
+// Get the target date for a given day — next week if estimates have been generated, else this week.
+// Includes a day-of-week sanity check: if the computed date falls on the wrong weekday
+// (which can happen when generatedDatesSet has stale/unexpected values), we fall back
+// to this week's safe date rather than silently returning a wrong day's date.
+function getTargetDate(dayName) {
+  // DAYS[0]=Lunes(Mon)…DAYS[6]=Domingo(Sun). Convert to JS getDay() (0=Sun,1=Mon…6=Sat).
+  const dayIdx = DAYS.indexOf(dayName);
+  const expectedJsDow = dayIdx === 6 ? 0 : dayIdx + 1; // Lunes→1, …, Sábado→6, Domingo→0
+
+  const nextWeek = getNextWeekDate(dayName);
+  const nextWeekStr = formatDateStr(nextWeek);
+  if (generatedDatesSet.has(nextWeekStr)) {
+    // Sanity check: the date must actually fall on the expected day of the week
+    if (nextWeek.getDay() === expectedJsDow) {
+      return nextWeek;
+    }
+    console.warn(`getTargetDate(${dayName}): next-week date ${nextWeekStr} falls on wrong weekday (${nextWeek.getDay()} ≠ ${expectedJsDow}), falling back to this week`);
+  }
+  const thisWeek = getThisWeekDate(dayName);
+  // Sanity check on this-week date too
+  if (thisWeek.getDay() !== expectedJsDow) {
+    console.warn(`getTargetDate(${dayName}): this-week date also falls on wrong weekday, recalculating`);
+    // Force-compute the correct date from today's real Monday
+    const today = new Date();
+    const todayDay = today.getDay();
+    const daysSinceMon = todayDay === 0 ? 6 : todayDay - 1;
+    const mon = new Date(today);
+    mon.setDate(today.getDate() - daysSinceMon);
+    const safe = new Date(mon);
+    safe.setDate(mon.getDate() + dayIdx);
+    return safe;
+  }
+  return thisWeek;
+}
+
+// Check if a day is showing next week's date (i.e. estimates have been generated)
+function isDayGenerated(dayName) {
+  const nextWeek = getNextWeekDate(dayName);
+  return generatedDatesSet.has(formatDateStr(nextWeek));
 }
 
 function formatDateStr(d) {
@@ -389,12 +542,122 @@ function formatDateStr(d) {
   return `${y}-${m}-${dd}`;
 }
 
-function getWeekLabel() {
-  const mon = getTargetDate('Lunes');
-  const sun = getTargetDate('Domingo');
-  const monStr = mon.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
-  const sunStr = sun.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
-  return `Semana del ${monStr} – ${sunStr}`;
+// Fetch which dates have been generated by the trigger
+// Uses localStorage cache (5 min TTL) to avoid blocking on every load
+function loadGeneratedDatesFromCache() {
+  try {
+    const cached = localStorage.getItem('origo-generated-dates');
+    if (cached) {
+      const { dates, ts } = JSON.parse(cached);
+      // Cache valid for 5 minutes
+      if (Date.now() - ts < 5 * 60 * 1000) {
+        generatedDatesSet = new Set(dates);
+        return true;
+      }
+    }
+  } catch(e) {}
+  return false;
+}
+
+async function loadGeneratedDates() {
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl) return;
+  try {
+    const resp = await fetch(apiUrl + '?action=generatedDates');
+    const data = await resp.json();
+    if (data.dates) {
+      const dateList = data.dates.map(d => d.date);
+      generatedDatesSet = new Set(dateList);
+      // Cache in localStorage
+      try {
+        localStorage.setItem('origo-generated-dates', JSON.stringify({ dates: dateList, ts: Date.now() }));
+      } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('Failed to load generated dates:', e);
+  }
+}
+
+// Combined init call: fetches generatedDates + estimates + inputs in ONE request
+async function loadInitBundle() {
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl) return false;
+
+  forecastLoading = true;
+  renderMain();
+
+  const storeName = STORE_API_NAMES[currentStore];
+  const requestDay = currentDay;   // Capture day at request time — guards against race conditions
+  const requestStore = currentStore;
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const dow = DAYS_TO_DOW[currentDay] || '1';
+  const pdm = getPastryDelMes();
+  const pdmParam = pdm ? `&pastryDelMes=${encodeURIComponent(pdm)}` : '';
+
+  try {
+    const url = `${apiUrl}?action=init&store=${encodeURIComponent(storeName)}&date=${dateStr}&dayOfWeek=${dow}${pdmParam}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
+    const data = await fetch(url, { signal: controller.signal }).then(r => r.json());
+    clearTimeout(timeout);
+
+    // If the user switched day or store while the request was in flight, discard stale data.
+    if (currentDay !== requestDay || currentStore !== requestStore) {
+      forecastLoading = false;
+      return false;
+    }
+
+    // 1. Apply generatedDates
+    if (data.generatedDates && data.generatedDates.dates) {
+      const dateList = data.generatedDates.dates.map(d => d.date);
+      generatedDatesSet = new Set(dateList);
+      try {
+        localStorage.setItem('origo-generated-dates', JSON.stringify({ dates: dateList, ts: Date.now() }));
+      } catch(e) {}
+
+      // Check if the default day should change based on fresh generated dates
+      let bestDay = 'Lunes';
+      for (let i = DAYS.length - 1; i >= 0; i--) {
+        if (isDayGenerated(DAYS[i])) { bestDay = DAYS[i]; break; }
+      }
+      if (bestDay !== currentDay) {
+        currentDay = bestDay;
+        _inputsFetched.clear();
+        // Re-fetch with correct day (the init bundle had the wrong day)
+        renderAll();
+        loadEstimatesForCurrentDay();
+        fetchSobrasForCurrentDay();
+        return true;
+      }
+    }
+
+    // 2. Apply estimates
+    if (data.estimates && !data.estimates.error) {
+      const cacheKey = `${currentStore}-${dateStr}`;
+      forecastCache[cacheKey] = data.estimates;
+      if (data.estimates.weather) weatherCache[dateStr] = data.estimates.weather;
+    }
+
+    // 2b. If target date changed (new week), clear stale shop edits
+    clearEditsIfNewAIRun(dateStr);
+
+    // 3. Cache BQ inputs so restoreInputState (called inside renderAll) can use them
+    if (data.inputs && data.inputs.success) {
+      const fetchKey = `${currentStore}-${dateStr}`;
+      _inputsFetched.add(fetchKey);
+      _cachedBqInputs[fetchKey] = data.inputs;
+    }
+
+    forecastLoading = false;
+    renderAll();
+    return true;
+  } catch(e) {
+    console.warn('Init bundle failed, falling back to separate calls:', e);
+    forecastLoading = false;
+    renderMain();
+    return false;
+  }
 }
 
 // Fetch estimates from the forecasting API
@@ -402,6 +665,8 @@ async function loadEstimatesForCurrentDay() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return;
 
+  const requestDay = currentDay;    // Capture at request time — race condition guard
+  const requestStore = currentStore;
   const storeName = STORE_API_NAMES[currentStore];
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
@@ -416,18 +681,27 @@ async function loadEstimatesForCurrentDay() {
   renderMain();
 
   try {
-    const url = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}`;
+    const pdm = getPastryDelMes();
+    const pdmParam = pdm ? `&pastryDelMes=${encodeURIComponent(pdm)}` : '';
+    const url = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}${pdmParam}`;
     const resp = await fetch(url);
     const data = await resp.json();
+
+    // Discard if day or store changed while the request was in flight
+    if (currentDay !== requestDay || currentStore !== requestStore) {
+      forecastLoading = false;
+      return;
+    }
 
     if (data.error) {
       console.warn('Forecast API error:', data.error);
     } else {
       forecastCache[cacheKey] = data;
-      // Cache weather data too
       if (data.weather) {
         weatherCache[dateStr] = data.weather;
       }
+      // If AI generated newer estimates, clear stale shop edits
+      clearEditsIfNewAIRun(dateStr);
     }
   } catch(e) {
     console.warn('Failed to fetch estimates:', e);
@@ -437,6 +711,85 @@ async function loadEstimatesForCurrentDay() {
   renderAll();
 }
 
+/**
+ * Check if AI estimates are newer than what we had before.
+ * If yes, clear all saved shop edits for this store+date — the AI "owns"
+ * the shop column until Rafa explicitly edits a cell.
+ * This ensures each weekly AI run starts fresh.
+ */
+function clearEditsIfNewAIRun(dateStr) {
+  const storeDateKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[storeDateKey];
+  if (!cached || !cached.generatedAt) return;
+
+  const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
+  const lastKnown = localStorage.getItem(genKey);
+
+  if (lastKnown === null) {
+    // First time seeing this store+date — record the timestamp without clearing edits.
+    // This prevents wiping user edits on first page load or after a localStorage clear.
+    localStorage.setItem(genKey, cached.generatedAt);
+    return;
+  }
+
+  if (lastKnown !== cached.generatedAt) {
+    // Genuinely new AI run (timestamp changed) — clear shop edits so Rafa sees fresh estimates
+    const shopKey = getShopStorageKey();
+    localStorage.removeItem(shopKey);
+
+    // Clear editedCells for shop keys (keep order edits)
+    for (const key of Object.keys(editedCells)) {
+      if (!key.includes('-order') && !/-(b[123]o)$/.test(key)) {
+        delete editedCells[key];
+      }
+    }
+
+    // Remember this AI run so we don't clear edits again until next run
+    localStorage.setItem(genKey, cached.generatedAt);
+  }
+}
+
+// Get the shipping split for a Sant Joan bread product from cached estimates
+function getBreadShippingSplit(breadKey) {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[cacheKey];
+  if (!cached || !cached.estimates) return null;
+  // Map bread key → product sheet name
+  const KEY_TO_PRODUCT = {
+    origo: 'ORIGO', origoMolde: 'MOTLLE', origoIntegral: 'ORIGO INTEGRAL',
+    especial: 'ESPECIAL', llavors: 'LLAVORS', segolIntegral: 'SÈGOL INTEGRAL',
+    copenhague: 'COPENHAGUE', baguette: 'BAGUETTE', focaccia: 'FOCACCIA',
+    espeltaPetita: 'ESPELTA PETITA',
+  };
+  const productName = KEY_TO_PRODUCT[breadKey];
+  if (!productName) return null;
+  const est = cached.estimates.find(e => e.product === productName);
+  if (est && est.shippingSplit) return est.shippingSplit;
+  return null;
+}
+
+// Get the active Especial variety for the current target date from cached estimates
+function getActiveEspecialVariety() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[cacheKey];
+  if (!cached || !cached.estimates) return null;
+  const est = cached.estimates.find(e => e.product === 'ESPECIAL');
+  if (est && est.activeVariety) return est.activeVariety;
+  // Fallback: compute locally using same ISO week logic as backend
+  const d = new Date(targetDate);
+  const dayNum = d.getDay() || 7;
+  const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+  const isoWeek = Math.ceil((((tmp - yearStart) / 86400000) + 1) / 7);
+  const varieties = ['Marbrejat', 'Sèsam'];
+  return varieties[isoWeek % varieties.length];
+}
+
 // Get cached estimates for current day, or return defaults
 function getShopSuggestions() {
   const targetDate = getTargetDate(currentDay);
@@ -444,13 +797,18 @@ function getShopSuggestions() {
   const cacheKey = `${currentStore}-${dateStr}`;
   const cached = forecastCache[cacheKey];
 
-  const result = { bread: {}, pastry: {} };
+  const result = { bread: {}, pastry: {}, flavors: {} };
 
   // Default all to 0
   BREAD.forEach(item => { if (item.key) result.bread[item.key] = 0; });
   PASTRY_GROUPS.flat().forEach(p => { if (p.key) result.pastry[p.key] = { b1: 0, b2: 0, b3: 0 }; });
 
   if (!cached || !cached.estimates) return result;
+
+  // Extract per-flavor focaccia / bocadillo estimates (flavorName set, cell is null)
+  for (const est of cached.estimates) {
+    if (est.flavorName) result.flavors[est.flavorName] = est.estimate;
+  }
 
   for (const est of cached.estimates) {
     const key = CELL_TO_KEY[est.cell];
@@ -459,16 +817,27 @@ function getShopSuggestions() {
     if (est.type === 'bread') {
       result.bread[key] = est.estimate;
     } else if (est.type === 'pastry') {
-      // Distribute total across batches: ~50% b1, ~30% b2, ~20% b3
+      // Distribute total across batches using hourly sales data from BigQuery
+      // API provides batchSplit: { b1Pct, b2Pct, b3Pct } based on real hourly patterns
+      // Fallback to even 33/33/34 if no data available
       const total = est.estimate;
-      const lata = est.lataSize || 12;
-      if (lata > 0) {
-        const b1 = Math.ceil(total * 0.5 / lata) * lata;
-        const b2 = Math.ceil(total * 0.3 / lata) * lata;
-        const b3 = Math.max(0, total - b1 - b2);
-        result.pastry[key] = { b1, b2, b3: Math.ceil(b3 / lata) * lata };
+      const split = est.batchSplit || { b1Pct: 0.33, b2Pct: 0.33, b3Pct: 0.34 };
+
+      // Show raw numbers to Rafa — rounding to lata multiples happens only at sync time
+      // Special baking rules per product:
+      // - Pastís llimona i ametlla: only baked once in B1
+      // - Cookie chocolate: only B1 (08-13h) and B3 (13h-close), no B2
+      if (est.product === 'Pastís llimona i ametlla') {
+        result.pastry[key] = { b1: total, b2: 0, b3: 0 };
+      } else if (est.product === 'Cookie chocolate') {
+        const b1 = Math.round(total * split.b1Pct);
+        const b3 = Math.max(0, total - b1);
+        result.pastry[key] = { b1, b2: 0, b3 };
       } else {
-        result.pastry[key] = { b1: Math.ceil(total * 0.5), b2: Math.ceil(total * 0.3), b3: Math.max(0, total - Math.ceil(total * 0.5) - Math.ceil(total * 0.3)) };
+        const b1 = Math.round(total * split.b1Pct);
+        const b3 = Math.round(total * split.b3Pct);
+        const b2 = Math.max(0, total - b1 - b3);
+        result.pastry[key] = { b1, b2, b3 };
       }
     }
   }
@@ -520,10 +889,40 @@ function getEstimateFactors() {
   const cacheKey = `${currentStore}-${dateStr}`;
   const cached = forecastCache[cacheKey];
   if (!cached) return null;
+
+  // Extract dominant context from per-product estimates
+  // (all products on same day share the same context type)
+  let contextType = 'none', contextReason = '', contextMultiplier = 1;
+  let learningActive = false, learningAvg = 1, learningSamples = 0;
+  let learningSum = 0, learningCount = 0;
+
+  if (cached.estimates && cached.estimates.length > 0) {
+    for (const est of cached.estimates) {
+      if (!est.factors) continue;
+      if (contextType === 'none' && est.factors.contextType !== 'none') {
+        contextType = est.factors.contextType;
+        contextReason = est.factors.contextReason;
+        contextMultiplier = est.factors.context;
+      }
+      if (est.factors.feedback && est.factors.feedback !== 1) {
+        learningActive = true;
+        learningSum += est.factors.feedback;
+        learningSamples = Math.max(learningSamples, est.factors.feedbackWeeks || 0);
+        learningCount++;
+      }
+    }
+    if (learningCount > 0) learningAvg = learningSum / learningCount;
+  }
+
   return {
     isHoliday: cached.isHoliday,
-    seasonalIndex: cached.seasonalIndex,
     weather: cached.weather,
+    contextType,
+    contextReason,
+    contextMultiplier,
+    learningActive,
+    learningAvg,
+    learningSamples,
   };
 }
 
@@ -532,7 +931,7 @@ let sobrasCache = {};
 let sobrasLoading = false;
 
 function getApiUrlProd() {
-  try { return localStorage.getItem('origo_prod_api_url') || ''; } catch(e) { return ''; }
+  try { return localStorage.getItem('origo_prod_api_url') || DEFAULT_API_URL; } catch(e) { return DEFAULT_API_URL; }
 }
 function setApiUrlProd(url) {
   try { localStorage.setItem('origo_prod_api_url', url); } catch(e) {}
@@ -585,18 +984,22 @@ async function fetchSobrasForCurrentDay() {
   const date = getLastWeekDate(currentDay);
   const cacheKey = `${currentStore}-${date}`;
 
-  if (sobrasCache[cacheKey]) return;
+  // Only skip if cache has real data (not an empty fallback from a failed fetch)
+  if (sobrasCache[cacheKey] && sobrasCache[cacheKey]._hasData) return;
 
   sobrasLoading = true;
   renderMain();
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
     const url = `${apiUrl}?action=getSobras&store=${currentStore}&date=${date}`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
     const data = await resp.json();
 
     // Transform API v2 response into internal format
-    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0 };
+    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0, _hasData: true };
     const products = data.products || {};
 
     for (const [name, pData] of Object.entries(products)) {
@@ -621,7 +1024,7 @@ async function fetchSobrasForCurrentDay() {
     sobrasCache[cacheKey] = result;
   } catch(e) {
     console.warn('Failed to fetch sobras:', e);
-    sobrasCache[cacheKey] = { bread: {}, pastry: {}, focaccia: {}, comments: '', tgtg: 0 };
+    // Don't cache failures — allow retry on next render/switch
   }
 
   sobrasLoading = false;
@@ -635,11 +1038,205 @@ function getSobras() {
 }
 
 // ============ STATE ============
-let currentStore = 'santpau';
+let currentStore = localStorage.getItem('origo-current-store') || 'santpau';
 let currentDay = 'Miércoles';
 let editedCells = {};
 
+// ============ INPUT PERSISTENCE (localStorage + BigQuery) ============
+// Shop values: saved per store + specific date (reset when new AI estimates arrive)
+// Order values: saved per store + day of week (carry over week to week)
+// Both sync to BigQuery for cross-device persistence.
+
+const DAYS_TO_DOW = { 'Lunes': '1', 'Martes': '2', 'Miércoles': '3', 'Jueves': '4', 'Viernes': '5', 'Sábado': '6', 'Domingo': '0' };
+
+function getShopStorageKey() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  // Include day name so Friday and Saturday can never share the same localStorage
+  // entry even if getTargetDate transiently resolves to the wrong date.
+  return `origo-shop-${currentStore}-${currentDay}-${dateStr}`;
+}
+
+function getOrderStorageKey() {
+  // Day-of-week key (no date) so orders persist across weeks
+  return `origo-orders-${currentStore}-${currentDay}`;
+}
+
+// Debounce timer for BigQuery sync (avoid flooding on rapid edits)
+let _bqSaveTimer = null;
+let _bqPendingInputs = [];
+
+function saveInputState() {
+  const shopData = {};
+  const orderData = {};
+  const changedInputs = [];
+
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const dow = DAYS_TO_DOW[currentDay] || '1';
+
+  document.querySelectorAll('.editable input').forEach(input => {
+    const key = input.dataset.key;
+    const val = input.value;
+    if (!key) return;
+
+    // Only save cells that were explicitly edited by the user.
+    // This prevents saving AI-generated values (or failed 0s) as manual overrides.
+    if (!editedCells[key]) return;
+
+    // Treat cleared fields as 0 so the old value in BigQuery gets overwritten
+    const saveVal = val === '' ? '0' : val;
+
+    const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+    if (isOrder) {
+      orderData[key] = saveVal;
+      changedInputs.push({ key, type: 'order', dateKey: dow, value: saveVal });
+    } else {
+      shopData[key] = saveVal;
+      changedInputs.push({ key, type: 'shop', dateKey: dateStr, value: saveVal });
+    }
+  });
+
+  // 1. Save to localStorage (instant)
+  localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells }));
+  // savedAt timestamp lets restoreInputState discard orders older than 8 days,
+  // preventing stale/contaminated data from persisting across weeks indefinitely.
+  localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData, savedAt: Date.now() }));
+
+  // 2. Debounced save to BigQuery (non-blocking, 2s after last edit)
+  _bqPendingInputs = changedInputs;
+  clearTimeout(_bqSaveTimer);
+  _bqSaveTimer = setTimeout(() => syncInputsToBigQuery(_bqPendingInputs), 2000);
+}
+
+async function syncInputsToBigQuery(inputs) {
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl || inputs.length === 0) return;
+
+  try {
+    await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'saveInputs',
+        store: currentStore,
+        inputs: inputs
+      })
+    });
+  } catch (e) {
+    console.warn('BigQuery sync failed (will retry on next edit):', e.message);
+  }
+}
+
+// Track which store+day combos have already fetched from BigQuery this session
+const _inputsFetched = new Set();
+const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
+
+async function restoreInputState() {
+  // 1. Restore from localStorage first (instant)
+  // IMPORTANT: Only restore cells the user explicitly edited — not AI values or stale 0s
+  let localShop = {}, localOrders = {};
+  let savedEdited = {};
+  try {
+    const shopSaved = localStorage.getItem(getShopStorageKey());
+    if (shopSaved) {
+      const parsed = JSON.parse(shopSaved);
+      if (parsed.inputs) localShop = parsed.inputs;
+      if (parsed.editedCells) savedEdited = parsed.editedCells;
+    }
+  } catch(e) {}
+  try {
+    const orderSaved = localStorage.getItem(getOrderStorageKey());
+    if (orderSaved) {
+      const parsed = JSON.parse(orderSaved);
+      const MAX_ORDER_AGE_MS = 8 * 24 * 60 * 60 * 1000; // 8 days
+      const isStale = parsed.savedAt && (Date.now() - parsed.savedAt > MAX_ORDER_AGE_MS);
+      if (parsed.inputs && !isStale) localOrders = parsed.inputs;
+      if (isStale) localStorage.removeItem(getOrderStorageKey()); // Self-heal stale entry
+    }
+  } catch(e) {}
+
+  // Only restore shop inputs that were explicitly user-edited
+  const filteredShop = {};
+  for (const [key, val] of Object.entries(localShop)) {
+    if (savedEdited[key]) {
+      filteredShop[key] = val;
+      editedCells[key] = true;
+    }
+  }
+  applyInputValues(filteredShop);
+  applyInputValues(localOrders);
+
+  // 2. Load from BigQuery — use pre-cached init bundle data if available,
+  //    otherwise fetch once per store+day (not on every re-render)
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const fetchKey = `${currentStore}-${dateStr}`;
+
+  let bqData = null;
+
+  if (_cachedBqInputs[fetchKey]) {
+    // Use inputs already fetched by init bundle — no extra network call
+    bqData = _cachedBqInputs[fetchKey];
+  } else if (!_inputsFetched.has(fetchKey)) {
+    _inputsFetched.add(fetchKey);
+    try {
+      const apiUrl = getForecastApiUrl();
+      if (!apiUrl) { _inputsFetched.delete(fetchKey); return; }
+      const dow = DAYS_TO_DOW[currentDay] || '1';
+      const resp = await fetch(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
+      bqData = await resp.json();
+    } catch(e) {
+      _inputsFetched.delete(fetchKey);
+      console.warn('BigQuery load failed (using localStorage):', e.message);
+    }
+  }
+
+  if (bqData && bqData.success) {
+    // Restore shop inputs — always apply (user edits should persist)
+    if (bqData.shop && Object.keys(bqData.shop).length > 0) {
+      applyInputValues(bqData.shop);
+    }
+    // Orders are always restored (weekly recurring, not tied to AI runs)
+    if (bqData.orders && Object.keys(bqData.orders).length > 0) {
+      applyInputValues(bqData.orders);
+      const merged = { ...localOrders, ...bqData.orders };
+      localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
+    }
+  }
+}
+
+function applyInputValues(inputMap) {
+  if (!inputMap) return;
+  for (const [key, val] of Object.entries(inputMap)) {
+    // Sant Joan: bread shop/order inputs are algorithm-driven envío 1/2 values,
+    // so don't overwrite them with stale manual data
+    if (currentStore === 'santjoan' && key.startsWith('bread-') &&
+        (key.endsWith('-order') || key.endsWith('-shop'))) continue;
+
+    const input = document.querySelector(`input[data-key="${key}"]`);
+    if (input) {
+      // Skip restoring 0 for shop cells — 0 means user cleared it, so show AI value
+      const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+      if (!isOrder && (val === 0 || val === '0')) continue;
+
+      input.value = val;
+      input.closest('td').className = 'editable edited';
+      editedCells[key] = true;
+    }
+  }
+  // Recalculate totals after input values change
+  recalcBreadTotals();
+  recalcPastryTotals();
+}
+
 // ============ HELPERS ============
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 function eCell(key, value, cls) {
   const isEdited = editedCells[key];
   const cellCls = isEdited ? 'edited' : cls;
@@ -647,20 +1244,36 @@ function eCell(key, value, cls) {
   return `<td class="editable ${cellCls}"><input type="text" data-key="${key}" value="${displayVal}" inputmode="numeric"></td>`;
 }
 
-// Bread sobras cell — simple: sobras count or sold-out time
+// Format a sold-out timestamp to just HH:MM
+// Input can be ISO string ("1899-12-30T22:56:44.000Z"), "HH:MM", or "HH:MM:SS"
+function formatSoldOutTime(raw) {
+  if (!raw) return '';
+  const str = String(raw);
+  // ISO timestamp — extract time part
+  if (str.includes('T')) {
+    try {
+      const d = new Date(str);
+      if (!isNaN(d)) return d.getUTCHours().toString().padStart(2,'0') + ':' + d.getUTCMinutes().toString().padStart(2,'0');
+    } catch(e) {}
+  }
+  // Already "HH:MM" or "HH:MM:SS" — keep just HH:MM
+  const m = str.match(/(\d{1,2}:\d{2})/);
+  return m ? m[1] : str;
+}
+
+// Bread sobras cell — simple: sobras count or sold-out indicator (no batches for bread)
 function sobrasCell(data) {
   if (!data) return `<td class="sobras-cell">—</td>`;
-  // Check if any batch sold out
-  const soldOuts = [];
-  if (data.b1SoldOut) soldOuts.push('1er ' + data.b1SoldOut);
-  if (data.b2SoldOut) soldOuts.push('2do ' + data.b2SoldOut);
-  if (data.b3SoldOut) soldOuts.push('3er ' + data.b3SoldOut);
+  const hasSobras = data.sobras !== null && data.sobras !== undefined && data.sobras !== '';
 
-  if (soldOuts.length > 0 && (data.sobras === null || data.sobras === undefined || data.sobras === '')) {
-    return `<td class="sobras-cell ran-out">⚡ ${soldOuts[0]}</td>`;
+  // For bread, any sold-out field just means it sold out (no batch distinction)
+  const soldOut = data.b1SoldOut || data.b2SoldOut || data.b3SoldOut;
+
+  if (soldOut && !hasSobras) {
+    return `<td class="sobras-cell ran-out">⚡ Agotado ${formatSoldOutTime(soldOut)}</td>`;
   }
-  if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">✓ 0</td>`;
-  if (data.sobras !== null && data.sobras !== undefined && data.sobras !== '') {
+  if (hasSobras) {
+    if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">✓ 0</td>`;
     return `<td class="sobras-cell leftover">${data.sobras}</td>`;
   }
   return `<td class="sobras-cell">—</td>`;
@@ -673,7 +1286,7 @@ function pastryBatchSobras(data, batchNum) {
   const time = data[key];
   if (time) {
     const cls = batchNum === 1 ? 'b1' : batchNum === 2 ? 'b2' : 'b3';
-    return `<span class="batch-alert ${cls}">⚡ ${time}</span>`;
+    return `<span class="batch-alert ${cls}">⚡ ${formatSoldOutTime(time)}</span>`;
   }
   return '';
 }
@@ -696,9 +1309,9 @@ function pastryTotalSobras(data) {
   if (hasSoldOuts && hasSobras) html += '<br>';
 
   if (hasSoldOuts) {
-    if (data.b1SoldOut) html += `<span class="batch-alert b1">1er ⚡${data.b1SoldOut}</span> `;
-    if (data.b2SoldOut) html += `<span class="batch-alert b2">2do ⚡${data.b2SoldOut}</span> `;
-    if (data.b3SoldOut) html += `<span class="batch-alert b3">3er ⚡${data.b3SoldOut}</span> `;
+    if (data.b1SoldOut) html += `<span class="batch-alert b1">1er ⚡${formatSoldOutTime(data.b1SoldOut)}</span> `;
+    if (data.b2SoldOut) html += `<span class="batch-alert b2">2do ⚡${formatSoldOutTime(data.b2SoldOut)}</span> `;
+    if (data.b3SoldOut) html += `<span class="batch-alert b3">3er ⚡${formatSoldOutTime(data.b3SoldOut)}</span> `;
   }
 
   if (!hasSobras && !hasSoldOuts) return `<td class="sobras-cell">—</td>`;
@@ -707,16 +1320,49 @@ function pastryTotalSobras(data) {
   return `<td class="sobras-cell ${cls}">${html}</td>`;
 }
 
-function productNameCell(name, label) {
+function getProductFactorTooltip(estKey) {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const cached = forecastCache[cacheKey];
+  if (!cached || !cached.estimates) return '';
+
+  const est = cached.estimates.find(e => CELL_TO_KEY[e.cell] === estKey);
+  if (!est || !est.factors) return '';
+
+  const f = est.factors;
+  const parts = [];
+  if (f.trend !== 1) parts.push(`Tendencia: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
+  if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+  else if (f.contextType === 'schoolHoliday') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+  else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
+  if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
+  if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
+  if (f.soldOut !== 1) parts.push(`Agotado: +${Math.round((f.soldOut - 1) * 100)}% total`);
+  if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
+  if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
+  if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
+  if (est.activeVariety) parts.push(`🔄 Variedad: ${est.activeVariety}`);
+  if (parts.length === 0) parts.push('Sin ajustes especiales');
+  return parts.join('\n');
+}
+
+function productNameCell(name, label, estKey) {
   const multHtml = label ? `<span class="mult">${label}</span>` : '';
-  return `<td class="product-name">${name}${multHtml}</td>`;
+  const tooltip = estKey ? getProductFactorTooltip(estKey) : '';
+  const titleAttr = tooltip ? ` title="${tooltip.replace(/"/g, '&quot;')}"` : '';
+  return `<td class="product-name"${titleAttr}>${name}${multHtml}</td>`;
 }
 
 // ============ RENDER ============
 function renderDayTabs() {
-  document.getElementById('dayTabs').innerHTML = DAYS.map(d =>
-    `<button class="day-tab ${d === currentDay ? 'active' : ''}" onclick="switchDay('${d}')">${d}</button>`
-  ).join('');
+  document.getElementById('dayTabs').innerHTML = DAYS.map(d => {
+    const target = getTargetDate(d);
+    const dateLabel = target.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+    const generated = isDayGenerated(d);
+    const icon = generated ? '✓ ' : '';
+    return `<button class="day-tab ${d === currentDay ? 'active' : ''}" onclick="switchDay('${d}')">${icon}${d} <span style="font-weight:400;font-size:12px;opacity:0.8">${dateLabel}</span></button>`;
+  }).join('');
 }
 
 function renderAlertsBar() {
@@ -729,20 +1375,87 @@ function renderAlertsBar() {
 
   if (factors) {
     if (factors.isHoliday) html += `<div class="event-badge high">🎉 Festivo — producción tipo sábado</div>`;
-    if (factors.seasonalIndex && factors.seasonalIndex !== 1.0) {
-      const pct = Math.round((factors.seasonalIndex - 1) * 100);
+
+    // Context-aware adjustment badge
+    if (factors.contextType === 'specialDate') {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      html += `<div class="event-badge high">📅 Fecha especial: ${sign}${pct}% (${factors.contextReason})</div>`;
+    } else if (factors.contextType === 'schoolHoliday') {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      const cls = pct < 0 ? 'medium' : 'info';
+      html += `<div class="event-badge ${cls}">🏖️ Vacaciones escolares: ${sign}${pct}% (${factors.contextReason})</div>`;
+    } else if (factors.contextType === 'yoyTransition' && factors.contextMultiplier !== 1) {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
       const sign = pct > 0 ? '+' : '';
       const cls = pct < -5 ? 'medium' : 'info';
-      html += `<div class="event-badge ${cls}">📊 Ajuste estacional: ${sign}${pct}%</div>`;
+      html += `<div class="event-badge ${cls}">📊 Tendencia estacional: ${sign}${pct}%</div>`;
     }
+
+    // Weather badge
     if (factors.weather && factors.weather.precipitation_mm > 3) {
       const adj = factors.weather.precipitation_mm > 10 ? '-10%' : '-5%';
       html += `<div class="event-badge medium">🌧️ Ajuste lluvia: ${adj}</div>`;
+    }
+
+    // Learning factor badge
+    if (factors.learningActive) {
+      const pct = Math.round((factors.learningAvg - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      html += `<div class="event-badge info">🧠 Feedback: ${sign}${pct}% (${factors.learningSamples} sem.)</div>`;
     }
   }
 
   if (!factors) html += `<div class="event-badge info">💡 Conecta la API para ver estimaciones reales</div>`;
   document.getElementById('alertsBar').innerHTML = html;
+}
+
+// Recalculate bread row totals from current input values (global for use in applyInputValues)
+function recalcBreadTotals() {
+  BREAD.forEach(item => {
+    if (!item.key) return;
+    const sv = parseInt((document.querySelector(`input[data-key="bread-${item.key}-shop"]`) || {}).value) || 0;
+    const ov = parseInt((document.querySelector(`input[data-key="bread-${item.key}-order"]`) || {}).value) || 0;
+    const totalCell = document.querySelector(`td[data-bread-total="${item.key}"]`);
+    if (totalCell) totalCell.textContent = (sv + ov) || '';
+  });
+}
+
+// Recalculate pastry row totals from current input values (global for use in applyInputValues)
+function recalcPastryTotals() {
+  PASTRY_GROUPS.flat().forEach(p => {
+    if (!p.key) return;
+    let shopTotal = 0, allTotal = 0;
+    ['b1','b2','b3'].forEach(b => {
+      const sv = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`) || {}).value) || 0;
+      const ov = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`) || {}).value) || 0;
+      shopTotal += sv;
+      allTotal += sv + ov;
+    });
+    const shopCell = document.querySelector(`td[data-total-shop="${p.key}"]`);
+    const allCell = document.querySelector(`td[data-total-all="${p.key}"]`);
+    if (shopCell) shopCell.textContent = shopTotal || '';
+    if (allCell) allCell.textContent = allTotal || '';
+  });
+}
+
+/**
+ * Returns the current list of focaccia/bocadillo flavor names for the active store.
+ * Prefers the live per-flavor estimates from the API (so the list always matches
+ * Square), with STORES.fcNames as a fallback while estimates are loading.
+ */
+function getFcNames() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cached = forecastCache[`${currentStore}-${dateStr}`];
+  if (cached && cached.estimates) {
+    const fromEstimates = cached.estimates
+      .filter(e => e.flavorName && e.type === 'bread')
+      .map(e => e.flavorName);
+    if (fromEstimates.length > 0) return fromEstimates;
+  }
+  return STORES[currentStore].fcNames;
 }
 
 function renderMain() {
@@ -760,27 +1473,58 @@ function renderMain() {
   }
 
   // ===== BREAD =====
+  const isSantJoan = currentStore === 'santjoan';
+  const breadColCount = 7; // name, sobras, sep, shop/envío1, orders/envío2, sep, total
   html += `<div class="section-header">🍞 Pan — A hornear el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px"></th>
-    <th class="shop-header">Shop</th>
-    <th class="orders-header">Pedidos</th>
-    <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
+    <th class="shop-header">${isSantJoan ? 'Envío 1' : 'Shop'}</th>
+    <th class="orders-header">${isSantJoan ? 'Envío 2' : 'Pedidos'}</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
+    <th>Total</th>
   </tr>`;
+  if (isSantJoan) {
+    html += `<tr><td colspan="${breadColCount}" style="font-size:11px;color:#888;padding:2px 8px;border:none;">Envío 1: llega 07:30 · Envío 2: llega 14:30</td></tr>`;
+  }
 
   BREAD.forEach(item => {
-    if (item.sep) { html += `<tr><td colspan="5" class="group-sep"></td></tr>`; return; }
-    if (item.spacer) { html += `<tr><td class="product-name"></td><td></td><td class="order-cell"></td><td class="sep"></td><td class="sobras-cell"></td></tr>`; return; }
-    const shopVal = shop.bread[item.key] ?? '';
-    const orderVal = orders.bread[item.key] ?? '';
+    if (item.sep) { html += `<tr><td colspan="${breadColCount}" class="group-sep"></td></tr>`; return; }
+    if (item.spacer) { html += `<tr><td class="product-name"></td><td class="sobras-cell"></td><td class="sep"></td><td></td><td class="order-cell"></td><td class="sep"></td><td></td></tr>`; return; }
+
+    let shopVal = shop.bread[item.key] ?? '';
+    let orderVal = orders.bread[item.key] ?? '';
+
+    // Sant Joan: use shipping split (envío 1 / envío 2) from backend
+    if (isSantJoan) {
+      const split = getBreadShippingSplit(item.key);
+      if (split) {
+        shopVal = split.envio1;
+        orderVal = split.envio2;
+      }
+    }
+
     const sobrasData = sobras.bread[item.key];
+    const shopNum = parseInt(shopVal) || 0;
+    const orderNum = parseInt(orderVal) || 0;
+    const total = shopNum + orderNum;
+
+    // Show active variety for Especial rotation
+    let displayName = item.name;
+    if (item.key === 'especial') {
+      const variety = getActiveEspecialVariety();
+      if (variety) displayName = `ESPECIAL <span style="font-weight:400;font-size:12px;color:#666">(${variety})</span>`;
+    }
+
     html += `<tr>
-      ${productNameCell(item.name, item.label)}
-      ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
-      ${eCell(`bread-${item.key}-order`, orderVal, 'manual order-cell')}
-      <td class="sep"></td>
+      ${productNameCell(displayName, item.label, item.key)}
       ${sobrasCell(sobrasData)}
+      <td class="sep"></td>
+      ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
+      ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell')}
+      <td class="sep"></td>
+      <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
     </tr>`;
   });
   html += `</table>`;
@@ -794,7 +1538,7 @@ function renderMain() {
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
     <th class="batch-1" colspan="2">1er lote · 7:00</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
-    <th class="batch-2" colspan="2">2do lote · 11:00</th>
+    <th class="batch-2" colspan="2">2do lote · ${currentStore === 'santpau' ? '09:30' : '11:00'}</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
     <th class="batch-3" colspan="2">3er lote · 13:00</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
@@ -824,7 +1568,7 @@ function renderMain() {
       const b3Alert = pastryBatchSobras(sd, 3);
 
       html += `<tr>
-        ${productNameCell(p.name, p.label)}
+        ${productNameCell(p.name, p.label, p.key)}
         ${pastryTotalSobras(sd)}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
@@ -836,30 +1580,39 @@ function renderMain() {
         ${eCell(`pastry-${p.key}-b3s`, s.b3, 'ai')}
         ${eCell(`pastry-${p.key}-b3o`, o.b3, 'manual order-cell')}
         <td class="sep"></td>
-        <td style="color:#2d6a4f;font-weight:600">${totalShop || ''}</td>
-        <td class="total-col">${totalAll || ''}</td>
+        <td style="color:#2d6a4f;font-weight:600" data-total-shop="${p.key}">${totalShop || ''}</td>
+        <td class="total-col" data-total-all="${p.key}">${totalAll || ''}</td>
       </tr>`;
     });
   });
   html += `</table>`;
 
   // ===== FOCACCIA / BOCADILLO =====
-  const fcLabel = store.fcType === 'focaccia' ? 'Focaccias' : 'Bocadillos';
-  const fcIcon = store.fcType === 'focaccia' ? '🫓' : '🥖';
+  const isBocadillo = store.fcType === 'bocadillo';
+  const fcLabel = isBocadillo ? 'Bocadillos' : 'Focaccias';
+  const fcIcon = isBocadillo ? '🥖' : '🫓';
   html += `<div class="section-header">${fcIcon} ${fcLabel}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px">Producto</th>
     <th class="shop-header">Shop</th>
-    <th class="orders-header">Pedidos</th>
+    ${isBocadillo ? '' : '<th class="orders-header">Pedidos</th>'}
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
+    <th>Total</th>
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
   </tr>`;
-  store.fcNames.forEach(name => {
+  getFcNames().forEach((name, idx) => {
     const fcSobras = sobras.focaccia[name];
+    const shopVal = shop.flavors[name] ?? '';
+    const orderVal = 0;
+    const shopNum = parseInt(shopVal) || 0;
+    const total = shopNum + orderVal;
     html += `<tr>
       <td class="product-name">${name}</td>
-      ${eCell(`fc-${name}-shop`, 4, 'ai')}
-      ${eCell(`fc-${name}-order`, 0, 'manual order-cell')}
+      ${eCell(`fc-${idx}-shop`, shopVal, 'ai')}
+      ${isBocadillo ? '' : eCell(`fc-${idx}-order`, orderVal, 'manual order-cell')}
+      <td class="sep"></td>
+      <td class="total-col" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
       <td class="sep"></td>
       ${sobrasCell(fcSobras)}
     </tr>`;
@@ -873,7 +1626,7 @@ function renderMain() {
     html += `<div class="sobras-loading" style="padding:12px;">Cargando datos de sobras...</div>`;
   } else if (sobrasComments) {
     html += `<div style="background:white;border:1px solid #d5cfc7;border-radius:8px;padding:12px;font-size:13px;color:#555;max-width:600px;">
-      ${sobrasComments}
+      ${escapeHtml(sobrasComments)}
     </div>`;
   } else {
     html += `<div style="background:white;border:1px solid #d5cfc7;border-radius:8px;padding:12px;font-size:13px;color:#999;max-width:600px;">
@@ -883,39 +1636,121 @@ function renderMain() {
 
   document.getElementById('mainContent').innerHTML = html;
 
+  // Recalculate all totals after rendering
+  recalcBreadTotals();
+  recalcPastryTotals();
+
   document.querySelectorAll('.editable input').forEach(input => {
+    // Strip non-numeric on input (allow digits only) + recalculate totals live
+    input.addEventListener('input', function() {
+      this.value = this.value.replace(/[^\d]/g, '');
+      recalcBreadTotals();
+      recalcPastryTotals();
+    });
+    // Validate, mark edited, and save on change (blur)
     input.addEventListener('change', function() {
+      this.value = this.value.replace(/[^\d]/g, '');
+      const v = parseInt(this.value) || 0;
+      this.value = Math.max(0, Math.min(9999, v)) || '';
       editedCells[this.dataset.key] = true;
       this.closest('td').className = 'editable edited';
+      saveInputState();
+      recalcBreadTotals();
+      recalcPastryTotals();
     });
   });
+
+  // Restore any previously saved manual adjustments
+  restoreInputState();
 }
 
 // ===== SYNC WITH ROUNDING PREVIEW =====
 function collectRoundingChanges() {
   const changes = [];
 
+  // Bread: round (shop + orders) total, difference goes to shop
   BREAD.forEach(item => {
     if (!item.roundTo) return;
-    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
-    if (!input) return;
-    const val = parseInt(input.value) || 0;
-    const rounded = roundToNearest(val, item.roundTo);
-    if (val !== rounded && val > 0) {
-      changes.push({ product: item.name, field: 'Shop', original: val, rounded, mult: item.label });
+    const shopInput = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    const orderInput = document.querySelector(`input[data-key="bread-${item.key}-order"]`);
+    if (!shopInput) return;
+    const shopVal = parseInt(shopInput.value) || 0;
+    const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+    const total = shopVal + orderVal;
+    const rounded = roundToNearest(total, item.roundTo);
+    if (total !== rounded && total > 0) {
+      const newShop = rounded - orderVal;
+      changes.push({ product: item.name, field: 'Shop', original: shopVal, rounded: newShop, total, roundedTotal: rounded, mult: item.label });
     }
   });
 
-  const batchNames = { b1s: '1er lote Shop', b2s: '2do lote Shop', b3s: '3er lote Shop' };
+  // Pastry: smart tray completion (move B3→B2 to complete trays) then round
+  const batchNames = { b1: '1er lote', b2: '2do lote', b3: '3er lote' };
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
-    ['b1s','b2s','b3s'].forEach(b => {
-      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
-      if (!input) return;
-      const val = parseInt(input.value) || 0;
-      const rounded = roundToNearest(val, p.roundTo);
-      if (val !== rounded && val > 0) {
-        changes.push({ product: p.name, field: batchNames[b], original: val, rounded, mult: p.label });
+    const lata = p.roundTo;
+
+    // Read current values for all 3 batches
+    const vals = {};
+    ['b1','b2','b3'].forEach(b => {
+      const shopInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`);
+      const orderInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`);
+      vals[b] = {
+        shopInput,
+        orderInput,
+        shop: shopInput ? (parseInt(shopInput.value) || 0) : 0,
+        order: orderInput ? (parseInt(orderInput.value) || 0) : 0,
+      };
+      vals[b].total = vals[b].shop + vals[b].order;
+    });
+
+    // Cascading tray completion: fill trays top-down to minimize waste
+    // Step 1: Move units from B2 shop → B1 to complete B1's tray
+    let b2ToB1 = 0;
+    if (vals.b1.total > 0 && vals.b2.shop > 0) {
+      const b1Remainder = vals.b1.total % lata;
+      if (b1Remainder > 0) {
+        const unitsNeeded = lata - b1Remainder;
+        b2ToB1 = Math.min(unitsNeeded, vals.b2.shop);
+        vals.b1.shop += b2ToB1;
+        vals.b1.total += b2ToB1;
+        vals.b2.shop -= b2ToB1;
+        vals.b2.total -= b2ToB1;
+      }
+    }
+    // Step 2: Move units from B3 shop → B2 to complete B2's tray
+    let b3ToB2 = 0;
+    if (vals.b2.total > 0 && vals.b3.shop > 0) {
+      const b2Remainder = vals.b2.total % lata;
+      if (b2Remainder > 0) {
+        const unitsNeeded = lata - b2Remainder;
+        b3ToB2 = Math.min(unitsNeeded, vals.b3.shop);
+        vals.b2.shop += b3ToB2;
+        vals.b2.total += b3ToB2;
+        vals.b3.shop -= b3ToB2;
+        vals.b3.total -= b3ToB2;
+      }
+    }
+
+    // If there were transfers, add context rows
+    if (b2ToB1 > 0) {
+      changes.push({ product: p.name, type: 'transfer', units: b2ToB1, from: '2do', to: '1er' });
+    }
+    if (b3ToB2 > 0) {
+      changes.push({ product: p.name, type: 'transfer', units: b3ToB2, from: '3er', to: '2do' });
+    }
+
+    // Now round each batch and report changes
+    ['b1','b2','b3'].forEach(b => {
+      if (!vals[b].shopInput) return;
+      const total = vals[b].total;
+      const orderVal = vals[b].order;
+      const originalShop = parseInt(vals[b].shopInput.value) || 0;
+      const rounded = roundWithOrderGuarantee(total, orderVal, lata);
+      const wasTransferred = (b2ToB1 > 0 && b === 'b1') || (b2ToB1 > 0 && b === 'b2') || (b3ToB2 > 0 && (b === 'b2' || b === 'b3'));
+      if ((total !== rounded && (total > 0 || orderVal > 0)) || (wasTransferred && originalShop !== Math.max(0, rounded - orderVal))) {
+        const newShop = Math.max(0, rounded - orderVal);
+        changes.push({ product: p.name, field: batchNames[b], original: originalShop, rounded: newShop, total, roundedTotal: rounded, mult: p.label });
       }
     });
   });
@@ -932,15 +1767,27 @@ function showSyncPreview() {
   } else {
     let html = '';
     changes.forEach(c => {
-      html += `<div class="round-row">
-        <span>${c.product} <span style="color:#888;font-size:11px">${c.field}</span></span>
-        <span>
-          <span class="original">${c.original}</span>
-          <span class="arrow">→</span>
-          <span class="rounded">${c.rounded}</span>
-          <span class="round-badge">${c.mult}</span>
-        </span>
-      </div>`;
+      if (c.type === 'transfer') {
+        html += `<div class="round-row" style="color:#1a5276;background:#eef6ff;border-radius:6px;padding:4px 8px;margin:6px 0 2px;">
+          <span>${c.product}</span>
+          <span style="font-size:12px;">↰ mover <strong>${c.units}</strong> uds del ${c.from} → ${c.to} lote para completar bandeja</span>
+        </div>`;
+      } else {
+        html += `<div class="round-row">
+          <span>${c.product} <span style="color:#888;font-size:11px">${c.field}</span></span>
+          <span>
+            <span style="color:#888;font-size:11px">total ${c.total}</span>
+            <span class="arrow">→</span>
+            <span style="color:#888;font-size:11px">${c.roundedTotal}</span>
+            <span style="margin:0 4px">·</span>
+            <span style="font-size:11px">shop</span>
+            <span class="original">${c.original}</span>
+            <span class="arrow">→</span>
+            <span class="rounded">${c.rounded}</span>
+            <span class="round-badge">${c.mult}</span>
+          </span>
+        </div>`;
+      }
     });
     content.innerHTML = html;
   }
@@ -956,6 +1803,54 @@ function closeSyncPreview() {
 const KEY_TO_CELL = {};
 for (const [cell, key] of Object.entries(CELL_TO_KEY)) { KEY_TO_CELL[key] = cell; }
 
+/**
+ * Allocate whole focaccias to flavors using the largest-remainder method.
+ *
+ * Steps:
+ *  1. Sum all flavor portions → totalPortions
+ *  2. ceil(totalPortions / 15) → totalFocaccias  (rounds the TOTAL up, not each flavor)
+ *  3. Give each flavor a proportional share:
+ *       rawShare_i = portions_i / totalPortions × totalFocaccias
+ *  4. Each flavor starts with floor(rawShare_i).
+ *  5. Remaining focaccias (due to flooring) are given one-by-one to the flavors
+ *     with the largest fractional remainders — so the most in-demand flavors
+ *     get priority.
+ *
+ * Example:  {A:15, B:12, C:8, D:6, E:4, F:2} → total=47 → 4 focaccias
+ *   Shares:   1.28   1.02  0.68  0.51  0.34  0.17
+ *   Floors:      1      1     0     0     0     0   → sum=2, need 2 more
+ *   Remainders: .28   .02  .68   .51   .34   .17
+ *   Top-2 rem: C(.68), D(.51) → get +1 each
+ *   Result:  {A:1, B:1, C:1, D:1, E:0, F:0}
+ *
+ * @param {Object} flavorsPortions  { flavorName: portionsEstimate, … }
+ * @returns {Object}                { flavorName: wholeForaccias, … }
+ */
+function allocateFocaccias(flavorsPortions) {
+  const PORTIONS_PER_FOCACCIA = 15;
+  const names    = Object.keys(flavorsPortions);
+  const portions = names.map(n => Math.max(0, parseInt(flavorsPortions[n]) || 0));
+  const total    = portions.reduce((s, v) => s + v, 0);
+
+  const out = {};
+  if (total === 0) { names.forEach(n => out[n] = 0); return out; }
+
+  const totalFocaccias = Math.ceil(total / PORTIONS_PER_FOCACCIA);
+  const shares         = portions.map(p => p / total * totalFocaccias);
+  const floors         = shares.map(Math.floor);
+  const remainders     = shares.map((s, i) => s - floors[i]);
+
+  // Distribute leftover focaccias (caused by flooring) to highest remainders
+  let remaining = totalFocaccias - floors.reduce((s, v) => s + v, 0);
+  remainders
+    .map((r, i) => ({ i, r }))
+    .sort((a, b) => b.r - a.r)
+    .forEach(({ i }) => { if (remaining-- > 0) floors[i]++; });
+
+  names.forEach((n, i) => out[n] = floors[i]);
+  return out;
+}
+
 async function confirmSync() {
   closeSyncPreview();
 
@@ -965,52 +1860,187 @@ async function confirmSync() {
     return;
   }
 
-  // 1. Apply rounding to bread
+  // 1. Apply rounding to bread (round shop+orders total, add extra to shop)
   BREAD.forEach(item => {
     if (!item.roundTo) return;
-    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
-    if (!input) return;
-    const val = parseInt(input.value) || 0;
-    input.value = roundToNearest(val, item.roundTo);
+    const shopInput = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    const orderInput = document.querySelector(`input[data-key="bread-${item.key}-order"]`);
+    if (!shopInput) return;
+    const shopVal = parseInt(shopInput.value) || 0;
+    const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+    const total = shopVal + orderVal;
+    const rounded = roundToNearest(total, item.roundTo);
+    shopInput.value = rounded - orderVal;  // add rounding difference to shop
   });
 
-  // 2. Apply rounding to pastry
+  // 2. Apply rounding to pastry — cascading tray completion to minimize waste
+  // Fill trays top-down: B2→B1 first, then B3→B2, then round B3 normally.
+  // Example: B1=10, B2=15, B3=19, lata=12
+  //   Step 1: move 2 from B2→B1 → B1=12, B2=13
+  //   Step 2: move 11 from B3→B2 → B2=24, B3=8
+  //   Step 3: round B3=8→12
+  //   Result: 12+24+12=48 vs naive 12+24+24=60 (12 extra saved)
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
-    ['b1s','b2s','b3s'].forEach(b => {
-      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
-      if (!input) return;
-      const val = parseInt(input.value) || 0;
-      input.value = roundToNearest(val, p.roundTo);
+    const lata = p.roundTo;
+
+    // Read current values for all 3 batches
+    const vals = {};
+    ['b1','b2','b3'].forEach(b => {
+      const shopInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`);
+      const orderInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`);
+      vals[b] = {
+        shopInput,
+        orderInput,
+        shop: shopInput ? (parseInt(shopInput.value) || 0) : 0,
+        order: orderInput ? (parseInt(orderInput.value) || 0) : 0,
+      };
+      vals[b].total = vals[b].shop + vals[b].order;
+    });
+
+    // Cascading tray completion: fill trays top-down
+    // Step 1: Move units from B2 shop → B1 to complete B1's tray
+    if (vals.b1.total > 0 && vals.b2.shop > 0) {
+      const b1Remainder = vals.b1.total % lata;
+      if (b1Remainder > 0) {
+        const unitsNeeded = lata - b1Remainder;
+        const move = Math.min(unitsNeeded, vals.b2.shop);
+        vals.b1.shop += move;
+        vals.b1.total += move;
+        vals.b2.shop -= move;
+        vals.b2.total -= move;
+      }
+    }
+    // Step 2: Move units from B3 shop → B2 to complete B2's tray
+    if (vals.b2.total > 0 && vals.b3.shop > 0) {
+      const b2Remainder = vals.b2.total % lata;
+      if (b2Remainder > 0) {
+        const unitsNeeded = lata - b2Remainder;
+        const move = Math.min(unitsNeeded, vals.b3.shop);
+        vals.b2.shop += move;
+        vals.b2.total += move;
+        vals.b3.shop -= move;
+        vals.b3.total -= move;
+      }
+    }
+
+    // Now round each batch to lata multiples (B3 gets standard rounding)
+    ['b1','b2','b3'].forEach(b => {
+      if (!vals[b].shopInput) return;
+      const rounded = roundWithOrderGuarantee(vals[b].total, vals[b].order, lata);
+      vals[b].shopInput.value = Math.max(0, rounded - vals[b].order);
     });
   });
 
   // 3. Collect all values to sync (cell → value)
+  // Column mapping verified from actual production sheets:
+  //   Bread:  Shop → col G, Orders → col J  (rows 8-20)
+  //   Pastry: B1 Shop → G, B1 Orders → H,
+  //           B2 Shop → J, B2 Orders → K,
+  //           B3 Shop → M, B3 Orders → N  (rows 29-39+)
   const estimates = [];
 
-  // Bread: total = shop value (column D)
+  // Helper: extract row number from D-column cell ref (e.g. 'D8' → '8')
+  function cellRow(dCell) { return dCell.replace('D', ''); }
+
+  // Bread: shop → column G, orders → column J
+  // Skip 'focaccia' here — it is handled below in the per-flavor section,
+  // which writes individual rows (48-55) AND calculates the correct G19 total.
   BREAD.forEach(item => {
-    if (!item.key) return;
-    const cell = KEY_TO_CELL[item.key];
-    if (!cell) return;
-    const input = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
-    if (!input) return;
-    const val = parseInt(input.value) || 0;
-    if (val > 0) estimates.push({ cell, value: val });
+    if (!item.key || item.key === 'focaccia') return;
+    const dCell = KEY_TO_CELL[item.key];
+    if (!dCell) return;
+    const row = cellRow(dCell);
+
+    const shopInput = document.querySelector(`input[data-key="bread-${item.key}-shop"]`);
+    const orderInput = document.querySelector(`input[data-key="bread-${item.key}-order"]`);
+    const shopVal = shopInput ? (parseInt(shopInput.value) || 0) : 0;
+    const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
+
+    estimates.push({ cell: 'G' + row, value: shopVal });
+    estimates.push({ cell: 'J' + row, value: orderVal });
   });
 
-  // Pastry: total = sum of all 3 batches (shop + orders) → column D
+  // Pastry: each batch has shop + orders in specific columns
+  // B1: G (shop), H (orders) | B2: J (shop), K (orders) | B3: M (shop), N (orders)
+  const PASTRY_COL_MAP = {
+    b1s: 'G', b1o: 'H',
+    b2s: 'J', b2o: 'K',
+    b3s: 'M', b3o: 'N',
+  };
+
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.key) return;
-    const cell = KEY_TO_CELL[p.key];
-    if (!cell) return;
-    let total = 0;
-    ['b1s','b1o','b2s','b2o','b3s','b3o'].forEach(b => {
-      const input = document.querySelector(`input[data-key="pastry-${p.key}-${b}"]`);
-      if (input) total += parseInt(input.value) || 0;
-    });
-    if (total > 0) estimates.push({ cell, value: total });
+    const dCell = KEY_TO_CELL[p.key];
+    if (!dCell) return;
+    const row = cellRow(dCell);
+
+    for (const [suffix, col] of Object.entries(PASTRY_COL_MAP)) {
+      const input = document.querySelector(`input[data-key="pastry-${p.key}-${suffix}"]`);
+      const val = input ? (parseInt(input.value) || 0) : 0;
+      estimates.push({ cell: col + row, value: val });
+    }
   });
+
+  // Focaccia / Bocadillos: rows 48-55 reserved for per-flavor entries.
+  // Each row: B = flavor name, G = shop count, H = orders.
+  //
+  // Focaccia allocation (not per-flavor rounding — that would over-produce massively):
+  //   1. Sum all flavor portions → totalPortions
+  //   2. ceil(totalPortions / 15) → totalFocaccias  (rounds the WHOLE, not each flavor)
+  //   3. Distribute focaccias to flavors by demand using largest-remainder method
+  //      → most popular flavors get priority; low-demand flavors may get 0
+  //   4. G19 = totalFocaccias (for dough calculation)
+  //
+  // Bocadillo: values are direct unit counts (no conversion).
+  // Unused rows are cleared to prevent stale data from previous weeks.
+  const FC_ROWS = [48, 49, 50, 51, 52, 53, 54, 55]; // 8-row reserved block
+  const isBocadillo = STORES[currentStore].fcType === 'bocadillo';
+  const fcNames = getFcNames();
+
+  // Build shop + order allocations upfront (only for focaccia; bocadillo uses direct counts)
+  let shopAllocation = {}, orderAllocation = {};
+  let totalFocaccias = 0;
+
+  if (!isBocadillo) {
+    const shopPortionsMap = {}, orderPortionsMap = {};
+    fcNames.forEach((name, idx) => {
+      const sInput = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+      const oInput = document.querySelector(`input[data-key="fc-${idx}-order"]`);
+      shopPortionsMap[name]  = sInput ? (parseInt(sInput.value)  || 0) : 0;
+      orderPortionsMap[name] = oInput ? (parseInt(oInput.value)  || 0) : 0;
+    });
+    shopAllocation  = allocateFocaccias(shopPortionsMap);
+    orderAllocation = allocateFocaccias(orderPortionsMap);
+    totalFocaccias  = Object.values(shopAllocation).reduce((s, v) => s + v, 0);
+  }
+
+  fcNames.forEach((name, idx) => {
+    if (idx >= FC_ROWS.length) return;
+    const row = FC_ROWS[idx];
+    const shopInput   = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+    const shopCount   = isBocadillo
+      ? (shopInput ? (parseInt(shopInput.value) || 0) : 0)
+      : (shopAllocation[name] || 0);
+    estimates.push({ cell: 'B' + row, value: name });
+    estimates.push({ cell: 'G' + row, value: shopCount });
+    if (!isBocadillo) {
+      estimates.push({ cell: 'H' + row, value: orderAllocation[name] || 0 });
+    }
+  });
+
+  // Clear unused rows so stale data never lingers
+  for (let i = fcNames.length; i < FC_ROWS.length; i++) {
+    const row = FC_ROWS[i];
+    estimates.push({ cell: 'B' + row, value: '' });
+    estimates.push({ cell: 'G' + row, value: '' });
+    if (!isBocadillo) estimates.push({ cell: 'H' + row, value: '' });
+  }
+
+  // For focaccia stores: write total whole-focaccia count to G19 (used for dough)
+  if (!isBocadillo) {
+    estimates.push({ cell: 'G19', value: totalFocaccias });
+  }
 
   // 4. Show syncing state
   const btn = document.getElementById('syncBtn');
@@ -1037,6 +2067,21 @@ async function confirmSync() {
       btn.classList.add('synced');
       btn.innerHTML = `✓ Sincronizado — ${currentDay} (${data.updatedCells} celdas)`;
       status.innerHTML = `<strong>Última sync:</strong> ${new Date().toLocaleTimeString('es-ES')} — ${storeName} · ${currentDay}`;
+
+      // Also record Rafa's approved values in BigQuery (fire-and-forget)
+      try {
+        fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action: 'recordApproval',
+            store: storeName,
+            dayOfWeek: currentDay,
+            estimates
+          })
+        }).catch(() => {}); // Non-blocking, ok if it fails
+      } catch(_) {}
+
       setTimeout(() => {
         btn.disabled = false;
         btn.classList.remove('synced');
@@ -1053,50 +2098,106 @@ async function confirmSync() {
   }
 }
 
-function switchDay(day) { currentDay = day; renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
-function switchStore(store) { currentStore = store; editedCells = {}; renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
+function switchDay(day) { currentDay = day; editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
+function switchStore(store) { currentStore = store; localStorage.setItem('origo-current-store', store); editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
 function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
 // Init
-(function() {
-  // Set dynamic week label
-  document.querySelector('.week-label').textContent = getWeekLabel();
-
-  // Default to the most recent day that has estimates ready
-  // At 6am each day, yesterday's weekday estimate is generated for next week.
-  // So by Tuesday AM we have next Mon, by Wed AM we have next Tue, etc.
-  // Default: show the latest available day, or Lunes if early in the week.
-  const todayDow = new Date().getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-  // Yesterday's weekday (the latest estimate available):
-  // Tue(2)→Mon, Wed(3)→Tue, Thu(4)→Wed, Fri(5)→Thu, Sat(6)→Fri
-  if (todayDow >= 2 && todayDow <= 6) {
-    currentDay = DAYS[todayDow - 2]; // DAYS: 0=Lunes, 1=Martes, ...
-  } else {
-    currentDay = 'Lunes'; // Sun or Mon: default to Lunes
-  }
-
-  // Load forecast API config
+(async function() {
+  // Load API configs (populate fields but don't test — tests run when settings panel is opened)
   const savedForecastUrl = getForecastApiUrl();
   if (savedForecastUrl) {
     document.getElementById('forecastApiUrl').value = savedForecastUrl;
-    testForecastApiConnection(savedForecastUrl);
   }
 
-  // Load sobras API config
   const savedUrl = getApiUrlProd();
   if (savedUrl) {
     document.getElementById('apiUrlConfig').value = savedUrl;
-    testApiConnection(savedUrl);
   }
 
-  // If either API is configured, turn config banner green
-  if (savedForecastUrl || savedUrl) {
-    document.getElementById('configBanner').style.background = '#f0faf0';
+  loadPdmSetting();
+
+  // Restore store selector to match persisted value
+  document.getElementById('storeSelect').value = currentStore;
+
+  // Migration v4.1: clear stale localStorage shop data that was saved before
+  // the fix that only saves user-edited cells. Old saves included AI values and
+  // broken 0s, which would overwrite fresh AI suggestions on load.
+  if (!localStorage.getItem('origo-input-fix-v41')) {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('origo-shop-')) keysToRemove.push(k);
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('origo-input-fix-v41', '1');
   }
 
+  // Migration v4.2: shop localStorage key format changed from
+  //   origo-shop-{store}-{date}  →  origo-shop-{store}-{dayName}-{date}
+  // Old keys are orphaned and must be cleared. Also clear origo-ai-gen-* so
+  // clearEditsIfNewAIRun doesn't wipe edits on first load after migration.
+  if (!localStorage.getItem('origo-input-fix-v42')) {
+    const keysToRemove42 = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('origo-shop-') || k.startsWith('origo-ai-gen-'))) keysToRemove42.push(k);
+    }
+    keysToRemove42.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('origo-input-fix-v42', '1');
+  }
+
+  // 1. Try to load generatedDates from localStorage cache (instant)
+  const hadCachedDates = loadGeneratedDatesFromCache();
+
+  // 2. Pick default day based on cached data (or Lunes if no cache)
+  let defaultDay = 'Lunes';
+  for (let i = DAYS.length - 1; i >= 0; i--) {
+    if (isDayGenerated(DAYS[i])) {
+      defaultDay = DAYS[i];
+      break;
+    }
+  }
+  currentDay = defaultDay;
+
+  // 3. Render immediately with cached data (instant — no waiting for API)
   renderAll();
-  loadEstimatesForCurrentDay();
-  fetchSobrasForCurrentDay();
+
+  // 4. Fire all API calls in parallel (non-blocking)
+  // Sobras comes from a different server, so it runs concurrently
+  async function loadData() {
+    const initOk = await loadInitBundle();
+
+    // If init bundle failed (e.g. old backend version), fall back to separate calls
+    if (!initOk) {
+      if (!hadCachedDates) await loadGeneratedDates();
+      await loadEstimatesForCurrentDay();
+    }
+  }
+
+  // Run data loading and sobras fetch in parallel
+  Promise.all([loadData(), fetchSobrasForCurrentDay()]).then(() => {
+    const targetDate = getTargetDate(currentDay);
+    const dateStr = formatDateStr(targetDate);
+    const cacheKey = `${currentStore}-${dateStr}`;
+    const sobrasDate = getLastWeekDate(currentDay);
+    const sobrasCacheKey = `${currentStore}-${sobrasDate}`;
+
+    // Auto-retry after 3s for anything that failed on first attempt
+    // (handles Apps Script cold start where first call times out)
+    const needsEstimateRetry = !forecastCache[cacheKey];
+    const needsSobrasRetry = !sobrasCache[sobrasCacheKey] || !sobrasCache[sobrasCacheKey]._hasData;
+
+    if (needsEstimateRetry || needsSobrasRetry) {
+      setTimeout(async () => {
+        if (needsEstimateRetry) {
+          const retryOk = await loadInitBundle();
+          if (!retryOk) await loadEstimatesForCurrentDay();
+        }
+        if (needsSobrasRetry) await fetchSobrasForCurrentDay();
+      }, 3000);
+    }
+  });
 })();
 </script>
 </body>
