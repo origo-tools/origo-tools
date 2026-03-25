@@ -91,7 +91,7 @@
   .product-name { flex: 1; font-size: 14px; font-weight: 600; line-height: 1.2; }
 
   .product-actions { display: flex; gap: 5px; align-items: center; }
-  .btn-sobras, .btn-acabado {
+  .btn-sobras, .btn-acabado, .btn-descartado {
     padding: 9px 12px; border-radius: 10px; font-size: 12px;
     font-weight: 700; border: none; cursor: pointer; white-space: nowrap;
   }
@@ -99,6 +99,8 @@
   .btn-sobras:active { background: #e0d8d0; }
   .btn-acabado { background: #c0392b; color: white; }
   .btn-acabado:active { background: #a93226; }
+  .btn-descartado { background: #8e44ad; color: white; font-size: 11px; }
+  .btn-descartado:active { background: #7d3c98; }
 
   .product-result { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; }
   .result-tag { padding: 4px 8px; border-radius: 8px; font-size: 12px; cursor: pointer; }
@@ -127,6 +129,8 @@
   }
   .sobras-tag-inline.leftover { background: #fef3e2; color: #e67e22; }
   .sobras-tag-inline.perfect { background: #e8f5e9; color: #2e7d32; }
+  .sobras-tag-inline.discard { background: #f3e5f5; color: #8e44ad; }
+  .result-tag.discard { background: #f3e5f5; color: #8e44ad; }
 
   /* Sub-section */
   .sub-section { padding: 0 10px; margin-top: 2px; }
@@ -887,23 +891,50 @@ function renderCard(product) {
   }
 
   // ── BREAD / FOCACCIA / BOCADILLO (simple: sobras or single se acabó) ──
-  if (data) {
-    const isRanOut = data.type === 'ran_out';
-    const cardClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'complete' : 'leftover-positive');
-    const tagClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'perfect' : 'leftover');
-    const displayVal = (data.value % 1 === 0.5) ? `${Math.floor(data.value)}½` : data.value;
-    const tagText = isRanOut ? `⏱ ${data.time}` : (data.value === 0 ? '✓ 0 sobras' : `${displayVal} sobras`);
+  const hasDiscard = data && data.discards !== null && data.discards !== undefined && data.discards > 0;
+  const hasSobrasOrRanOut = data && (data.type === 'leftover' || data.type === 'ran_out');
 
-    return `
-      <div class="product-card ${cardClass}" data-product-id="${product.id}">
-        <div class="card-top">
-          <div class="product-name">${product.name}</div>
-          <div class="product-result">
-            <span class="result-tag ${tagClass}" onclick="${isRanOut ? `editTimeBread('${product.id}', '${escapedName}')` : `openSobras('${product.id}', '${escapedName}', false, true)`}">${tagText}</span>
-            <button class="btn-undo" onclick="undoProduct('${product.id}')">✕</button>
-          </div>
-        </div>
-      </div>`;
+  if (data && (hasSobrasOrRanOut || hasDiscard)) {
+    const isRanOut = data.type === 'ran_out';
+    const isLeftover = data.type === 'leftover';
+
+    // Determine card styling based on sobras/ran-out status
+    let cardClass = '';
+    if (isRanOut) cardClass = 'ran-out';
+    else if (isLeftover && data.value === 0) cardClass = 'complete';
+    else if (isLeftover) cardClass = 'leftover-positive';
+
+    let html = `<div class="product-card ${cardClass}" data-product-id="${product.id}">`;
+    html += `<div class="card-top">`;
+    html += `<div class="product-name">${product.name}</div>`;
+    html += `<div class="product-result">`;
+
+    // Show sobras/ran-out tag if present
+    if (hasSobrasOrRanOut) {
+      const tagClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'perfect' : 'leftover');
+      const displayVal = (data.value % 1 === 0.5) ? `${Math.floor(data.value)}½` : data.value;
+      const tagText = isRanOut ? `⏱ ${data.time}` : (data.value === 0 ? '✓ 0 sobras' : `${displayVal} sobras`);
+      html += `<span class="result-tag ${tagClass}" onclick="${isRanOut ? `editTimeBread('${product.id}', '${escapedName}')` : `openSobras('${product.id}', '${escapedName}', false, true)`}">${tagText}</span>`;
+    }
+
+    html += `<button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>`;
+    html += `<button class="btn-undo" onclick="undoProduct('${product.id}')">✕</button>`;
+    html += `</div></div>`;
+
+    // Show action buttons for missing data (sobras not yet recorded)
+    if (!hasSobrasOrRanOut) {
+      html += `<div style="display:flex;gap:5px;padding:6px 0 0 0;">`;
+      html += `<button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>`;
+      html += `<button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>`;
+      html += `</div>`;
+    }
+
+    // Show discard tag below
+    if (hasDiscard) {
+      html += `<div class="batch-tags"><span class="sobras-tag-inline discard" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑 ${data.discards} descartado${data.discards !== 1 ? 's' : ''}</span></div>`;
+    }
+    html += `</div>`;
+    return html;
   }
 
   return `
@@ -913,6 +944,7 @@ function renderCard(product) {
         <div class="product-actions">
           <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>
           <button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>
+          <button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>
         </div>
       </div>
     </div>`;
@@ -934,6 +966,7 @@ function renderBatchCard(product, data, escapedName) {
   html += `<div class="product-name">${product.name}</div>`;
 
   // Actions: always show available actions on the right
+  const hasDiscardBatch = data && data.discards !== null && data.discards !== undefined && data.discards > 0;
   html += `<div class="product-actions">`;
   if (!hasSobras) {
     html += `<button class="btn-sobras" onclick="openSobrasBatch('${product.id}', '${escapedName}')">Sobras</button>`;
@@ -943,14 +976,15 @@ function renderBatchCard(product, data, escapedName) {
   if (batchCount < 3 && !isComplete) {
     html += `<button class="btn-acabado" onclick="openTimePickerBatch('${product.id}', '${escapedName}')">Se acabó</button>`;
   }
-  if (hasBatchData || hasSobras) {
+  html += `<button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', true)">🗑</button>`;
+  if (hasBatchData || hasSobras || hasDiscardBatch) {
     html += `<button class="btn-undo" onclick="undoProduct('${product.id}')">✕</button>`;
   }
   html += `</div>`;
   html += `</div>`; // end card-top
 
-  // Show batch tags and sobras below
-  if (hasBatchData || hasSobras) {
+  // Show batch tags, sobras, and discards below
+  if (hasBatchData || hasSobras || hasDiscardBatch) {
     html += `<div class="batch-tags">`;
     if (hasBatchData) {
       data.batchSoldOuts.forEach((bs, i) => {
@@ -963,6 +997,9 @@ function renderBatchCard(product, data, escapedName) {
       const cls = data.sobras === 0 ? 'perfect' : 'leftover';
       const txt = data.sobras === 0 ? '✓ 0 sobras' : `${data.sobras} sobras`;
       html += `<span class="sobras-tag-inline ${cls}" onclick="openSobrasBatch('${product.id}', '${escapedName}')">${txt}</span>`;
+    }
+    if (hasDiscardBatch) {
+      html += `<span class="sobras-tag-inline discard" onclick="openDiscards('${product.id}', '${escapedName}', true)">🗑 ${data.discards} descartado${data.discards !== 1 ? 's' : ''}</span>`;
     }
     html += `</div>`;
   }
@@ -1009,6 +1046,47 @@ function openSobras(id, name, isBatch, isBread) {
 
 function openSobrasBatch(id, name) {
   openSobras(id, name, true, false);
+}
+
+// ─── DESCARTADO (discard modal) ─────────────────────────────
+function openDiscards(id, name, isBatchProduct) {
+  numValue = '';
+  numHasHalf = false;
+  numIsBread = false;
+  document.getElementById('num-display').textContent = '0';
+  document.getElementById('num-modal-title').textContent = `Descartado — ${name}`;
+  // No ½ for discards, show ✓ in grid
+  document.getElementById('numHalfBtn').style.display = 'none';
+  document.getElementById('numConfirmInGrid').style.display = '';
+  document.getElementById('numConfirmBar').style.display = 'none';
+  document.getElementById('numModal').classList.add('active');
+
+  numModalCallback = (val) => {
+    if (val === 0) {
+      // Remove discard if set to 0
+      if (productData[id] && productData[id].discards !== undefined) {
+        delete productData[id].discards;
+        // Clean up empty batch entries
+        if (isBatchProduct && productData[id] && (!productData[id].batchSoldOuts || productData[id].batchSoldOuts.length === 0) && (productData[id].sobras === null || productData[id].sobras === undefined)) {
+          delete productData[id];
+        }
+      }
+    } else if (isBatchProduct) {
+      if (!productData[id]) productData[id] = { batchSoldOuts: [], sobras: null };
+      productData[id].discards = val;
+    } else {
+      // For simple products, preserve existing data and add discards
+      if (!productData[id]) {
+        // No sobras/ran-out recorded yet — create a minimal entry
+        // Staff can still add sobras or se acabó separately
+        productData[id] = productData[id] || {};
+      }
+      productData[id].discards = val;
+    }
+    saveDailyData();
+    renderProducts();
+    scrollToProduct(id);
+  };
 }
 
 function numUpdateDisplay() {
@@ -1257,9 +1335,9 @@ function updateProgress() {
   const filled = allProducts.filter(p => {
     const d = productData[p.id];
     if (!d) return false;
-    // Batch products: has at least one action
+    // Batch products: has at least one action (sold-out, sobras, or discards)
     if (p.hasBatches) {
-      return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null;
+      return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
     }
     return true;
   }).length;
@@ -1306,17 +1384,18 @@ function buildSubmission() {
 
     if (p.hasBatches) {
       // Pastry with batch data
-      submission.products[p.name] = {
+      const entry = {
         category: p.category || 'pastry',
         batchSoldOuts: d.batchSoldOuts || [],
         sobras: d.sobras
       };
+      if (d.discards) entry.discards = d.discards;
+      submission.products[p.name] = entry;
     } else {
       // Simple bread/focaccia/bocadillo
-      submission.products[p.name] = {
-        ...d,
-        category: p.category || ''
-      };
+      const entry = { ...d, category: p.category || '' };
+      // discards is already spread from d, but ensure it's included
+      submission.products[p.name] = entry;
     }
   });
 
@@ -1337,7 +1416,7 @@ async function submitForm() {
   const filled = allProducts.filter(p => {
     const d = productData[p.id];
     if (!d) return false;
-    if (p.hasBatches) return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null;
+    if (p.hasBatches) return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
     return true;
   }).length;
   if (filled === 0) return;
@@ -1504,8 +1583,10 @@ function getSuccessStat(submission) {
   let soldOutCount = 0;
   let totalBreadSobras = 0;
   let totalPastrySobras = 0;
+  let totalDiscards = 0;
 
   for (const [name, data] of Object.entries(products)) {
+    if (data.discards) totalDiscards += data.discards;
     if (data.category === 'bread') {
       if (data.type === 'ran_out') {
         soldOutCount++;
