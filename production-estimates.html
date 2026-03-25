@@ -1052,9 +1052,7 @@ const DAYS_TO_DOW = { 'Lunes': '1', 'Martes': '2', 'Miércoles': '3', 'Jueves': 
 function getShopStorageKey() {
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
-  // Include day name so Friday and Saturday can never share the same localStorage
-  // entry even if getTargetDate transiently resolves to the wrong date.
-  return `origo-shop-${currentStore}-${currentDay}-${dateStr}`;
+  return `origo-shop-${currentStore}-${dateStr}`;
 }
 
 function getOrderStorageKey() {
@@ -2131,20 +2129,6 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
     }
     keysToRemove.forEach(k => localStorage.removeItem(k));
     localStorage.setItem('origo-input-fix-v41', '1');
-  }
-
-  // Migration v4.2: shop localStorage key format changed from
-  //   origo-shop-{store}-{date}  →  origo-shop-{store}-{dayName}-{date}
-  // Old keys are orphaned and must be cleared. Also clear origo-ai-gen-* so
-  // clearEditsIfNewAIRun doesn't wipe edits on first load after migration.
-  if (!localStorage.getItem('origo-input-fix-v42')) {
-    const keysToRemove42 = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && (k.startsWith('origo-shop-') || k.startsWith('origo-ai-gen-'))) keysToRemove42.push(k);
-    }
-    keysToRemove42.forEach(k => localStorage.removeItem(k));
-    localStorage.setItem('origo-input-fix-v42', '1');
   }
 
   // 1. Try to load generatedDates from localStorage cache (instant)
