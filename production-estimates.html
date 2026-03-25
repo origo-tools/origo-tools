@@ -178,7 +178,7 @@
     max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
     border-bottom: 1px solid #e0d8d0;
   }
-  .settings-panel.open { max-height: 200px; }
+  .settings-panel.open { max-height: 80px; }
   .settings-panel .settings-row {
     display: flex; align-items: center; gap: 10px; padding: 8px 24px; font-size: 13px;
   }
@@ -217,18 +217,6 @@
   </div>
 </div>
 <div class="settings-panel" id="settingsPanel">
-  <div class="settings-row">
-    <label>API Estimaciones</label>
-    <input class="settings-input" type="text" id="forecastApiUrl" placeholder="https://script.google.com/macros/s/.../exec">
-    <button class="settings-save" onclick="saveForecastApiConfig()">Conectar</button>
-    <span class="status" id="forecastApiStatus"></span>
-  </div>
-  <div class="settings-row">
-    <label>API Sobras</label>
-    <input class="settings-input" type="text" id="apiUrlConfig" placeholder="https://script.google.com/macros/s/.../exec">
-    <button class="settings-save" onclick="saveApiConfig()">Conectar</button>
-    <span class="status" id="apiStatus"></span>
-  </div>
   <div class="settings-row">
     <label>Pastry del mes</label>
     <input class="settings-input" type="text" id="pdmInput" placeholder="Nombre en Square (e.g. Tartaleta Pera)" style="max-width:280px;" onkeydown="if(event.key==='Enter')savePdm()">
@@ -291,7 +279,7 @@ const BREAD = [
   { name: 'COPENHAGUE', key: 'copenhague', roundTo: 5, label: 'x5' },
   { name: 'BAGUETTE', key: 'baguette', roundTo: null },
   { name: 'FOCACCIA', key: 'focaccia', roundTo: null },
-  { name: 'ESPELTA PETITA', key: 'espeltaPetita', roundTo: null }
+  { name: 'ESPELTA PETITA', key: 'espeltaPetita', roundTo: 3, label: 'x3' }
 ];
 
 const PASTRY_GROUPS = [
@@ -368,57 +356,14 @@ const CELL_TO_KEY = {
   'D46': 'pastisLlimona'
 };
 
-const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
-function getForecastApiUrl() {
-  try { return localStorage.getItem('origo_forecast_api_url') || DEFAULT_API_URL; } catch(e) { return DEFAULT_API_URL; }
-}
-function setForecastApiUrl(url) {
-  try { localStorage.setItem('origo_forecast_api_url', url); } catch(e) {}
-}
+const API_URL = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
+function getForecastApiUrl() { return API_URL; }
 
 function toggleSettings() {
   const panel = document.getElementById('settingsPanel');
   const btn = document.getElementById('settingsBtn');
-  const opening = !panel.classList.contains('open');
   panel.classList.toggle('open');
   btn.classList.toggle('open');
-  // Run connection tests only when opening the panel
-  if (opening) {
-    const fUrl = getForecastApiUrl();
-    if (fUrl) testForecastApiConnection(fUrl);
-    const pUrl = getApiUrlProd();
-    if (pUrl) testApiConnection(pUrl);
-  }
-}
-
-function saveForecastApiConfig() {
-  const input = document.getElementById('forecastApiUrl');
-  const url = input.value.trim();
-  if (!url) return;
-  setForecastApiUrl(url);
-  testForecastApiConnection(url);
-  forecastCache = {};
-  loadEstimatesForCurrentDay();
-}
-
-async function testForecastApiConnection(url) {
-  const status = document.getElementById('forecastApiStatus');
-  status.textContent = 'Conectando...';
-  status.className = 'status';
-  try {
-    const resp = await fetch(url + '?action=stores');
-    const data = await resp.json();
-    if (data.stores && data.stores.length > 0) {
-      status.textContent = '✓ Conectado (' + data.stores.length + ' tiendas)';
-      status.className = 'status ok';
-    } else {
-      status.textContent = '✗ Respuesta inesperada';
-      status.className = 'status err';
-    }
-  } catch(e) {
-    status.textContent = '✗ No se pudo conectar';
-    status.className = 'status err';
-  }
 }
 
 // ── Pastry del mes ──────────────────────────────────────────
@@ -930,42 +875,7 @@ function getEstimateFactors() {
 let sobrasCache = {};
 let sobrasLoading = false;
 
-function getApiUrlProd() {
-  try { return localStorage.getItem('origo_prod_api_url') || DEFAULT_API_URL; } catch(e) { return DEFAULT_API_URL; }
-}
-function setApiUrlProd(url) {
-  try { localStorage.setItem('origo_prod_api_url', url); } catch(e) {}
-}
-
-function saveApiConfig() {
-  const input = document.getElementById('apiUrlConfig');
-  const url = input.value.trim();
-  if (!url) return;
-  setApiUrlProd(url);
-  testApiConnection(url);
-  sobrasCache = {};
-  fetchSobrasForCurrentDay();
-}
-
-async function testApiConnection(url) {
-  const status = document.getElementById('apiStatus');
-  status.textContent = 'Conectando...';
-  status.className = 'status';
-  try {
-    const resp = await fetch(url + '?action=ping');
-    const data = await resp.json();
-    if (data.status === 'ok') {
-      status.textContent = '✓ Conectado';
-      status.className = 'status ok';
-    } else {
-      status.textContent = '✗ Error';
-      status.className = 'status err';
-    }
-  } catch(e) {
-    status.textContent = '✗ No se pudo conectar';
-    status.className = 'status err';
-  }
-}
+function getApiUrlProd() { return API_URL; }
 
 function getLastWeekDate(dayName) {
   const targetDate = getTargetDate(dayName);
@@ -1226,6 +1136,7 @@ function applyInputValues(inputMap) {
   // Recalculate totals after input values change
   recalcBreadTotals();
   recalcPastryTotals();
+  recalcFocacciaTotals();
 }
 
 // ============ HELPERS ============
@@ -1438,6 +1349,16 @@ function recalcPastryTotals() {
   });
 }
 
+function recalcFocacciaTotals() {
+  // Loop over all rendered focaccia/bocadillo rows by index
+  document.querySelectorAll('td[data-fc-total]').forEach(cell => {
+    const idx = cell.dataset.fcTotal;
+    const sv = parseInt((document.querySelector(`input[data-key="fc-${idx}-shop"]`) || {}).value) || 0;
+    const ov = parseInt((document.querySelector(`input[data-key="fc-${idx}-order"]`) || {}).value) || 0;
+    cell.textContent = (sv + ov) || '';
+  });
+}
+
 /**
  * Returns the current list of focaccia/bocadillo flavor names for the active store.
  * Prefers the live per-flavor estimates from the API (so the list always matches
@@ -1610,7 +1531,7 @@ function renderMain() {
       ${eCell(`fc-${idx}-shop`, shopVal, 'ai')}
       ${isBocadillo ? '' : eCell(`fc-${idx}-order`, orderVal, 'manual order-cell')}
       <td class="sep"></td>
-      <td class="total-col" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
+      <td class="total-col" style="color:#2d6a4f;font-weight:600" data-fc-total="${idx}">${total || ''}</td>
       <td class="sep"></td>
       ${sobrasCell(fcSobras)}
     </tr>`;
@@ -1637,6 +1558,7 @@ function renderMain() {
   // Recalculate all totals after rendering
   recalcBreadTotals();
   recalcPastryTotals();
+  recalcFocacciaTotals();
 
   document.querySelectorAll('.editable input').forEach(input => {
     // Strip non-numeric on input (allow digits only) + recalculate totals live
@@ -1644,6 +1566,7 @@ function renderMain() {
       this.value = this.value.replace(/[^\d]/g, '');
       recalcBreadTotals();
       recalcPastryTotals();
+      recalcFocacciaTotals();
     });
     // Validate, mark edited, and save on change (blur)
     input.addEventListener('change', function() {
@@ -1655,6 +1578,7 @@ function renderMain() {
       saveInputState();
       recalcBreadTotals();
       recalcPastryTotals();
+      recalcFocacciaTotals();
     });
   });
 
@@ -2102,17 +2026,6 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
 // Init
 (async function() {
-  // Load API configs (populate fields but don't test — tests run when settings panel is opened)
-  const savedForecastUrl = getForecastApiUrl();
-  if (savedForecastUrl) {
-    document.getElementById('forecastApiUrl').value = savedForecastUrl;
-  }
-
-  const savedUrl = getApiUrlProd();
-  if (savedUrl) {
-    document.getElementById('apiUrlConfig').value = savedUrl;
-  }
-
   loadPdmSetting();
 
   // Restore store selector to match persisted value
