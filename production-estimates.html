@@ -89,6 +89,9 @@
   table.grid td.sobras-cell.ran-out { background: #fef0f0; color: #c0392b; font-weight: 600; }
   table.grid td.sobras-cell.leftover { color: #b7791f; font-weight: 600; }
   table.grid td.sobras-cell.perfect { background: #f0faf0; color: #2e7d32; font-weight: 600; }
+  table.grid th.discard-header { background: #6c3483; }
+  table.grid td.discard-cell { background: #fdf5ff; font-size: 12px; min-width: 55px; }
+  table.grid td.discard-cell.has-discards { color: #8e44ad; font-weight: 600; }
 
   .batch-alert {
     display: inline-block; background: #fde8e8; color: #c0392b;
@@ -916,12 +919,13 @@ async function fetchSobrasForCurrentDay() {
 
     for (const [name, pData] of Object.entries(products)) {
       const key = PRODUCT_NAME_TO_KEY[name];
-      // v2 format: { sobras, b1SoldOut, b2SoldOut, b3SoldOut }
+      // v3 format: { sobras, b1SoldOut, b2SoldOut, b3SoldOut, discards }
       const sobrasObj = {
         sobras: pData.sobras,
         b1SoldOut: pData.b1SoldOut || null,
         b2SoldOut: pData.b2SoldOut || null,
-        b3SoldOut: pData.b3SoldOut || null
+        b3SoldOut: pData.b3SoldOut || null,
+        discards: pData.discards || null
       };
 
       if (key && BREAD_KEYS.has(key)) {
@@ -1256,6 +1260,14 @@ function pastryTotalSobras(data) {
   return `<td class="sobras-cell ${cls}">${html}</td>`;
 }
 
+// Discards cell — shows discard count (production waste) for any product type
+function discardsCell(data) {
+  if (!data || data.discards === null || data.discards === undefined || data.discards === '' || data.discards === 0 || data.discards === '0') {
+    return `<td class="discard-cell">—</td>`;
+  }
+  return `<td class="discard-cell has-discards">🗑 ${data.discards}</td>`;
+}
+
 function getProductFactorTooltip(estKey) {
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
@@ -1420,11 +1432,12 @@ function renderMain() {
 
   // ===== BREAD =====
   const isSantJoan = currentStore === 'santjoan';
-  const breadColCount = 7; // name, sobras, sep, shop/envío1, orders/envío2, sep, total
+  const breadColCount = 8; // name, sobras, discards, sep, shop/envío1, orders/envío2, sep, total
   html += `<div class="section-header">🍞 Pan — A hornear el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px"></th>
     <th class="sobras-header">Sem. pasada</th>
+    <th class="discard-header">Merma</th>
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="shop-header">${isSantJoan ? 'Envío 1' : 'Shop'}</th>
     <th class="orders-header">${isSantJoan ? 'Envío 2' : 'Pedidos'}</th>
@@ -1437,7 +1450,7 @@ function renderMain() {
 
   BREAD.forEach(item => {
     if (item.sep) { html += `<tr><td colspan="${breadColCount}" class="group-sep"></td></tr>`; return; }
-    if (item.spacer) { html += `<tr><td class="product-name"></td><td class="sobras-cell"></td><td class="sep"></td><td></td><td class="order-cell"></td><td class="sep"></td><td></td></tr>`; return; }
+    if (item.spacer) { html += `<tr><td class="product-name"></td><td class="sobras-cell"></td><td class="discard-cell"></td><td class="sep"></td><td></td><td class="order-cell"></td><td class="sep"></td><td></td></tr>`; return; }
 
     let shopVal = shop.bread[item.key] ?? '';
     let orderVal = orders.bread[item.key] ?? '';
@@ -1466,6 +1479,7 @@ function renderMain() {
     html += `<tr>
       ${productNameCell(displayName, item.label, item.key)}
       ${sobrasCell(sobrasData)}
+      ${discardsCell(sobrasData)}
       <td class="sep"></td>
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
       ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell')}
@@ -1481,6 +1495,7 @@ function renderMain() {
   html += `<tr>
     <th style="min-width:220px" rowspan="2">Producto</th>
     <th rowspan="2">Sem. pasada</th>
+    <th class="discard-header" rowspan="2">Merma</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
     <th class="batch-1" colspan="2">1er lote · 7:00</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
@@ -1500,7 +1515,7 @@ function renderMain() {
   PASTRY_GROUPS.forEach((group, gi) => {
     const filteredGroup = group.filter(p => !p.stJoanOnly || currentStore === 'santjoan');
     if (filteredGroup.length === 0) return;
-    if (gi > 0) html += `<tr><td colspan="14" class="group-sep"></td></tr>`;
+    if (gi > 0) html += `<tr><td colspan="15" class="group-sep"></td></tr>`;
     filteredGroup.forEach(p => {
       const s = shop.pastry[p.key] || { b1:0, b2:0, b3:0 };
       const o = orders.pastry[p.key] || { b1:0, b2:0, b3:0 };
@@ -1516,6 +1531,7 @@ function renderMain() {
       html += `<tr>
         ${productNameCell(p.name, p.label, p.key)}
         ${pastryTotalSobras(sd)}
+        ${discardsCell(sd)}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
         ${eCell(`pastry-${p.key}-b1o`, o.b1, 'manual order-cell')}
@@ -1546,6 +1562,7 @@ function renderMain() {
     <th>Total</th>
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
+    <th class="discard-header">Merma</th>
   </tr>`;
   getFcNames().forEach((name, idx) => {
     const fcSobras = sobras.focaccia[name];
@@ -1561,6 +1578,7 @@ function renderMain() {
       <td class="total-col" style="color:#2d6a4f;font-weight:600" data-fc-total="${idx}">${total || ''}</td>
       <td class="sep"></td>
       ${sobrasCell(fcSobras)}
+      ${discardsCell(fcSobras)}
     </tr>`;
   });
   html += `</table>`;
