@@ -671,15 +671,9 @@ function clearEditsIfNewAIRun(dateStr) {
   const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
   const lastKnown = localStorage.getItem(genKey);
 
-  if (lastKnown === null) {
-    // First time seeing this store+date — record the timestamp without clearing edits.
-    // This prevents wiping user edits on first page load or after a localStorage clear.
-    localStorage.setItem(genKey, cached.generatedAt);
-    return;
-  }
-
   if (lastKnown !== cached.generatedAt) {
-    // Genuinely new AI run (timestamp changed) — clear shop edits so Rafa sees fresh estimates
+    // New AI run detected (or first time tracking this date) — clear shop edits
+    // so Rafa sees the fresh AI estimates in green.
     const shopKey = getShopStorageKey();
     localStorage.removeItem(shopKey);
 
