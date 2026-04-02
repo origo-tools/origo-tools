@@ -1012,10 +1012,22 @@ function saveInputState() {
   });
 
   // 1. Save to localStorage (instant)
-  localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells, savedAt: Date.now() }));
-  // savedAt timestamp lets restoreInputState discard orders older than 8 days,
-  // preventing stale/contaminated data from persisting across weeks indefinitely.
-  localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: orderData, savedAt: Date.now() }));
+  // Only overwrite each localStorage key if there are actual edits of that type.
+  // Otherwise we'd wipe BQ-restored data that wasn't re-edited this session.
+  if (Object.keys(shopData).length > 0) {
+    localStorage.setItem(getShopStorageKey(), JSON.stringify({ inputs: shopData, editedCells, savedAt: Date.now() }));
+  }
+  if (Object.keys(orderData).length > 0) {
+    // Merge with existing localStorage orders so we don't lose BQ-restored values.
+    // savedAt timestamp lets restoreInputState discard orders older than 8 days.
+    let existingOrders = {};
+    try {
+      const existing = localStorage.getItem(getOrderStorageKey());
+      if (existing) existingOrders = JSON.parse(existing).inputs || {};
+    } catch(e) {}
+    const mergedOrders = { ...existingOrders, ...orderData };
+    localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: mergedOrders, savedAt: Date.now() }));
+  }
 
   // 2. Debounced save to BigQuery (non-blocking, 2s after last edit)
   _bqPendingInputs = changedInputs;
@@ -1047,6 +1059,11 @@ const _inputsFetched = new Set();
 const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
 
 async function restoreInputState() {
+  // Capture day+store at start — if the user switches during async BQ fetch,
+  // we discard stale results to prevent cross-day/cross-store contamination.
+  const snapshotDay = currentDay;
+  const snapshotStore = currentStore;
+
   // 1. Restore from localStorage first (instant)
   // IMPORTANT: Only restore cells the user explicitly edited — not AI values or stale 0s
   let localShop = {}, localOrders = {};
@@ -1118,6 +1135,15 @@ async function restoreInputState() {
       _inputsFetched.delete(fetchKey);
       console.warn('BigQuery load failed (using localStorage):', e.message);
     }
+  }
+
+  // Guard: if the user switched day or store while the BQ fetch was in flight,
+  // discard the response — it belongs to a different day/store and would contaminate
+  // the current view and localStorage.
+  if (currentDay !== snapshotDay || currentStore !== snapshotStore) {
+    console.log('[Origo] Discarding stale BQ inputs — fetched for', snapshotDay, snapshotStore,
+                'but now viewing', currentDay, currentStore);
+    return;
   }
 
   if (bqData && bqData.success) {
