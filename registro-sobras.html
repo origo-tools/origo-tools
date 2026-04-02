@@ -1044,7 +1044,11 @@ function openSobras(id, name, isBatch, isBread) {
       if (!productData[id]) productData[id] = { batchSoldOuts: [], sobras: null };
       productData[id].sobras = val;
     } else {
-      productData[id] = { type: 'leftover', value: val };
+      // Preserve existing fields (e.g. discards) when recording sobras
+      const prev = productData[id] || {};
+      productData[id] = { ...prev, type: 'leftover', value: val };
+      // Clean stale ran_out field if switching from se acabó → sobras
+      delete productData[id].time;
     }
     saveDailyData();
     renderProducts();
@@ -1145,7 +1149,11 @@ function openTimePickerBread(id, name) {
   showTimeModal();
 
   timeModalCallback = (h, m) => {
-    productData[id] = { type: 'ran_out', time: `${h}:${m}` };
+    // Preserve existing fields (e.g. discards) when recording se acabó
+    const prev = productData[id] || {};
+    productData[id] = { ...prev, type: 'ran_out', time: `${h}:${m}` };
+    // Clean stale sobras field if switching from sobras → se acabó
+    delete productData[id].value;
     saveDailyData();
     renderProducts();
     scrollToProduct(id);
@@ -1164,7 +1172,10 @@ function editTimeBread(id, name) {
   showTimeModal();
 
   timeModalCallback = (newH, newM) => {
-    productData[id] = { type: 'ran_out', time: `${newH}:${newM}` };
+    // Preserve existing fields (e.g. discards) when editing se acabó time
+    const prev = productData[id] || {};
+    productData[id] = { ...prev, type: 'ran_out', time: `${newH}:${newM}` };
+    delete productData[id].value;
     saveDailyData();
     renderProducts();
     scrollToProduct(id);
