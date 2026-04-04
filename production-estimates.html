@@ -1312,6 +1312,7 @@ function getProductFactorTooltip(estKey) {
   if (f.trend !== 1) parts.push(`Tendencia: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
   if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+  else if (f.contextType === 'postHoliday') parts.push(`Post-vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
   if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
   if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
@@ -1363,6 +1364,10 @@ function renderAlertsBar() {
       const sign = pct > 0 ? '+' : '';
       const cls = pct < 0 ? 'medium' : 'info';
       html += `<div class="event-badge ${cls}">🏖️ Vacaciones escolares: ${sign}${pct}% (${factors.contextReason})</div>`;
+    } else if (factors.contextType === 'postHoliday') {
+      const pct = Math.round((factors.contextMultiplier - 1) * 100);
+      const sign = pct > 0 ? '+' : '';
+      html += `<div class="event-badge high">🔄 Vuelta de vacaciones: ${sign}${pct}% (${factors.contextReason})</div>`;
     } else if (factors.contextType === 'yoyTransition' && factors.contextMultiplier !== 1) {
       const pct = Math.round((factors.contextMultiplier - 1) * 100);
       const sign = pct > 0 ? '+' : '';
@@ -1419,12 +1424,20 @@ function recalcPastryTotals() {
 
 function recalcFocacciaTotals() {
   // Loop over all rendered focaccia/bocadillo rows by index
+  let grandTotal = 0;
   document.querySelectorAll('td[data-fc-total]').forEach(cell => {
     const idx = cell.dataset.fcTotal;
     const sv = parseInt((document.querySelector(`input[data-key="fc-${idx}-shop"]`) || {}).value) || 0;
     const ov = parseInt((document.querySelector(`input[data-key="fc-${idx}-order"]`) || {}).value) || 0;
-    cell.textContent = (sv + ov) || '';
+    const rowTotal = sv + ov;
+    grandTotal += rowTotal;
+    cell.textContent = rowTotal || '';
   });
+  // Update whole-focaccia summary row (portions ÷ 15, rounded up)
+  const wholeSummary = document.getElementById('fcWholeSummary');
+  const portionSummary = document.getElementById('fcPortionSummary');
+  if (wholeSummary) wholeSummary.textContent = grandTotal > 0 ? Math.ceil(grandTotal / 15) : '';
+  if (portionSummary) portionSummary.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
 }
 
 /**
@@ -1585,20 +1598,22 @@ function renderMain() {
   html += `<div class="section-header">${fcIcon} ${fcLabel}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px">Producto</th>
-    <th class="shop-header">Shop</th>
+    <th class="shop-header">${isBocadillo ? 'Shop' : 'Porciones'}</th>
     ${isBocadillo ? '' : '<th class="orders-header">Pedidos</th>'}
     <th class="sep" style="background:#f5f0eb;border:none"></th>
-    <th>Total</th>
+    <th>${isBocadillo ? 'Total' : 'Porc.'}</th>
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="sobras-header">Sem. pasada</th>
     <th class="discard-header">Merma</th>
   </tr>`;
+  let totalFcPortions = 0;
   getFcNames().forEach((name, idx) => {
     const fcSobras = sobras.focaccia[name];
     const shopVal = shop.flavors[name] ?? '';
     const orderVal = 0;
     const shopNum = parseInt(shopVal) || 0;
     const total = shopNum + orderVal;
+    totalFcPortions += total;
     html += `<tr>
       <td class="product-name">${name}</td>
       ${eCell(`fc-${idx}-shop`, shopVal, 'ai')}
@@ -1610,6 +1625,17 @@ function renderMain() {
       ${discardsCell(fcSobras)}
     </tr>`;
   });
+  // Summary row: total whole focaccias (portions ÷ 15, rounded up)
+  if (!isBocadillo) {
+    const wholeFocaccias = Math.ceil(totalFcPortions / 15);
+    html += `<tr style="border-top:2px solid #d5cfc7;font-weight:600;">
+      <td style="text-align:right;color:#555;padding-right:8px;">Total focaccias</td>
+      <td colspan="2" style="text-align:center;color:#1a3a2a;font-size:15px;" id="fcWholeSummary">${wholeFocaccias || ''}</td>
+      <td class="sep"></td>
+      <td style="color:#888;font-size:12px;" id="fcPortionSummary">${totalFcPortions} porc.</td>
+      <td class="sep"></td><td></td><td></td>
+    </tr>`;
+  }
   html += `</table>`;
 
   // ===== COMMENTS =====
