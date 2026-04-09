@@ -937,7 +937,8 @@ function renderCard(product) {
       html += `<span class="result-tag ${tagClass}" onclick="${isRanOut ? `editTimeBread('${product.id}', '${escapedName}')` : `openSobras('${product.id}', '${escapedName}', false, true)`}">${tagText} <button class="remove-batch" onclick="event.stopPropagation();undoSobrasOnly('${product.id}')">✕</button></span>`;
     }
     if (hasDiscard) {
-      html += `<span class="sobras-tag-inline discard" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑 ${data.discards} descartado${data.discards !== 1 ? 's' : ''} <button class="remove-batch" onclick="event.stopPropagation();undoDiscardsOnly('${product.id}')">✕</button></span>`;
+      const discardDisplay = (data.discards % 1 === 0.5) ? `${Math.floor(data.discards)}½` : data.discards;
+      html += `<span class="sobras-tag-inline discard" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑 ${discardDisplay} descartado${data.discards !== 1 ? 's' : ''} <button class="remove-batch" onclick="event.stopPropagation();undoDiscardsOnly('${product.id}')">✕</button></span>`;
     }
     html += `</div>`;
 
@@ -1063,15 +1064,29 @@ function openSobrasBatch(id, name) {
 function openDiscards(id, name, isBatchProduct) {
   // Pre-fill with existing discard value so staff can edit (e.g. add more discards later in the day)
   const existing = productData[id] && productData[id].discards ? productData[id].discards : 0;
+  const existingHasHalf = existing > 0 && (existing % 1 !== 0);
   numValue = existing > 0 ? String(Math.floor(existing)) : '';
-  numHasHalf = false;
-  numIsBread = false;
-  document.getElementById('num-display').textContent = existing > 0 ? String(existing) : '0';
+  numHasHalf = existingHasHalf;
+  // Bread products can have half-unit discards (same as sobras)
+  numIsBread = !isBatchProduct;
+  const displayStr = existingHasHalf ? `${Math.floor(existing)}½` : (existing > 0 ? String(existing) : '0');
+  document.getElementById('num-display').textContent = displayStr;
   document.getElementById('num-modal-title').textContent = `Descartado — ${name}`;
-  // No ½ for discards, show ✓ in grid
-  document.getElementById('numHalfBtn').style.display = 'none';
-  document.getElementById('numConfirmInGrid').style.display = '';
-  document.getElementById('numConfirmBar').style.display = 'none';
+  const halfBtn = document.getElementById('numHalfBtn');
+  const confirmInGrid = document.getElementById('numConfirmInGrid');
+  const confirmBar = document.getElementById('numConfirmBar');
+  halfBtn.classList.toggle('active', existingHasHalf);
+  if (numIsBread) {
+    // Bread: show ½ in grid, hide ✓ from grid, show confirm bar below
+    halfBtn.style.display = '';
+    confirmInGrid.style.display = 'none';
+    confirmBar.style.display = 'block';
+  } else {
+    // Pastry: hide ½, show ✓ in grid, hide confirm bar
+    halfBtn.style.display = 'none';
+    confirmInGrid.style.display = '';
+    confirmBar.style.display = 'none';
+  }
   document.getElementById('numModal').classList.add('active');
 
   numModalCallback = (val) => {
