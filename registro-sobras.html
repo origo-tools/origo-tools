@@ -458,6 +458,25 @@
   </div>
 </div>
 
+<!-- "Is this from yesterday?" modal — shown when submitting before 14:00 -->
+<div class="modal-overlay" id="yesterdayModal">
+  <div class="modal">
+    <p style="text-align:center;font-size:15px;color:#2c2c2c;margin-bottom:8px;line-height:1.6;font-weight:700;">
+      ¿Estos datos son de hoy o de ayer?
+    </p>
+    <p style="text-align:center;font-size:13px;color:#888;margin-bottom:20px;line-height:1.4;">
+      Es temprano — si el turno de ayer no envió las sobras, puedes enviarlas ahora.
+    </p>
+    <div style="display:flex;gap:10px;">
+      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#f5f0eb;color:#2c2c2c;" onclick="submitForDate('yesterday')">Ayer</button>
+      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#1a3a2a;color:white;" onclick="submitForDate('today')">Hoy</button>
+    </div>
+    <div style="margin-top:10px;text-align:center;">
+      <button class="btn-cancel" onclick="closeYesterdayModal()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Undo bar removed — countdown now lives inside the success screen -->
 
 <!-- Success screen -->
@@ -1522,7 +1541,8 @@ async function submitForm() {
     return;
   }
 
-  _doSubmit(apiUrl);
+  // Complete submission — check if it might be yesterday's data
+  _checkYesterdayThenSubmit();
 }
 
 function closeConfirmModal() {
@@ -1531,6 +1551,44 @@ function closeConfirmModal() {
 
 function confirmSubmitAnyway() {
   closeConfirmModal();
+  _checkYesterdayThenSubmit();
+}
+
+// ─── "YESTERDAY" DATE OVERRIDE ──────────────────────────────
+// If submitting before 14:00, ask whether data is from today or yesterday.
+// This lets the closing team submit missed sobras the next morning.
+let _overrideDate = null;  // null = today, or 'YYYY-MM-DD' string for yesterday
+
+function _checkYesterdayThenSubmit() {
+  const now = new Date();
+  const hour = now.getHours();
+  if (hour < 14) {
+    // Before 14:00 — ask if this is yesterday's data
+    document.getElementById('yesterdayModal').classList.add('active');
+    return;
+  }
+  // After 14:00 — always today
+  _overrideDate = null;
+  _proceedWithSubmit();
+}
+
+function submitForDate(choice) {
+  closeYesterdayModal();
+  if (choice === 'yesterday') {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    _overrideDate = getLocalDateStr(yesterday);
+  } else {
+    _overrideDate = null;
+  }
+  _proceedWithSubmit();
+}
+
+function closeYesterdayModal() {
+  document.getElementById('yesterdayModal').classList.remove('active');
+}
+
+function _proceedWithSubmit() {
   const apiUrl = getApiUrl();
   if (apiUrl) _doSubmit(apiUrl);
 }
@@ -1538,7 +1596,15 @@ function confirmSubmitAnyway() {
 let _successPending = false; // true while countdown is running (not yet sent)
 
 function _doSubmit(apiUrl) {
-  _pendingSubmission = { data: buildSubmission(), apiUrl };
+  const submission = buildSubmission();
+  // Apply date override if submitting yesterday's data
+  if (_overrideDate) {
+    submission.date = _overrideDate;
+    const d = new Date(_overrideDate + 'T12:00:00');
+    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    submission.day = dayNames[d.getDay()];
+  }
+  _pendingSubmission = { data: submission, apiUrl };
   isSending = true;
   _successPending = true;
   updateProgress();
@@ -1579,6 +1645,7 @@ function cancelSubmitFromSuccess(e) {
   if (_undoCountdownInterval) { clearInterval(_undoCountdownInterval); _undoCountdownInterval = null; }
   _pendingSubmission = null;
   _successPending = false;
+  _overrideDate = null;
   isSending = false;
   document.getElementById('success').classList.remove('active');
   updateProgress();
@@ -1589,6 +1656,7 @@ async function doActualSubmit() {
   if (!_pendingSubmission) { isSending = false; _successPending = false; updateProgress(); return; }
   const { data: submission, apiUrl } = _pendingSubmission;
   _pendingSubmission = null;
+  _overrideDate = null;  // Reset date override after submission
 
   try {
     const response = await fetch(apiUrl, {
@@ -1719,8 +1787,15 @@ function getSuccessStat(submission) {
 function _showSuccessScreen(submission) {
   const now = new Date();
   const storeName = STORES[currentStore] ? STORES[currentStore].name : '';
-  document.getElementById('success-msg').textContent =
-    `${storeName} — ${now.getDate()} ${months[now.getMonth()]}`;
+  // Show the submission date (which may be yesterday if overridden)
+  let dateLabel;
+  if (_overrideDate) {
+    const d = new Date(_overrideDate + 'T12:00:00');
+    dateLabel = `${storeName} — ${d.getDate()} ${months[d.getMonth()]} (ayer)`;
+  } else {
+    dateLabel = `${storeName} — ${now.getDate()} ${months[now.getMonth()]}`;
+  }
+  document.getElementById('success-msg').textContent = dateLabel;
   document.getElementById('success-stat').textContent = getSuccessStat(submission);
   const q = getDailyQuote();
   document.getElementById('success-quote').textContent = `"${q.text}"`;
@@ -1801,6 +1876,52 @@ async function flushPendingQueue() {
     showToast('✓ Registros pendientes enviados', 2000, 'info');
   }
 }
+
+// ─── AUTO-SUBMIT (end-of-day safety net) ─────────────────────
+// If the team forgets to tap "Enviar", auto-submit whatever data has been
+// entered at 21:00 on weekdays or 19:30 on weekends. The 10-second cancel
+// countdown still applies, so staff can abort if they see it.
+// Checks every 30 seconds — lightweight enough to not drain battery.
+let _autoSubmitDone = false;
+
+function _checkAutoSubmit() {
+  // Don't auto-submit if: already done, already submitted today, or sending in progress
+  if (_autoSubmitDone || isSending || _successPending) return;
+  if (getSubmittedToday()) return;
+
+  const now = new Date();
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const timeNum = hour * 60 + minute;  // minutes since midnight
+  const dow = now.getDay();
+  const isWeekend = (dow === 0 || dow === 6);
+
+  // Trigger times: 21:00 weekdays (1260 min), 19:30 weekends (1170 min)
+  const triggerTime = isWeekend ? 1170 : 1260;
+  if (timeNum < triggerTime) return;
+
+  // Check if there's any data worth submitting
+  const variableProducts = getVariableProducts();
+  const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
+  const filled = allProducts.filter(p => {
+    const d = productData[p.id];
+    if (!d) return false;
+    if (p.hasBatches) return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
+    return true;
+  }).length;
+
+  if (filled === 0) return;  // Nothing entered — don't submit empty data
+
+  _autoSubmitDone = true;  // Prevent re-triggering
+  console.log('Auto-submit triggered: ' + filled + ' products recorded, submitting...');
+
+  // Use the normal submit flow (with cancel countdown)
+  _overrideDate = null;
+  _proceedWithSubmit();
+}
+
+// Check every 30 seconds
+setInterval(_checkAutoSubmit, 30000);
 
 // ─── PWA SERVICE WORKER REGISTRATION ─────────────────────────
 if ('serviceWorker' in navigator) {
