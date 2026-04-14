@@ -1309,14 +1309,14 @@ function getProductFactorTooltip(estKey) {
 
   const f = est.factors;
   const parts = [];
-  if (f.trend !== 1) parts.push(`Tendencia: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
+  if (f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
   if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'postHoliday') parts.push(`Post-vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
   if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
   if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
-  if (f.soldOut !== 1) parts.push(`Agotado: +${Math.round((f.soldOut - 1) * 100)}% total`);
+  if (f.soldOut !== 1) parts.push(`Agotado (sem. anteriores): +${Math.round((f.soldOut - 1) * 100)}% total`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
