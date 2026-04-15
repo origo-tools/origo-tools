@@ -1139,6 +1139,9 @@ async function restoreInputState() {
       const dow = DAYS_TO_DOW[currentDay] || '1';
       const resp = await fetch(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
       bqData = await resp.json();
+      // Cache so subsequent re-renders (e.g. after async estimate fetch rebuilds DOM)
+      // can re-apply BQ inputs without refetching.
+      if (bqData && bqData.success) _cachedBqInputs[fetchKey] = bqData;
     } catch(e) {
       _inputsFetched.delete(fetchKey);
       console.warn('BigQuery load failed (using localStorage):', e.message);
