@@ -1734,7 +1734,32 @@ function renderMain() {
     });
   });
 
-  // Restore any previously saved manual adjustments
+  // Apply any already-loaded BQ overrides synchronously.
+  // This is the primary sync mechanism: once _activeOverrides is populated (by a
+  // previous restoreInputState call), every DOM rebuild immediately bakes in the
+  // overrides — no async race condition.
+  const ov = getActiveOverrides();
+  for (const [key, val] of Object.entries(ov.shop)) {
+    if (val === 0 || val === '0') continue;
+    const input = document.querySelector(`input[data-key="${key}"]`);
+    if (input) {
+      input.value = val;
+      input.closest('td').className = 'editable edited';
+    }
+  }
+  for (const [key, val] of Object.entries(ov.orders)) {
+    const input = document.querySelector(`input[data-key="${key}"]`);
+    if (input) {
+      input.value = val;
+      input.closest('td').className = 'editable edited';
+    }
+  }
+  recalcBreadTotals();
+  recalcPastryTotals();
+  recalcFocacciaTotals();
+
+  // Also kick off the async BQ fetch (first time only) to populate _activeOverrides
+  // for subsequent renders if not yet loaded.
   restoreInputState();
 }
 
