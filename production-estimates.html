@@ -691,18 +691,24 @@ async function loadEstimatesForCurrentDay() {
           console.log('[Origo] Skipping stale BQ shop inputs — saved', new Date(bqTime).toISOString(), 'vs AI generated', forecastCache[cacheKey].generatedAt);
         }
       }
+      // DIAGNOSTIC — remove after debugging
+      console.log('[DIAG loadEstimates] skipShop=', skipShop, 'inputsResp.shop=', JSON.stringify(inputsResp.shop), 'updatedAt=', inputsResp.updatedAt, '_aiRunCleared=', _aiRunCleared.has(cacheKey));
       if (!skipShop && inputsResp.shop && Object.keys(inputsResp.shop).length > 0) {
         Object.assign(_activeOverrides[cacheKey].shop, inputsResp.shop);
+        console.log('[DIAG loadEstimates] Populated _activeOverrides for', cacheKey, '→ origo=', _activeOverrides[cacheKey].shop['bread-origo-shop']);
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
         Object.assign(_activeOverrides[cacheKey].orders, inputsResp.orders);
       }
+    } else {
+      console.log('[DIAG loadEstimates] inputsResp not successful:', JSON.stringify(inputsResp));
     }
   } catch(e) {
     console.warn('Failed to fetch estimates/inputs:', e);
   }
 
   forecastLoading = false;
+  console.log('[DIAG loadEstimates] About to renderAll. _activeOverrides origo=', _activeOverrides[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`]?.shop?.['bread-origo-shop']);
   renderAll();
 }
 
@@ -724,15 +730,17 @@ function clearEditsIfNewAIRun(dateStr) {
   const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
   const lastKnown = localStorage.getItem(genKey);
 
+  // DIAGNOSTIC — remove after debugging
+  console.log('[DIAG clearEdits]', dateStr, 'lastKnown=', lastKnown, 'generatedAt=', cached.generatedAt, '_aiRunCleared has?', _aiRunCleared.has(storeDateKey));
+
   if (lastKnown === null) {
-    // First time seeing this date on this browser — just record the generatedAt.
-    // Do NOT wipe edits: this is a fresh browser session (new device, cleared cache,
-    // or a different team member like Melisa). BQ edits should be restored normally.
     localStorage.setItem(genKey, cached.generatedAt);
+    console.log('[DIAG clearEdits] First visit — stored genKey, returning without wipe');
     return;
   }
 
   if (lastKnown !== cached.generatedAt) {
+    console.log('[DIAG clearEdits] WIPING — lastKnown differs from generatedAt');
     // AI was genuinely regenerated since last visit — clear shop edits
     // so the user sees the fresh AI estimates in green.
     const shopKey = getShopStorageKey();
@@ -1287,13 +1295,12 @@ function escapeHtml(str) {
 }
 
 function eCell(key, value, cls) {
-  // Check for BQ override (saved by Rafa/Melisa) — takes priority over AI value.
-  // This is the main mechanism for cross-device sync: overrides are populated once
-  // from BQ and then baked into every DOM rebuild, eliminating async race conditions.
   const overrides = getActiveOverrides();
   const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
   const overrideMap = isOrder ? overrides.orders : overrides.shop;
   const hasOverride = overrideMap[key] !== undefined && overrideMap[key] !== 0 && overrideMap[key] !== '0';
+  // DIAGNOSTIC — remove after debugging
+  if (key === 'bread-origo-shop') console.log('[DIAG eCell]', key, 'hasOverride=', hasOverride, 'overrideVal=', overrideMap[key], 'aiVal=', value, 'overridesObj=', JSON.stringify(overrides.shop));
 
   const isEdited = editedCells[key] || hasOverride;
   const cellCls = isEdited ? 'edited' : cls;
@@ -1781,10 +1788,9 @@ function renderMain() {
   });
 
   // Apply any already-loaded BQ overrides synchronously.
-  // This is the primary sync mechanism: once _activeOverrides is populated (by a
-  // previous restoreInputState call), every DOM rebuild immediately bakes in the
-  // overrides — no async race condition.
   const ov = getActiveOverrides();
+  // DIAGNOSTIC — remove after debugging
+  console.log('[DIAG renderMain sync loop] overrides shop keys:', Object.keys(ov.shop), 'origo val:', ov.shop['bread-origo-shop']);
   for (const [key, val] of Object.entries(ov.shop)) {
     if (val === 0 || val === '0') continue;
     const input = document.querySelector(`input[data-key="${key}"]`);
