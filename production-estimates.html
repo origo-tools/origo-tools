@@ -678,9 +678,17 @@ function clearEditsIfNewAIRun(dateStr) {
   const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
   const lastKnown = localStorage.getItem(genKey);
 
+  if (lastKnown === null) {
+    // First time seeing this date on this browser — just record the generatedAt.
+    // Do NOT wipe edits: this is a fresh browser session (new device, cleared cache,
+    // or a different team member like Melisa). BQ edits should be restored normally.
+    localStorage.setItem(genKey, cached.generatedAt);
+    return;
+  }
+
   if (lastKnown !== cached.generatedAt) {
-    // New AI run detected (or first time tracking this date) — clear shop edits
-    // so Rafa sees the fresh AI estimates in green.
+    // AI was genuinely regenerated since last visit — clear shop edits
+    // so the user sees the fresh AI estimates in green.
     const shopKey = getShopStorageKey();
     localStorage.removeItem(shopKey);
 
