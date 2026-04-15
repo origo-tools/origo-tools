@@ -702,6 +702,12 @@ function clearEditsIfNewAIRun(dateStr) {
     // Flag this store+date so restoreInputState skips stale BQ shop inputs
     _aiRunCleared.add(storeDateKey);
 
+    // Clear active overrides for this day so renderMain uses fresh AI values
+    if (_activeOverrides[storeDateKey]) {
+      _activeOverrides[storeDateKey].shop = {};
+      // Keep order overrides — they're weekly recurring, not tied to AI runs
+    }
+
     // Remember this AI run so we don't clear edits again until next run
     localStorage.setItem(genKey, cached.generatedAt);
   }
@@ -1066,6 +1072,18 @@ async function syncInputsToBigQuery(inputs) {
 const _inputsFetched = new Set();
 const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
 
+// Active BQ overrides: { 'santpau-2026-04-16': { shop: { key: val }, orders: { key: val } } }
+// Populated by restoreInputState once, then used by renderMain on every DOM rebuild.
+// This eliminates race conditions: values are baked into the HTML, not patched async.
+const _activeOverrides = {};
+
+function getActiveOverrides() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const key = `${currentStore}-${dateStr}`;
+  return _activeOverrides[key] || { shop: {}, orders: {} };
+}
+
 async function restoreInputState() {
   // Capture day+store at start — if the user switches during async BQ fetch,
   // we discard stale results to prevent cross-day/cross-store contamination.
@@ -1170,12 +1188,17 @@ async function restoreInputState() {
         console.log('[Origo] Skipping stale BQ shop inputs — saved', new Date(bqTime).toISOString(), 'vs AI generated', forecastCache[fetchKey].generatedAt);
       }
     }
+    // Store BQ overrides so renderMain can bake them into the HTML on every rebuild.
+    // This eliminates race conditions where async restoreInputState loses to a DOM rebuild.
+    if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
     if (!skipShop && bqData.shop && Object.keys(bqData.shop).length > 0) {
-      applyInputValues(bqData.shop, false);   // BQ shop — visual restore only
+      Object.assign(_activeOverrides[fetchKey].shop, bqData.shop);
+      applyInputValues(bqData.shop, false);   // Also apply to current DOM
     }
     // Orders are always restored (weekly recurring, not tied to AI runs)
     if (bqData.orders && Object.keys(bqData.orders).length > 0) {
-      applyInputValues(bqData.orders, false); // BQ orders — visual restore only
+      Object.assign(_activeOverrides[fetchKey].orders, bqData.orders);
+      applyInputValues(bqData.orders, false); // Also apply to current DOM
       const merged = { ...localOrders, ...bqData.orders };
       localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
     }
@@ -1218,9 +1241,19 @@ function escapeHtml(str) {
 }
 
 function eCell(key, value, cls) {
-  const isEdited = editedCells[key];
+  // Check for BQ override (saved by Rafa/Melisa) — takes priority over AI value.
+  // This is the main mechanism for cross-device sync: overrides are populated once
+  // from BQ and then baked into every DOM rebuild, eliminating async race conditions.
+  const overrides = getActiveOverrides();
+  const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+  const overrideMap = isOrder ? overrides.orders : overrides.shop;
+  const hasOverride = overrideMap[key] !== undefined && overrideMap[key] !== 0 && overrideMap[key] !== '0';
+
+  const isEdited = editedCells[key] || hasOverride;
   const cellCls = isEdited ? 'edited' : cls;
-  const displayVal = (value === 0 || value === '0') ? '0' : (value || '');
+  const displayVal = hasOverride
+    ? overrideMap[key]
+    : ((value === 0 || value === '0') ? '0' : (value || ''));
   return `<td class="editable ${cellCls}"><input type="text" data-key="${key}" value="${displayVal}" inputmode="numeric"></td>`;
 }
 
@@ -1686,6 +1719,14 @@ function renderMain() {
       this.value = Math.max(0, Math.min(9999, v)) || '';
       editedCells[this.dataset.key] = true;
       this.closest('td').className = 'editable edited';
+      // Update active overrides so DOM rebuilds (estimates/sobras load) preserve this edit
+      const targetDate = getTargetDate(currentDay);
+      const dateStr = formatDateStr(targetDate);
+      const overKey = `${currentStore}-${dateStr}`;
+      if (!_activeOverrides[overKey]) _activeOverrides[overKey] = { shop: {}, orders: {} };
+      const k = this.dataset.key;
+      const isOrd = k.includes('-order') || /-(b[123]o)$/.test(k);
+      _activeOverrides[overKey][isOrd ? 'orders' : 'shop'][k] = v || '';
       saveInputState();
       recalcBreadTotals();
       recalcPastryTotals();
