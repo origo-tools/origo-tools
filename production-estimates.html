@@ -591,11 +591,25 @@ async function loadInitBundle() {
     // 2b. If target date changed (new week), clear stale shop edits
     clearEditsIfNewAIRun(dateStr);
 
-    // 3. Cache BQ inputs so restoreInputState (called inside renderAll) can use them
+    // 3. Cache BQ inputs AND populate _activeOverrides BEFORE renderAll
     if (data.inputs && data.inputs.success) {
       const fetchKey = `${currentStore}-${dateStr}`;
       _inputsFetched.add(fetchKey);
       _cachedBqInputs[fetchKey] = data.inputs;
+
+      if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
+      let skipShop = _aiRunCleared.has(fetchKey);
+      if (!skipShop && data.inputs.updatedAt && forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt) {
+        const bqTime = Number(data.inputs.updatedAt) * 1000;
+        const aiTime = new Date(forecastCache[fetchKey].generatedAt).getTime();
+        if (bqTime < aiTime) skipShop = true;
+      }
+      if (!skipShop && data.inputs.shop) {
+        Object.assign(_activeOverrides[fetchKey].shop, data.inputs.shop);
+      }
+      if (data.inputs.orders) {
+        Object.assign(_activeOverrides[fetchKey].orders, data.inputs.orders);
+      }
     }
 
     forecastLoading = false;
@@ -609,7 +623,9 @@ async function loadInitBundle() {
   }
 }
 
-// Fetch estimates from the forecasting API
+// Fetch estimates AND BQ inputs in parallel, then render once both are ready.
+// This eliminates the race condition where the DOM is rebuilt before BQ inputs
+// arrive, causing user edits to flicker and revert to AI values.
 async function loadEstimatesForCurrentDay() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return;
@@ -632,28 +648,58 @@ async function loadEstimatesForCurrentDay() {
   try {
     const pdm = getPastryDelMes();
     const pdmParam = pdm ? `&pastryDelMes=${encodeURIComponent(pdm)}` : '';
-    const url = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}${pdmParam}`;
-    const resp = await fetch(url);
-    const data = await resp.json();
+    const estimatesUrl = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}${pdmParam}`;
+    const dow = DAYS_TO_DOW[currentDay] || '1';
+    const inputsUrl = `${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`;
 
-    // Discard if day or store changed while the request was in flight
+    // Fetch both in parallel — no extra latency vs the old single fetch
+    const [estimatesResp, inputsResp] = await Promise.all([
+      fetch(estimatesUrl).then(r => r.json()).catch(e => ({ error: e.message })),
+      fetch(inputsUrl).then(r => r.json()).catch(e => ({ error: e.message })),
+    ]);
+
+    // Discard if day or store changed while requests were in flight
     if (currentDay !== requestDay || currentStore !== requestStore) {
       forecastLoading = false;
       return;
     }
 
-    if (data.error) {
-      console.warn('Forecast API error:', data.error);
+    // 1. Process estimates
+    if (estimatesResp.error) {
+      console.warn('Forecast API error:', estimatesResp.error);
     } else {
-      forecastCache[cacheKey] = data;
-      if (data.weather) {
-        weatherCache[dateStr] = data.weather;
+      forecastCache[cacheKey] = estimatesResp;
+      if (estimatesResp.weather) {
+        weatherCache[dateStr] = estimatesResp.weather;
       }
-      // If AI generated newer estimates, clear stale shop edits
       clearEditsIfNewAIRun(dateStr);
     }
+
+    // 2. Process BQ inputs — populate _activeOverrides BEFORE renderAll
+    if (inputsResp.success) {
+      _cachedBqInputs[cacheKey] = inputsResp;
+      _inputsFetched.add(cacheKey);
+
+      if (!_activeOverrides[cacheKey]) _activeOverrides[cacheKey] = { shop: {}, orders: {} };
+
+      let skipShop = _aiRunCleared.has(cacheKey);
+      if (!skipShop && inputsResp.updatedAt && forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt) {
+        const bqTime = Number(inputsResp.updatedAt) * 1000;
+        const aiTime = new Date(forecastCache[cacheKey].generatedAt).getTime();
+        if (bqTime < aiTime) {
+          skipShop = true;
+          console.log('[Origo] Skipping stale BQ shop inputs — saved', new Date(bqTime).toISOString(), 'vs AI generated', forecastCache[cacheKey].generatedAt);
+        }
+      }
+      if (!skipShop && inputsResp.shop && Object.keys(inputsResp.shop).length > 0) {
+        Object.assign(_activeOverrides[cacheKey].shop, inputsResp.shop);
+      }
+      if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
+        Object.assign(_activeOverrides[cacheKey].orders, inputsResp.orders);
+      }
+    }
   } catch(e) {
-    console.warn('Failed to fetch estimates:', e);
+    console.warn('Failed to fetch estimates/inputs:', e);
   }
 
   forecastLoading = false;
