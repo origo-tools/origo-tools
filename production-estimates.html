@@ -598,8 +598,8 @@ async function loadInitBundle() {
       _cachedBqInputs[fetchKey] = data.inputs;
 
       if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
-      let skipShop = _aiRunCleared.has(fetchKey);
-      if (!skipShop && data.inputs.updatedAt && forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt) {
+      let skipShop = false;
+      if (data.inputs.updatedAt && forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt) {
         const bqTime = Number(data.inputs.updatedAt) * 1000;
         const aiTime = new Date(forecastCache[fetchKey].generatedAt).getTime();
         if (bqTime < aiTime) skipShop = true;
@@ -682,8 +682,11 @@ async function loadEstimatesForCurrentDay() {
 
       if (!_activeOverrides[cacheKey]) _activeOverrides[cacheKey] = { shop: {}, orders: {} };
 
-      let skipShop = _aiRunCleared.has(cacheKey);
-      if (!skipShop && inputsResp.updatedAt && forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt) {
+      // Decide whether BQ shop edits are stale: compare edit time vs AI generation time.
+      // _aiRunCleared only affects localStorage cleanup, NOT BQ data — the timestamp
+      // comparison is the sole arbiter for BQ edits.
+      let skipShop = false;
+      if (inputsResp.updatedAt && forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt) {
         const bqTime = Number(inputsResp.updatedAt) * 1000;
         const aiTime = new Date(forecastCache[cacheKey].generatedAt).getTime();
         if (bqTime < aiTime) {
@@ -692,7 +695,7 @@ async function loadEstimatesForCurrentDay() {
         }
       }
       // DIAGNOSTIC — remove after debugging
-      console.log('[DIAG loadEstimates] skipShop=', skipShop, 'inputsResp.shop=', JSON.stringify(inputsResp.shop), 'updatedAt=', inputsResp.updatedAt, '_aiRunCleared=', _aiRunCleared.has(cacheKey));
+      console.log('[DIAG loadEstimates] skipShop=', skipShop, 'inputsResp.shop=', JSON.stringify(inputsResp.shop), 'updatedAt=', inputsResp.updatedAt);
       if (!skipShop && inputsResp.shop && Object.keys(inputsResp.shop).length > 0) {
         Object.assign(_activeOverrides[cacheKey].shop, inputsResp.shop);
         console.log('[DIAG loadEstimates] Populated _activeOverrides for', cacheKey, '→ origo=', _activeOverrides[cacheKey].shop['bread-origo-shop']);
@@ -1233,8 +1236,8 @@ async function restoreInputState() {
     // Restore shop inputs — but skip if they're older than the AI generation.
     // After a regeneration, BQ still holds pre-regen edits that would overwrite
     // the fresh AI estimates and turn them red.  Compare timestamps to detect this.
-    let skipShop = _aiRunCleared.has(fetchKey);
-    if (!skipShop && bqData.updatedAt && forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt) {
+    let skipShop = false;
+    if (bqData.updatedAt && forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt) {
       const bqTime = Number(bqData.updatedAt) * 1000;  // epoch seconds → ms
       const aiTime = new Date(forecastCache[fetchKey].generatedAt).getTime();
       if (bqTime < aiTime) {
