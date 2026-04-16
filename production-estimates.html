@@ -605,10 +605,16 @@ async function loadInitBundle() {
         if (bqTime < aiTime) skipShop = true;
       }
       if (!skipShop && data.inputs.shop) {
-        Object.assign(_activeOverrides[fetchKey].shop, data.inputs.shop);
+        const filtered = Object.fromEntries(
+          Object.entries(data.inputs.shop).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
+        );
+        Object.assign(_activeOverrides[fetchKey].shop, filtered);
       }
       if (data.inputs.orders) {
-        Object.assign(_activeOverrides[fetchKey].orders, data.inputs.orders);
+        const filtered = Object.fromEntries(
+          Object.entries(data.inputs.orders).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
+        );
+        Object.assign(_activeOverrides[fetchKey].orders, filtered);
       }
     }
 
@@ -694,24 +700,24 @@ async function loadEstimatesForCurrentDay() {
           console.log('[Origo] Skipping stale BQ shop inputs — saved', new Date(bqTime).toISOString(), 'vs AI generated', forecastCache[cacheKey].generatedAt);
         }
       }
-      // DIAGNOSTIC — remove after debugging
-      console.log('[DIAG loadEstimates] skipShop=', skipShop, 'inputsResp.shop=', JSON.stringify(inputsResp.shop), 'updatedAt=', inputsResp.updatedAt);
       if (!skipShop && inputsResp.shop && Object.keys(inputsResp.shop).length > 0) {
-        Object.assign(_activeOverrides[cacheKey].shop, inputsResp.shop);
-        console.log('[DIAG loadEstimates] Populated _activeOverrides for', cacheKey, '→ origo=', _activeOverrides[cacheKey].shop['bread-origo-shop']);
+        const filtered = Object.fromEntries(
+          Object.entries(inputsResp.shop).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
+        );
+        Object.assign(_activeOverrides[cacheKey].shop, filtered);
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
-        Object.assign(_activeOverrides[cacheKey].orders, inputsResp.orders);
+        const filtered = Object.fromEntries(
+          Object.entries(inputsResp.orders).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
+        );
+        Object.assign(_activeOverrides[cacheKey].orders, filtered);
       }
-    } else {
-      console.log('[DIAG loadEstimates] inputsResp not successful:', JSON.stringify(inputsResp));
     }
   } catch(e) {
     console.warn('Failed to fetch estimates/inputs:', e);
   }
 
   forecastLoading = false;
-  console.log('[DIAG loadEstimates] About to renderAll. _activeOverrides origo=', _activeOverrides[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`]?.shop?.['bread-origo-shop']);
   renderAll();
 }
 
@@ -733,17 +739,12 @@ function clearEditsIfNewAIRun(dateStr) {
   const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
   const lastKnown = localStorage.getItem(genKey);
 
-  // DIAGNOSTIC — remove after debugging
-  console.log('[DIAG clearEdits]', dateStr, 'lastKnown=', lastKnown, 'generatedAt=', cached.generatedAt, '_aiRunCleared has?', _aiRunCleared.has(storeDateKey));
-
   if (lastKnown === null) {
     localStorage.setItem(genKey, cached.generatedAt);
-    console.log('[DIAG clearEdits] First visit — stored genKey, returning without wipe');
     return;
   }
 
   if (lastKnown !== cached.generatedAt) {
-    console.log('[DIAG clearEdits] WIPING — lastKnown differs from generatedAt');
     // AI was genuinely regenerated since last visit — clear shop edits
     // so the user sees the fresh AI estimates in green.
     const shopKey = getShopStorageKey();
@@ -1141,6 +1142,13 @@ function getActiveOverrides() {
   return _activeOverrides[key] || { shop: {}, orders: {} };
 }
 
+// Sant Joan bread uses algorithm-driven envío 1 / envío 2 columns,
+// so BQ shop/order overrides must never replace the AI-generated split.
+function isSantJoanBreadKey(store, key) {
+  return store === 'santjoan' && key.startsWith('bread-') &&
+         (key.endsWith('-order') || key.endsWith('-shop'));
+}
+
 async function restoreInputState() {
   // Capture day+store at start — if the user switches during async BQ fetch,
   // we discard stale results to prevent cross-day/cross-store contamination.
@@ -1249,13 +1257,19 @@ async function restoreInputState() {
     // This eliminates race conditions where async restoreInputState loses to a DOM rebuild.
     if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
     if (!skipShop && bqData.shop && Object.keys(bqData.shop).length > 0) {
-      Object.assign(_activeOverrides[fetchKey].shop, bqData.shop);
-      applyInputValues(bqData.shop, false);   // Also apply to current DOM
+      const filteredShop = Object.fromEntries(
+        Object.entries(bqData.shop).filter(([k]) => !isSantJoanBreadKey(snapshotStore, k))
+      );
+      Object.assign(_activeOverrides[fetchKey].shop, filteredShop);
+      applyInputValues(bqData.shop, false);   // Also apply to current DOM (applyInputValues has its own guard)
     }
     // Orders are always restored (weekly recurring, not tied to AI runs)
     if (bqData.orders && Object.keys(bqData.orders).length > 0) {
-      Object.assign(_activeOverrides[fetchKey].orders, bqData.orders);
-      applyInputValues(bqData.orders, false); // Also apply to current DOM
+      const filteredOrders = Object.fromEntries(
+        Object.entries(bqData.orders).filter(([k]) => !isSantJoanBreadKey(snapshotStore, k))
+      );
+      Object.assign(_activeOverrides[fetchKey].orders, filteredOrders);
+      applyInputValues(bqData.orders, false); // Also apply to current DOM (applyInputValues has its own guard)
       const merged = { ...localOrders, ...bqData.orders };
       localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
     }
@@ -1301,9 +1315,9 @@ function eCell(key, value, cls) {
   const overrides = getActiveOverrides();
   const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
   const overrideMap = isOrder ? overrides.orders : overrides.shop;
-  const hasOverride = overrideMap[key] !== undefined && overrideMap[key] !== 0 && overrideMap[key] !== '0';
-  // DIAGNOSTIC — remove after debugging
-  if (key === 'bread-origo-shop') console.log('[DIAG eCell]', key, 'hasOverride=', hasOverride, 'overrideVal=', overrideMap[key], 'aiVal=', value, 'overridesObj=', JSON.stringify(overrides.shop));
+  // Sant Joan bread envío values are algorithm-driven — never override with BQ edits
+  const sjGuard = isSantJoanBreadKey(currentStore, key);
+  const hasOverride = !sjGuard && overrideMap[key] !== undefined && overrideMap[key] !== 0 && overrideMap[key] !== '0';
 
   const isEdited = editedCells[key] || hasOverride;
   const cellCls = isEdited ? 'edited' : cls;
@@ -1792,10 +1806,10 @@ function renderMain() {
 
   // Apply any already-loaded BQ overrides synchronously.
   const ov = getActiveOverrides();
-  // DIAGNOSTIC — remove after debugging
-  console.log('[DIAG renderMain sync loop] overrides shop keys:', Object.keys(ov.shop), 'origo val:', ov.shop['bread-origo-shop']);
   for (const [key, val] of Object.entries(ov.shop)) {
     if (val === 0 || val === '0') continue;
+    // Sant Joan bread envío values are algorithm-driven — skip overrides
+    if (isSantJoanBreadKey(currentStore, key)) continue;
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
       input.value = val;
@@ -1803,6 +1817,8 @@ function renderMain() {
     }
   }
   for (const [key, val] of Object.entries(ov.orders)) {
+    // Sant Joan bread envío values are algorithm-driven — skip overrides
+    if (isSantJoanBreadKey(currentStore, key)) continue;
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
       input.value = val;
