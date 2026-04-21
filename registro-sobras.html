@@ -458,21 +458,22 @@
   </div>
 </div>
 
-<!-- "Is this from yesterday?" modal — shown when submitting before 14:00 -->
-<div class="modal-overlay" id="yesterdayModal">
+<!-- Orphan-draft recovery modal — shown on app open when a past day has
+     unsubmitted data in localStorage. See checkAndShowOrphan() in the script. -->
+<div class="modal-overlay" id="orphanModal">
   <div class="modal">
     <p style="text-align:center;font-size:15px;color:#2c2c2c;margin-bottom:8px;line-height:1.6;font-weight:700;">
-      ¿Estos datos son de hoy o de ayer?
+      Datos sin enviar de <span id="orphanDateLabel">ayer</span>
     </p>
     <p style="text-align:center;font-size:13px;color:#888;margin-bottom:20px;line-height:1.4;">
-      Es temprano — si el turno de ayer no envió las sobras, puedes enviarlas ahora.
+      Parece que estos datos no se enviaron.<span id="orphanExtra"></span>
     </p>
     <div style="display:flex;gap:10px;">
-      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#f5f0eb;color:#2c2c2c;" onclick="submitForDate('yesterday')">Ayer</button>
-      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#1a3a2a;color:white;" onclick="submitForDate('today')">Hoy</button>
+      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#1a3a2a;color:white;" onclick="orphanSubmit()">Enviar</button>
+      <button style="flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;background:#f5f0eb;color:#2c2c2c;" onclick="orphanReview()">Revisar</button>
     </div>
     <div style="margin-top:10px;text-align:center;">
-      <button class="btn-cancel" onclick="closeYesterdayModal()">Cancelar</button>
+      <button class="btn-cancel" onclick="orphanDiscard()">Descartar</button>
     </div>
   </div>
 </div>
@@ -683,8 +684,20 @@ function getLocalDateStr(d) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
-function getDailyStorageKey() {
-  return `origo_daily_${currentStore}_${getLocalDateStr()}`;
+// When non-null, the UI is editing a past-day orphan draft. All storage keys
+// and the submission date target that date instead of today. Cleared on submit
+// or cancel. See scanOrphanDrafts()/orphanReview() below.
+let _editingOrphanDate = null;
+
+// Active target date for the current UI session: orphan date if editing one,
+// otherwise today. Used for localStorage key scoping (saveDailyData / loadDailyData).
+function getActiveDateStr() {
+  return _editingOrphanDate || getLocalDateStr();
+}
+
+function getDailyStorageKey(dateStr) {
+  dateStr = dateStr || getActiveDateStr();
+  return `origo_daily_${currentStore}_${dateStr}`;
 }
 
 function saveDailyData() {
@@ -712,9 +725,9 @@ function loadDailyData() {
   } catch(e) { console.warn('loadDailyData error:', e); }
 }
 
-function clearDailyData() {
+function clearDailyData(dateStr) {
   if (!currentStore) return;
-  try { localStorage.removeItem(getDailyStorageKey()); } catch(e) {}
+  try { localStorage.removeItem(getDailyStorageKey(dateStr)); } catch(e) {}
 }
 
 // Clean up old daily data (older than 3 days)
@@ -731,18 +744,21 @@ function cleanOldDailyData() {
       if (!dateMatch) return;
       const keyDate = new Date(dateMatch[1]);
       const diffDays = (now - keyDate) / (1000 * 60 * 60 * 24);
-      if (diffDays > 3) localStorage.removeItem(key);
+      if (diffDays > 7) localStorage.removeItem(key);
     });
   } catch(e) {}
 }
 
-// ─── SUBMITTED TODAY MARKER ────────────────────────────────
-// Tracks whether today's data was already sent, so staff sees a reminder
-function getSubmittedKey() {
-  return `origo_submitted_${currentStore}_${getLocalDateStr()}`;
+// ─── SUBMITTED MARKER ──────────────────────────────────────
+// Tracks whether a given day's data was already sent. Key is parameterized
+// because submissions can target today or a past date (auto yesterday-rule
+// before 14:00, or orphan-draft recovery).
+function getSubmittedKey(dateStr) {
+  dateStr = dateStr || getLocalDateStr();
+  return `origo_submitted_${currentStore}_${dateStr}`;
 }
-function markSubmittedToday() {
-  try { localStorage.setItem(getSubmittedKey(), new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })); } catch(e) {}
+function markSubmittedForDate(dateStr) {
+  try { localStorage.setItem(getSubmittedKey(dateStr), new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })); } catch(e) {}
 }
 function getSubmittedToday() {
   try { return localStorage.getItem(getSubmittedKey()) || ''; } catch(e) { return ''; }
@@ -846,6 +862,9 @@ function startApp() {
   // Runs silently in the background — no spinner, no error shown on failure.
   fetchAndUpdateFlavors(currentStore);
   cleanOldDailyData();
+  // Prompt for any unsubmitted past-day drafts. Runs AFTER today's data is
+  // loaded so the "Revisar" path can swap productData cleanly.
+  checkAndShowOrphan();
 
   // Auto-save TGTG and comments on every change (attach only once)
   if (!window._listenersAttached) {
@@ -1454,12 +1473,13 @@ function updateProgress() {
   if (btn) {
     const isComplete = filled === total;
     btn.classList.toggle('ready', filled > 0 && !isSending);
+    const info = getTargetSubmissionInfo();
     if (isSending) {
       btn.textContent = 'Enviando...';
     } else if (isComplete) {
-      btn.textContent = '✓ Enviar todo';
+      btn.textContent = `✓ Enviar datos de ${info.label}`;
     } else if (filled > 0) {
-      btn.textContent = `Enviar (${filled}/${total} productos)`;
+      btn.textContent = `Enviar (${filled}/${total}) — ${info.label}`;
     } else {
       btn.textContent = 'Enviar';
     }
@@ -1541,8 +1561,8 @@ async function submitForm() {
     return;
   }
 
-  // Complete submission — check if it might be yesterday's data
-  _checkYesterdayThenSubmit();
+  // Complete submission
+  _proceedWithSubmit();
 }
 
 function closeConfirmModal() {
@@ -1551,41 +1571,43 @@ function closeConfirmModal() {
 
 function confirmSubmitAnyway() {
   closeConfirmModal();
-  _checkYesterdayThenSubmit();
+  _proceedWithSubmit();
 }
 
-// ─── "YESTERDAY" DATE OVERRIDE ──────────────────────────────
-// If submitting before 14:00, ask whether data is from today or yesterday.
-// This lets the closing team submit missed sobras the next morning.
-let _overrideDate = null;  // null = today, or 'YYYY-MM-DD' string for yesterday
-
-function _checkYesterdayThenSubmit() {
+// ─── SUBMISSION TARGET DATE ─────────────────────────────────
+// Resolves which calendar date a submission should count for:
+//   - Orphan-edit mode → that orphan's date.
+//   - Otherwise, the team never submits before 14:00 for the same day:
+//     hour < 14 → always yesterday; hour >= 14 → today.
+// Returns { dateStr, dayName, label, isPast } used by the Enviar button
+// label, the success screen, and the submission payload.
+function getTargetSubmissionInfo() {
+  if (_editingOrphanDate) {
+    const d = new Date(_editingOrphanDate + 'T12:00:00');
+    return {
+      dateStr: _editingOrphanDate,
+      dayName: days[d.getDay()],
+      label: `${days[d.getDay()].toLowerCase()} ${d.getDate()}`,
+      isPast: true,
+    };
+  }
   const now = new Date();
-  const hour = now.getHours();
-  if (hour < 14) {
-    // Before 14:00 — ask if this is yesterday's data
-    document.getElementById('yesterdayModal').classList.add('active');
-    return;
+  if (now.getHours() < 14) {
+    const y = new Date(now);
+    y.setDate(y.getDate() - 1);
+    return {
+      dateStr: getLocalDateStr(y),
+      dayName: days[y.getDay()],
+      label: `ayer (${days[y.getDay()].toLowerCase()} ${y.getDate()})`,
+      isPast: true,
+    };
   }
-  // After 14:00 — always today
-  _overrideDate = null;
-  _proceedWithSubmit();
-}
-
-function submitForDate(choice) {
-  closeYesterdayModal();
-  if (choice === 'yesterday') {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    _overrideDate = getLocalDateStr(yesterday);
-  } else {
-    _overrideDate = null;
-  }
-  _proceedWithSubmit();
-}
-
-function closeYesterdayModal() {
-  document.getElementById('yesterdayModal').classList.remove('active');
+  return {
+    dateStr: getLocalDateStr(now),
+    dayName: days[now.getDay()],
+    label: 'hoy',
+    isPast: false,
+  };
 }
 
 function _proceedWithSubmit() {
@@ -1597,19 +1619,17 @@ let _successPending = false; // true while countdown is running (not yet sent)
 
 function _doSubmit(apiUrl) {
   const submission = buildSubmission();
-  // Apply date override if submitting yesterday's data
-  if (_overrideDate) {
-    submission.date = _overrideDate;
-    const d = new Date(_overrideDate + 'T12:00:00');
-    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-    submission.day = dayNames[d.getDay()];
-  }
-  _pendingSubmission = { data: submission, apiUrl };
+  const info = getTargetSubmissionInfo();
+  // Always stamp with the resolved target date (never trust buildSubmission's
+  // default "today" — it's wrong before 14:00 and wrong in orphan-edit mode).
+  submission.date = info.dateStr;
+  submission.day = info.dayName;
+  _pendingSubmission = { data: submission, apiUrl, targetInfo: info };
   isSending = true;
   _successPending = true;
   updateProgress();
   // Show success screen immediately with countdown
-  _showSuccessScreen(_pendingSubmission.data);
+  _showSuccessScreen(_pendingSubmission.data, info);
   _startCountdown();
 }
 
@@ -1645,7 +1665,6 @@ function cancelSubmitFromSuccess(e) {
   if (_undoCountdownInterval) { clearInterval(_undoCountdownInterval); _undoCountdownInterval = null; }
   _pendingSubmission = null;
   _successPending = false;
-  _overrideDate = null;
   isSending = false;
   document.getElementById('success').classList.remove('active');
   updateProgress();
@@ -1655,8 +1674,8 @@ function cancelSubmitFromSuccess(e) {
 async function doActualSubmit() {
   if (!_pendingSubmission) { isSending = false; _successPending = false; updateProgress(); return; }
   const { data: submission, apiUrl } = _pendingSubmission;
+  const submittedDate = submission.date;
   _pendingSubmission = null;
-  _overrideDate = null;  // Reset date override after submission
 
   try {
     const response = await fetch(apiUrl, {
@@ -1666,7 +1685,7 @@ async function doActualSubmit() {
     });
 
     if (response.ok || response.type === 'opaque') {
-      markSubmittedToday();
+      markSubmittedForDate(submittedDate);
       _successConfirmed();
     } else {
       throw new Error(`Server error: ${response.status}`);
@@ -1679,7 +1698,7 @@ async function doActualSubmit() {
         body: JSON.stringify(submission),
         mode: 'no-cors'
       });
-      markSubmittedToday();
+      markSubmittedForDate(submittedDate);
       _successConfirmed();
       showToast('Enviado (sin confirmación del servidor)', 3000, 'info');
     } catch (err2) {
@@ -1784,17 +1803,14 @@ function getSuccessStat(submission) {
   return count === 1 ? "1 producto registrado" : `${count} productos registrados`;
 }
 
-function _showSuccessScreen(submission) {
-  const now = new Date();
+function _showSuccessScreen(submission, info) {
+  info = info || getTargetSubmissionInfo();
   const storeName = STORES[currentStore] ? STORES[currentStore].name : '';
-  // Show the submission date (which may be yesterday if overridden)
-  let dateLabel;
-  if (_overrideDate) {
-    const d = new Date(_overrideDate + 'T12:00:00');
-    dateLabel = `${storeName} — ${d.getDate()} ${months[d.getMonth()]} (ayer)`;
-  } else {
-    dateLabel = `${storeName} — ${now.getDate()} ${months[now.getMonth()]}`;
-  }
+  const d = new Date(info.dateStr + 'T12:00:00');
+  let suffix = '';
+  if (_editingOrphanDate) suffix = ` (${days[d.getDay()].toLowerCase()})`;
+  else if (info.isPast) suffix = ' (ayer)';
+  const dateLabel = `${storeName} — ${d.getDate()} ${months[d.getMonth()]}${suffix}`;
   document.getElementById('success-msg').textContent = dateLabel;
   document.getElementById('success-stat').textContent = getSuccessStat(submission);
   const q = getDailyQuote();
@@ -1816,13 +1832,22 @@ function _successConfirmed() {
 function dismissSuccess() {
   if (_successPending) return; // can't dismiss while countdown is running
   document.getElementById('success').classList.remove('active');
+  // Clear whichever day's draft was just submitted (orphan-edit mode targets
+  // that past date; otherwise the current session's active date).
+  clearDailyData(getActiveDateStr());
+  // Exit orphan-edit mode before resetting so the next session is "today".
+  _editingOrphanDate = null;
   productData = {};
   document.getElementById('tgtg').value = '0';
   document.getElementById('comments').value = '';
-  clearDailyData();
   isSending = false;
-  renderProducts();
-  showSubmittedBanner();
+  initDate();
+  // If more orphans remain, prompt for the next one; otherwise return to today.
+  if (!checkAndShowOrphan()) {
+    loadDailyData();
+    renderProducts();
+    showSubmittedBanner();
+  }
 }
 
 // Show a subtle banner if today's data was already submitted
@@ -1877,51 +1902,112 @@ async function flushPendingQueue() {
   }
 }
 
-// ─── AUTO-SUBMIT (end-of-day safety net) ─────────────────────
-// If the team forgets to tap "Enviar", auto-submit whatever data has been
-// entered at 21:00 on weekdays or 19:30 on weekends. The 10-second cancel
-// countdown still applies, so staff can abort if they see it.
-// Checks every 30 seconds — lightweight enough to not drain battery.
-let _autoSubmitDone = false;
+// Note: the 30-second setInterval-based auto-submit was removed. It relied on
+// the PWA tab being alive at 21:00, which mobile browsers don't guarantee
+// (tabs get suspended when backgrounded). Reliability comes from:
+//   1. The Enviar button label makes the target date visible at every tap.
+//   2. Orphan-draft recovery on app open (checkAndShowOrphan) catches any
+//      day that slipped through — regardless of whether the app was open
+//      at closing time.
 
-function _checkAutoSubmit() {
-  // Don't auto-submit if: already done, already submitted today, or sending in progress
-  if (_autoSubmitDone || isSending || _successPending) return;
-  if (getSubmittedToday()) return;
+// ─── ORPHAN-DRAFT RECOVERY ─────────────────────────────────
+// Scans localStorage for past-day drafts with filled data that were never
+// submitted. Surfaces them on app open via a modal so the team can send,
+// edit, or discard yesterday's (or older) forgotten entries.
+let _currentOrphan = null;  // { date, data } being prompted on; null when no modal active
 
-  const now = new Date();
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  const timeNum = hour * 60 + minute;  // minutes since midnight
-  const dow = now.getDay();
-  const isWeekend = (dow === 0 || dow === 6);
+function scanOrphanDrafts() {
+  if (!currentStore) return [];
+  const orphans = [];
+  const today = getLocalDateStr();
+  const prefix = `origo_daily_${currentStore}_`;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      const date = key.slice(prefix.length);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if (date >= today) continue;
+      // Already submitted? Skip.
+      if (localStorage.getItem(`origo_submitted_${currentStore}_${date}`)) continue;
+      // Has actual data?
+      let data;
+      try { data = JSON.parse(localStorage.getItem(key)); } catch(e) { continue; }
+      if (!data || !data.productData || Object.keys(data.productData).length === 0) continue;
+      orphans.push({ date, data });
+    }
+  } catch(e) { console.warn('scanOrphanDrafts error:', e); }
+  orphans.sort((a, b) => a.date.localeCompare(b.date));  // oldest first
+  return orphans;
+}
 
-  // Trigger times: 21:00 weekdays (1260 min), 19:30 weekends (1170 min)
-  const triggerTime = isWeekend ? 1170 : 1260;
-  if (timeNum < triggerTime) return;
+function checkAndShowOrphan() {
+  const orphans = scanOrphanDrafts();
+  if (orphans.length === 0) {
+    _currentOrphan = null;
+    return false;
+  }
+  _currentOrphan = orphans[0];
+  const d = new Date(_currentOrphan.date + 'T12:00:00');
+  const label = `${days[d.getDay()].toLowerCase()} ${d.getDate()} de ${months[d.getMonth()]}`;
+  document.getElementById('orphanDateLabel').textContent = label;
+  document.getElementById('orphanExtra').textContent =
+    orphans.length > 1 ? ` Hay ${orphans.length} días pendientes.` : '';
+  document.getElementById('orphanModal').classList.add('active');
+  return true;
+}
 
-  // Check if there's any data worth submitting
-  const variableProducts = getVariableProducts();
-  const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
-  const filled = allProducts.filter(p => {
-    const d = productData[p.id];
-    if (!d) return false;
-    if (p.hasBatches) return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
-    return true;
-  }).length;
+function closeOrphanModal() {
+  document.getElementById('orphanModal').classList.remove('active');
+}
 
-  if (filled === 0) return;  // Nothing entered — don't submit empty data
+// Load an orphan's saved state into the live UI state.
+function _loadOrphanIntoUI(orphan) {
+  productData = (orphan.data.productData) ? orphan.data.productData : {};
+  const tgtgEl = document.getElementById('tgtg');
+  const commentsEl = document.getElementById('comments');
+  if (tgtgEl) tgtgEl.value = orphan.data.tgtg || '0';
+  if (commentsEl) commentsEl.value = orphan.data.comments || '';
+  _editingOrphanDate = orphan.date;
+  // Reflect the editing date in the header so the team sees what they're submitting.
+  const d = new Date(orphan.date + 'T12:00:00');
+  document.getElementById('dayname').textContent = days[d.getDay()] + ' (pendiente)';
+  document.getElementById('datetext').textContent = `${d.getDate()} ${months[d.getMonth()]}`;
+}
 
-  _autoSubmitDone = true;  // Prevent re-triggering
-  console.log('Auto-submit triggered: ' + filled + ' products recorded, submitting...');
-
-  // Use the normal submit flow (with cancel countdown)
-  _overrideDate = null;
+// "Enviar" — send the orphan as-is, no review.
+function orphanSubmit() {
+  if (!_currentOrphan) return;
+  const orphan = _currentOrphan;
+  _currentOrphan = null;
+  closeOrphanModal();
+  _loadOrphanIntoUI(orphan);
+  renderProducts();
   _proceedWithSubmit();
 }
 
-// Check every 30 seconds
-setInterval(_checkAutoSubmit, 30000);
+// "Revisar" — load orphan data into the form, let the team edit then tap Enviar.
+function orphanReview() {
+  if (!_currentOrphan) return;
+  const orphan = _currentOrphan;
+  _currentOrphan = null;
+  closeOrphanModal();
+  _loadOrphanIntoUI(orphan);
+  renderProducts();
+  updateProgress();
+}
+
+// "Descartar" — drop the draft; confirm first so it's not a one-tap mistake.
+function orphanDiscard() {
+  if (!_currentOrphan) return;
+  if (!confirm('¿Descartar los datos sin enviar? No se podrán recuperar.')) return;
+  const date = _currentOrphan.date;
+  try { localStorage.removeItem(`origo_daily_${currentStore}_${date}`); } catch(e) {}
+  _currentOrphan = null;
+  closeOrphanModal();
+  // If more orphans remain, show the next one; otherwise carry on.
+  checkAndShowOrphan();
+}
 
 // ─── PWA SERVICE WORKER REGISTRATION ─────────────────────────
 if ('serviceWorker' in navigator) {
