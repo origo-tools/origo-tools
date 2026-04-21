@@ -221,14 +221,36 @@
 </div>
 <div class="settings-panel" id="settingsPanel">
   <div class="settings-row">
-    <label>Pastry del mes</label>
-    <input class="settings-input" type="text" id="pdmInput" placeholder="Nombre en Square (e.g. Tartaleta Pera)" style="max-width:280px;" onkeydown="if(event.key==='Enter')savePdm()">
-    <button class="settings-save" onclick="savePdm()">Guardar</button>
-    <span class="status" id="pdmStatus"></span>
+    <label>Pastry del mes (hoy):</label>
+    <span id="pdmSummary" style="font-weight:600;margin-right:12px">—</span>
+    <button class="settings-save" onclick="openPdmModal()">Editar historia</button>
   </div>
 </div>
+<div id="pdmBanner" style="display:none;padding:10px 16px;font-size:14px;font-weight:500;text-align:center;"></div>
 <div class="day-tabs" id="dayTabs"></div>
 <div class="alerts-bar" id="alertsBar"></div>
+
+<!-- Pastry del mes — history modal -->
+<div class="modal-overlay" id="pdmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center;">
+  <div class="modal" style="background:#fff;border-radius:12px;padding:20px;max-width:720px;width:92%;max-height:85vh;overflow:auto;">
+    <h3 style="margin-top:0">Pastry del mes — historia</h3>
+    <p style="color:#888;font-size:13px;margin-bottom:14px">
+      Añade una entrada por cada periodo. Si dos periodos se solapan, el que empezó más tarde se aplica.
+      Para corregir retroactivamente, edita el nombre o las fechas de cualquier entrada pasada.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 160px 160px;gap:6px;padding-bottom:6px;border-bottom:1px solid #e8e4dd;font-size:12px;font-weight:600;color:#888">
+      <div>Nombre (en Square)</div><div>Desde</div><div>Hasta (vacío = actual)</div>
+    </div>
+    <div id="pdmHistoryList" style="margin-top:8px"></div>
+    <div style="margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button onclick="addPdmRow()" style="padding:8px 14px;border-radius:8px;border:1px solid #e8e4dd;background:#fff;cursor:pointer">+ Añadir</button>
+      <div style="flex:1"></div>
+      <button onclick="closePdmModal()" style="padding:8px 14px;border-radius:8px;border:1px solid #e8e4dd;background:#fff;cursor:pointer">Cancelar</button>
+      <button onclick="savePdmHistory()" style="padding:8px 14px;border-radius:8px;border:none;background:#1a3a2a;color:#fff;cursor:pointer;font-weight:600">Guardar</button>
+    </div>
+    <div id="pdmModalError" style="color:#c94040;font-size:13px;margin-top:10px;display:none"></div>
+  </div>
+</div>
 <div class="main-content" id="mainContent"></div>
 
 <div class="sync-bar">
@@ -370,44 +392,164 @@ function toggleSettings() {
   btn.classList.toggle('open');
 }
 
-// ── Pastry del mes ──────────────────────────────────────────
+// ── Pastry del mes (date-ranged history) ────────────────────
+// History is the source of truth; stored on the backend as a JSON array of
+// { name, startDate, endDate|null } entries. The frontend keeps a mirror for
+// the banner + modal UX. For estimates fetches we now omit the pastryDelMes
+// URL param — the backend resolves per production date via getActivePastryDelMes.
 
-function getPastryDelMes() {
-  return localStorage.getItem('origo-pastry-del-mes') || '';
+let pdmHistory = [];       // array from server, sorted DESC by startDate
+let pdmActiveToday = '';   // convenience: today's active name
+
+function pdmEscape(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
 }
 
-function savePdm() {
-  const input = document.getElementById('pdmInput');
-  const name = input.value.trim();
-  if (!name) return;
-  localStorage.setItem('origo-pastry-del-mes', name);
-
-  const status = document.getElementById('pdmStatus');
-  status.textContent = '✓ Guardado: ' + name;
-  status.className = 'status ok';
-
-  // Also save to server (Script Properties) so scheduled triggers use it
+async function loadPdmHistory() {
   const apiUrl = getForecastApiUrl();
-  if (apiUrl) {
-    fetch(apiUrl, {
-      method: 'POST',
-      body: JSON.stringify({ action: 'setPastryDelMes', name: name }),
-    }).catch(() => {});
+  if (!apiUrl) return;
+  try {
+    const resp = await fetch(apiUrl + '?action=getPastryDelMesHistory');
+    const data = await resp.json();
+    pdmHistory = (data.history || []).slice().sort(function(a, b) {
+      return b.startDate.localeCompare(a.startDate);
+    });
+    pdmActiveToday = data.activeToday || '';
+    renderPdmSummary();
+    renderPdmBanner();
+  } catch (e) {
+    console.warn('loadPdmHistory failed', e);
+  }
+}
+
+function renderPdmSummary() {
+  const el = document.getElementById('pdmSummary');
+  if (!el) return;
+  el.textContent = pdmActiveToday || '(no configurada)';
+  el.style.color = pdmActiveToday ? '#2c2c2c' : '#c94040';
+}
+
+function renderPdmBanner() {
+  const banner = document.getElementById('pdmBanner');
+  if (!banner) return;
+
+  const today = new Date();
+  const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+
+  // Rule 1 — nothing covers today.
+  if (!pdmActiveToday) {
+    banner.style.background = '#fce9e9';
+    banner.style.color = '#8f1e1e';
+    banner.innerHTML = '⚠️ No hay Pastry del mes configurada para hoy. ' +
+      '<a href="#" onclick="event.preventDefault();openPdmModal()" style="color:inherit;text-decoration:underline;font-weight:600">Configurar</a>';
+    banner.style.display = 'block';
+    return;
   }
 
-  // Refresh estimates with the new pastry del mes
-  forecastCache = {};
-  loadEstimatesForCurrentDay();
+  // Rule 2 — today's active entry started in a previous month.
+  const activeEntry = pdmHistory.find(function(e) {
+    return e.name === pdmActiveToday &&
+      e.startDate <= todayStr &&
+      (!e.endDate || e.endDate >= todayStr);
+  });
+  if (activeEntry) {
+    const es = new Date(activeEntry.startDate + 'T12:00:00');
+    const startedInPreviousMonth =
+      es.getFullYear() < today.getFullYear() ||
+      (es.getFullYear() === today.getFullYear() && es.getMonth() < today.getMonth());
+    if (startedInPreviousMonth) {
+      banner.style.background = '#fff5d6';
+      banner.style.color = '#7a5a10';
+      banner.innerHTML = '🗓️ La Pastry del mes sigue siendo <strong>' + pdmEscape(activeEntry.name) +
+        '</strong> desde ' + activeEntry.startDate + '. ' +
+        '<a href="#" onclick="event.preventDefault();openPdmModal()" style="color:inherit;text-decoration:underline;font-weight:600">¿Actualizar?</a>';
+      banner.style.display = 'block';
+      return;
+    }
+  }
+
+  banner.style.display = 'none';
 }
 
-function loadPdmSetting() {
-  const input = document.getElementById('pdmInput');
-  const saved = getPastryDelMes();
-  if (saved) {
-    input.value = saved;
-    const status = document.getElementById('pdmStatus');
-    status.textContent = '✓ ' + saved;
-    status.className = 'status ok';
+function openPdmModal() {
+  document.getElementById('pdmModalError').style.display = 'none';
+  renderPdmHistoryList();
+  document.getElementById('pdmModal').style.display = 'flex';
+}
+
+function closePdmModal() {
+  document.getElementById('pdmModal').style.display = 'none';
+}
+
+function renderPdmHistoryList() {
+  const list = document.getElementById('pdmHistoryList');
+  list.innerHTML = '';
+  pdmHistory.forEach(function(entry, idx) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;grid-template-columns:1fr 160px 160px;gap:6px;padding:6px 0;align-items:center';
+    row.innerHTML =
+      '<input type="text" class="pdm-name" data-idx="' + idx + '" value="' + pdmEscape(entry.name) + '" placeholder="Nombre en Square" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">' +
+      '<input type="date" class="pdm-start" data-idx="' + idx + '" value="' + pdmEscape(entry.startDate) + '" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">' +
+      '<input type="date" class="pdm-end" data-idx="' + idx + '" value="' + pdmEscape(entry.endDate || '') + '" placeholder="Actual" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">';
+    list.appendChild(row);
+  });
+}
+
+function addPdmRow() {
+  const today = new Date();
+  const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  pdmHistory.unshift({ name: '', startDate: todayStr, endDate: null });
+  renderPdmHistoryList();
+}
+
+async function savePdmHistory() {
+  const nameInputs = document.querySelectorAll('#pdmHistoryList .pdm-name');
+  const startInputs = document.querySelectorAll('#pdmHistoryList .pdm-start');
+  const endInputs = document.querySelectorAll('#pdmHistoryList .pdm-end');
+  const newHistory = [];
+  const errEl = document.getElementById('pdmModalError');
+  errEl.style.display = 'none';
+
+  for (let i = 0; i < nameInputs.length; i++) {
+    const name = nameInputs[i].value.trim();
+    const startDate = startInputs[i].value;
+    const endDate = endInputs[i].value || null;
+    if (!name && !startDate) continue;  // empty row added and not filled, skip
+    if (!name) { errEl.textContent = 'Falta el nombre en la fila ' + (i + 1); errEl.style.display = 'block'; return; }
+    if (!startDate) { errEl.textContent = 'Falta la fecha de inicio en la fila ' + (i + 1); errEl.style.display = 'block'; return; }
+    if (endDate && endDate < startDate) { errEl.textContent = 'Fecha fin antes de inicio en la fila ' + (i + 1); errEl.style.display = 'block'; return; }
+    newHistory.push({ name: name, startDate: startDate, endDate: endDate });
+  }
+
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl) { errEl.textContent = 'API URL no configurada'; errEl.style.display = 'block'; return; }
+  try {
+    const resp = await fetch(apiUrl, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'savePastryDelMesHistory', history: newHistory }),
+    });
+    const data = await resp.json();
+    if (data.error) { errEl.textContent = 'Error: ' + data.error; errEl.style.display = 'block'; return; }
+    pdmHistory = (data.history || []).slice().sort(function(a, b) { return b.startDate.localeCompare(a.startDate); });
+    // Recompute today's active locally (backend trusted but we already have the data).
+    const today = new Date();
+    const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+    const activeNow = pdmHistory.filter(function(e) {
+      return e.startDate <= todayStr && (!e.endDate || e.endDate >= todayStr);
+    }).sort(function(a, b) { return b.startDate.localeCompare(a.startDate); })[0];
+    pdmActiveToday = activeNow ? activeNow.name : '';
+
+    renderPdmSummary();
+    renderPdmBanner();
+    closePdmModal();
+    // Re-fetch estimates — backend will resolve pastry del mes per date from the new history.
+    forecastCache = {};
+    loadEstimatesForCurrentDay();
+  } catch (e) {
+    errEl.textContent = 'Error: ' + e.message;
+    errEl.style.display = 'block';
   }
 }
 
@@ -541,11 +683,11 @@ async function loadInitBundle() {
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
   const dow = DAYS_TO_DOW[currentDay] || '1';
-  const pdm = getPastryDelMes();
-  const pdmParam = pdm ? `&pastryDelMes=${encodeURIComponent(pdm)}` : '';
+  // Pastry del mes is no longer sent from the frontend — the backend resolves
+  // the active entry for the requested production date via the history.
 
   try {
-    const url = `${apiUrl}?action=init&store=${encodeURIComponent(storeName)}&date=${dateStr}&dayOfWeek=${dow}${pdmParam}`;
+    const url = `${apiUrl}?action=init&store=${encodeURIComponent(storeName)}&date=${dateStr}&dayOfWeek=${dow}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
     const data = await fetch(url, { signal: controller.signal }).then(r => r.json());
@@ -652,9 +794,8 @@ async function loadEstimatesForCurrentDay() {
   renderMain();
 
   try {
-    const pdm = getPastryDelMes();
-    const pdmParam = pdm ? `&pastryDelMes=${encodeURIComponent(pdm)}` : '';
-    const estimatesUrl = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}${pdmParam}`;
+    // Pastry del mes is resolved server-side from the stored history per date.
+    const estimatesUrl = `${apiUrl}?action=estimates&store=${encodeURIComponent(storeName)}&date=${dateStr}`;
     const dow = DAYS_TO_DOW[currentDay] || '1';
     const inputsUrl = `${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`;
 
@@ -1423,6 +1564,10 @@ function getProductFactorTooltip(estKey) {
 
   const f = est.factors;
   const parts = [];
+  if (f.error) {
+    parts.push(`⚠️ Error de cálculo: ${f.errorMessage || 'desconocido'}`);
+    return parts.join('\n');
+  }
   if (f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
   if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
@@ -1434,6 +1579,12 @@ function getProductFactorTooltip(estKey) {
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
+  if (est.productOutliers && est.productOutliers.length > 0) {
+    for (const ol of est.productOutliers) {
+      const arrow = ol.direction === 'high' ? '⬆' : '⬇';
+      parts.push(`${arrow} S${ol.week} excluida (anomalía): ${ol.value} vs mediana producto ${ol.median}`);
+    }
+  }
   if (est.activeVariety) parts.push(`🔄 Variedad: ${est.activeVariety}`);
   if (parts.length === 0) parts.push('Sin ajustes especiales');
   return parts.join('\n');
@@ -2274,7 +2425,7 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
 // Init
 (async function() {
-  loadPdmSetting();
+  loadPdmHistory();
 
   // Restore store selector to match persisted value
   document.getElementById('storeSelect').value = currentStore;
