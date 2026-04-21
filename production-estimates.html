@@ -366,6 +366,18 @@ let forecastCache = {};  // cache: { 'store-date': apiResponse }
 let weatherCache = {};   // cache: { 'date': weatherData }
 let forecastLoading = false;
 
+// Shared fetch helper: throws on non-2xx HTTP status BEFORE attempting to parse
+// JSON. Without this, a 5xx that returns an HTML error page triggers a
+// confusing `SyntaxError: Unexpected token <` instead of a clear "server error"
+// message. All estimates/sync/inputs/sobras calls use this.
+async function fetchJson(url, opts) {
+  const resp = await fetch(url, opts);
+  if (!resp.ok) {
+    throw new Error('HTTP ' + resp.status + (resp.statusText ? ' ' + resp.statusText : ''));
+  }
+  return await resp.json();
+}
+
 // Store name mapping: internal key → API store name
 const STORE_API_NAMES = { santpau: 'Sant Pau', mila: 'Milà', santjoan: 'Sant Joan' };
 
@@ -411,8 +423,7 @@ async function loadPdmHistory() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return;
   try {
-    const resp = await fetch(apiUrl + '?action=getPastryDelMesHistory');
-    const data = await resp.json();
+    const data = await fetchJson(apiUrl + '?action=getPastryDelMesHistory');
     pdmHistory = (data.history || []).slice().sort(function(a, b) {
       return b.startDate.localeCompare(a.startDate);
     });
@@ -526,11 +537,10 @@ async function savePdmHistory() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) { errEl.textContent = 'API URL no configurada'; errEl.style.display = 'block'; return; }
   try {
-    const resp = await fetch(apiUrl, {
+    const data = await fetchJson(apiUrl, {
       method: 'POST',
       body: JSON.stringify({ action: 'savePastryDelMesHistory', history: newHistory }),
     });
-    const data = await resp.json();
     if (data.error) { errEl.textContent = 'Error: ' + data.error; errEl.style.display = 'block'; return; }
     pdmHistory = (data.history || []).slice().sort(function(a, b) { return b.startDate.localeCompare(a.startDate); });
     // Recompute today's active locally (backend trusted but we already have the data).
@@ -654,8 +664,7 @@ async function loadGeneratedDates() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return;
   try {
-    const resp = await fetch(apiUrl + '?action=generatedDates');
-    const data = await resp.json();
+    const data = await fetchJson(apiUrl + '?action=generatedDates');
     if (data.dates) {
       const dateList = data.dates.map(d => d.date);
       generatedDatesSet = new Set(dateList);
@@ -686,16 +695,15 @@ async function loadInitBundle() {
   // Pastry del mes is no longer sent from the frontend — the backend resolves
   // the active entry for the requested production date via the history.
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
   try {
     const url = `${apiUrl}?action=init&store=${encodeURIComponent(storeName)}&date=${dateStr}&dayOfWeek=${dow}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
-    const data = await fetch(url, { signal: controller.signal }).then(r => r.json());
+    const data = await fetchJson(url, { signal: controller.signal });
     clearTimeout(timeout);
 
     // If the user switched day or store while the request was in flight, discard stale data.
     if (currentDay !== requestDay || currentStore !== requestStore) {
-      forecastLoading = false;
       return false;
     }
 
@@ -760,14 +768,15 @@ async function loadInitBundle() {
       }
     }
 
-    forecastLoading = false;
     renderAll();
     return true;
   } catch(e) {
     console.warn('Init bundle failed, falling back to separate calls:', e);
-    forecastLoading = false;
     renderMain();
     return false;
+  } finally {
+    clearTimeout(timeout);
+    forecastLoading = false;
   }
 }
 
@@ -799,15 +808,17 @@ async function loadEstimatesForCurrentDay() {
     const dow = DAYS_TO_DOW[currentDay] || '1';
     const inputsUrl = `${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`;
 
-    // Fetch both in parallel — no extra latency vs the old single fetch
+    // Fetch both in parallel — no extra latency vs the old single fetch.
+    // Use fetchJson so non-2xx surfaces as a clear error instead of being
+    // parsed as JSON; per-fetch catch converts rejections to {error} objects
+    // so Promise.all doesn't short-circuit on one failure.
     const [estimatesResp, inputsResp] = await Promise.all([
-      fetch(estimatesUrl).then(r => r.json()).catch(e => ({ error: e.message })),
-      fetch(inputsUrl).then(r => r.json()).catch(e => ({ error: e.message })),
+      fetchJson(estimatesUrl).catch(e => ({ error: e.message })),
+      fetchJson(inputsUrl).catch(e => ({ error: e.message })),
     ]);
 
     // Discard if day or store changed while requests were in flight
     if (currentDay !== requestDay || currentStore !== requestStore) {
-      forecastLoading = false;
       return;
     }
 
@@ -856,10 +867,10 @@ async function loadEstimatesForCurrentDay() {
     }
   } catch(e) {
     console.warn('Failed to fetch estimates/inputs:', e);
+  } finally {
+    forecastLoading = false;
+    renderAll();
   }
-
-  forecastLoading = false;
-  renderAll();
 }
 
 /**
@@ -1105,6 +1116,9 @@ function getLastWeekDate(dayName) {
   return `${y}-${m}-${d}`;
 }
 
+// Per-cache-key retry guard so we don't spin retries if the API stays down.
+const _sobrasRetryScheduled = new Set();
+
 async function fetchSobrasForCurrentDay() {
   const apiUrl = getApiUrlProd();
   if (!apiUrl) return;
@@ -1118,13 +1132,12 @@ async function fetchSobrasForCurrentDay() {
   sobrasLoading = true;
   renderMain();
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
     const url = `${apiUrl}?action=getSobras&store=${currentStore}&date=${date}`;
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    const data = await resp.json();
+    const data = await fetchJson(url, { signal: controller.signal });
 
     // Transform API v2 response into internal format
     const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0, _hasData: true };
@@ -1153,11 +1166,22 @@ async function fetchSobrasForCurrentDay() {
     sobrasCache[cacheKey] = result;
   } catch(e) {
     console.warn('Failed to fetch sobras:', e);
-    // Don't cache failures — allow retry on next render/switch
+    // Schedule ONE retry 3s later per (store, date) if nothing succeeded.
+    // Guards against infinite loops and thundering-herd retries.
+    if (!_sobrasRetryScheduled.has(cacheKey)) {
+      _sobrasRetryScheduled.add(cacheKey);
+      setTimeout(() => {
+        _sobrasRetryScheduled.delete(cacheKey);
+        const stillCurrent = cacheKey === `${currentStore}-${getLastWeekDate(currentDay)}`;
+        const stillMissing = !sobrasCache[cacheKey] || !sobrasCache[cacheKey]._hasData;
+        if (stillCurrent && stillMissing) fetchSobrasForCurrentDay();
+      }, 3000);
+    }
+  } finally {
+    clearTimeout(timeout);
+    sobrasLoading = false;
+    renderMain();
   }
-
-  sobrasLoading = false;
-  renderMain();
 }
 
 function getSobras() {
@@ -1192,6 +1216,12 @@ function getOrderStorageKey() {
 // Debounce timer for BigQuery sync (avoid flooding on rapid edits)
 let _bqSaveTimer = null;
 let _bqPendingInputs = [];
+// Capture the store at edit time so the debounced sync can't leak edits to a
+// different store if the user switches stores before the 2s timer fires.
+let _bqPendingStore = null;
+// Batches that failed to POST. Each { store, inputs } is retried on the next
+// flush attempt. Bounded to 20 entries to cap memory if the API stays down.
+let _bqRetryQueue = [];
 
 function saveInputState() {
   const shopData = {};
@@ -1242,28 +1272,56 @@ function saveInputState() {
     localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: mergedOrders, savedAt: Date.now() }));
   }
 
-  // 2. Debounced save to BigQuery (non-blocking, 2s after last edit)
+  // 2. Debounced save to BigQuery (non-blocking, 2s after last edit).
+  //    Store is captured at edit time — see flushPendingBqSync() for why.
   _bqPendingInputs = changedInputs;
+  _bqPendingStore = currentStore;
   clearTimeout(_bqSaveTimer);
-  _bqSaveTimer = setTimeout(() => syncInputsToBigQuery(_bqPendingInputs), 2000);
+  _bqSaveTimer = setTimeout(flushPendingBqSync, 2000);
 }
 
-async function syncInputsToBigQuery(inputs) {
+// Flush pending BQ inputs immediately. Called either by the 2s debounce or
+// synchronously from switchStore/switchDay to prevent the pending batch from
+// being silently re-targeted at the new store's namespace.
+async function flushPendingBqSync() {
+  if (_bqSaveTimer) { clearTimeout(_bqSaveTimer); _bqSaveTimer = null; }
+  const inputs = _bqPendingInputs;
+  const store = _bqPendingStore;
+  _bqPendingInputs = [];
+  _bqPendingStore = null;
+
+  // Drain previously-failed batches first so they don't starve forever.
+  // Oldest first. If a drain attempt fails it's re-queued; we stop draining on
+  // first failure to avoid hammering a down backend.
+  const toRetry = _bqRetryQueue;
+  _bqRetryQueue = [];
+  for (const batch of toRetry) {
+    const ok = await syncInputsToBigQuery(batch.inputs, batch.store);
+    if (!ok) break;
+  }
+
+  if (inputs.length && store) await syncInputsToBigQuery(inputs, store);
+}
+
+// Returns true on success, false on failure (and re-queues the batch for next
+// flush attempt). Caller can use the return value to decide whether to stop
+// draining a queue.
+async function syncInputsToBigQuery(inputs, store) {
   const apiUrl = getForecastApiUrl();
-  if (!apiUrl || inputs.length === 0) return;
+  if (!apiUrl || !inputs || inputs.length === 0 || !store) return true;
 
   try {
-    await fetch(apiUrl, {
+    await fetchJson(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({
-        action: 'saveInputs',
-        store: currentStore,
-        inputs: inputs
-      })
+      body: JSON.stringify({ action: 'saveInputs', store: store, inputs: inputs })
     });
+    return true;
   } catch (e) {
-    console.warn('BigQuery sync failed (will retry on next edit):', e.message);
+    console.warn('BigQuery sync failed, queued for retry:', e.message);
+    _bqRetryQueue.push({ inputs: inputs, store: store });
+    if (_bqRetryQueue.length > 20) _bqRetryQueue.shift();
+    return false;
   }
 }
 
@@ -1361,8 +1419,7 @@ async function restoreInputState() {
       const apiUrl = getForecastApiUrl();
       if (!apiUrl) { _inputsFetched.delete(fetchKey); return; }
       const dow = DAYS_TO_DOW[currentDay] || '1';
-      const resp = await fetch(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
-      bqData = await resp.json();
+      bqData = await fetchJson(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${dateStr}&dayOfWeek=${dow}`);
       // Cache so subsequent re-renders (e.g. after async estimate fetch rebuilds DOM)
       // can re-apply BQ inputs without refetching.
       if (bqData && bqData.success) _cachedBqInputs[fetchKey] = bqData;
@@ -2386,7 +2443,7 @@ async function confirmSync() {
   // 5. POST to Apps Script sync endpoint
   try {
     const storeName = STORE_API_NAMES[currentStore];
-    const resp = await fetch(apiUrl, {
+    const data = await fetchJson(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' }, // Apps Script needs text/plain for CORS
       body: JSON.stringify({
@@ -2397,7 +2454,6 @@ async function confirmSync() {
         estimates
       })
     });
-    const data = await resp.json();
 
     if (data.success) {
       btn.classList.add('synced');
@@ -2434,8 +2490,28 @@ async function confirmSync() {
   }
 }
 
-function switchDay(day) { currentDay = day; editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
-function switchStore(store) { currentStore = store; localStorage.setItem('origo-current-store', store); editedCells = {}; _inputsFetched.clear(); renderAll(); loadEstimatesForCurrentDay(); fetchSobrasForCurrentDay(); }
+function switchDay(day) {
+  // Flush any pending BQ save with the PREVIOUS store/day context before
+  // resetting state — otherwise the debounced save would fire with the new
+  // currentStore/currentDay and corrupt data across days.
+  flushPendingBqSync();
+  currentDay = day;
+  editedCells = {};
+  _inputsFetched.clear();
+  renderAll();
+  loadEstimatesForCurrentDay();
+  fetchSobrasForCurrentDay();
+}
+function switchStore(store) {
+  flushPendingBqSync();
+  currentStore = store;
+  localStorage.setItem('origo-current-store', store);
+  editedCells = {};
+  _inputsFetched.clear();
+  renderAll();
+  loadEstimatesForCurrentDay();
+  fetchSobrasForCurrentDay();
+}
 function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
 // Init
