@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Precisión — Origo</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #2c2c2c;
+    --muted: #888;
+    --line: #e8e4dd;
+    --card: #ffffff;
+    --primary: #1a3a2a;
+    --primary-soft: #2e5a42;
+    --green: #3d8e5c;
+    --yellow: #d9b440;
+    --orange: #e07b1f;
+    --red: #c94040;
+    --red-soft: #f4e0e0;
+    --yellow-soft: #f8efd0;
+    --green-soft: #e0efe5;
+    --gray-soft: #f2eee7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.4; }
+  header { background: var(--card); border-bottom: 1px solid var(--line); padding: 14px 20px; position: sticky; top: 0; z-index: 10; }
+  h1 { margin: 0 0 10px 0; font-size: 18px; font-weight: 700; }
+  h2 { margin: 0 0 6px 0; font-size: 16px; font-weight: 700; }
+  .explainer { color: var(--muted); margin: 0 0 14px 0; font-size: 13px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .tabs { display: inline-flex; gap: 2px; background: var(--gray-soft); padding: 3px; border-radius: 10px; }
+  .tabs button { background: transparent; border: none; padding: 7px 14px; border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .tabs button.active { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+  .range-buttons button { background: var(--card); border: 1px solid var(--line); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--muted); margin-left: 4px; }
+  .range-buttons button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .refresh { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  .updated { color: var(--muted); font-size: 12px; margin-left: auto; }
+  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  section { background: var(--card); border-radius: 12px; padding: 18px; margin-bottom: 18px; border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { background: var(--gray-soft); font-weight: 600; color: var(--fg); position: sticky; top: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .cell-low    { background: var(--green-soft); }
+  .cell-med    { background: var(--yellow-soft); }
+  .cell-high   { background: var(--red-soft); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .pill.inc { background: #e1ecfa; color: #1e4d8f; }
+  .pill.dec { background: #fce9d8; color: #8f4a1e; }
+  .pill.keep { background: var(--gray-soft); color: var(--muted); }
+  .pill.few { background: var(--gray-soft); color: var(--muted); font-weight: 400; }
+  .heatmap { overflow-x: auto; padding-bottom: 8px; }
+  .heatmap-grid { display: grid; gap: 2px; min-width: 100%; }
+  .heatmap-cell { width: 22px; height: 22px; border-radius: 3px; cursor: help; font-size: 0; }
+  .heatmap-cell.empty { background: #eae4db; }
+  .heatmap-cell.g0 { background: #3d8e5c; }    /* |gap| ≤ 2 */
+  .heatmap-cell.g1 { background: #b7d36a; }    /* 2 < |gap| ≤ 5 */
+  .heatmap-cell.g2 { background: #e5c04b; }    /* 5 < |gap| ≤ 10 */
+  .heatmap-cell.g3 { background: #e48248; }    /* 10 < |gap| ≤ 20 */
+  .heatmap-cell.g4 { background: #c94040; }    /* |gap| > 20 */
+  .heatmap-row-label { font-size: 12px; font-weight: 500; padding-right: 10px; line-height: 22px; white-space: nowrap; color: var(--fg); }
+  .heatmap-col-label { font-size: 10px; color: var(--muted); transform: rotate(-60deg); transform-origin: left bottom; white-space: nowrap; padding-left: 2px; }
+  .legend { display: flex; gap: 14px; align-items: center; margin-top: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+  .chart-wrap { background: #fafaf7; border-radius: 8px; padding: 14px; margin-top: 10px; }
+  svg.trend { width: 100%; height: 220px; }
+  .trend-line { fill: none; stroke: var(--primary); stroke-width: 2; }
+  .trend-dot { fill: var(--primary); }
+  .trend-zero { stroke: #ccc; stroke-width: 1; stroke-dasharray: 3 3; }
+  .trend-axis { stroke: #ccc; stroke-width: 1; }
+  .trend-axis-label { fill: var(--muted); font-size: 10px; }
+  .filter-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; font-size: 13px; }
+  select { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); font-size: 13px; font-family: inherit; }
+  .empty-state { color: var(--muted); font-style: italic; padding: 20px; text-align: center; }
+  .err-banner { background: #fce9e9; color: #8f1e1e; padding: 8px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+  .subtabs { display: inline-flex; gap: 2px; background: var(--gray-soft); padding: 3px; border-radius: 10px; margin-bottom: 14px; }
+  .subtabs button { background: transparent; border: none; padding: 7px 14px; border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .subtabs button.active { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+  @media (max-width: 700px) {
+    main { padding: 12px; }
+    section { padding: 14px; }
+    h1 { font-size: 16px; }
+    .heatmap-cell { width: 16px; height: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Dashboard de precisión</h1>
+  <div class="controls">
+    <div class="tabs" id="storeTabs"></div>
+    <div class="range-buttons" id="rangeButtons">
+      <button data-days="7">7 días</button>
+      <button data-days="30" class="active">30 días</button>
+      <button data-days="60">60 días</button>
+    </div>
+    <button class="refresh" id="refreshBtn">↻ Actualizar</button>
+    <span class="updated" id="updatedLabel"></span>
+  </div>
+</header>
+
+<main>
+  <div id="errorBanner" class="err-banner" style="display:none"></div>
+
+  <!-- ═════ Section 1 — Production suggestions ═════ -->
+  <section>
+    <h2>Sugerencias de producción</h2>
+    <p class="explainer">
+      Promedio de las últimas <span class="range-label">30</span> días.
+      Verde = poco sobras, rojo = mucho sobras. Ordenado por el cambio sugerido más grande.
+    </p>
+    <div class="filter-row">
+      <label>Categoría:
+        <select id="categoryFilter">
+          <option value="all">Todas</option>
+          <option value="bread">Pan</option>
+          <option value="pastry">Pastelería</option>
+          <option value="focaccia">Focaccia</option>
+        </select>
+      </label>
+      <label>Mostrar:
+        <select id="suggestionFilter">
+          <option value="all">Todo</option>
+          <option value="change">Solo con cambio sugerido</option>
+          <option value="soldouts">Solo con agotados</option>
+        </select>
+      </label>
+    </div>
+    <div id="suggestionsContainer"></div>
+  </section>
+
+  <!-- ═════ Section 3 — Data quality ═════ -->
+  <section>
+    <h2>Calidad de datos</h2>
+    <p class="explainer">
+      Diferencia entre lo producido y lo contabilizado (ventas + sobras + descartes + 1 pieza de QC diaria).
+      Un hueco consistente sugiere mermas o consumo interno no registrados.
+    </p>
+    <div class="subtabs" id="qualitySubtabs">
+      <button data-subtab="heatmap" class="active">Heatmap diario</button>
+      <button data-subtab="product">Tendencia por producto</button>
+      <button data-subtab="weekly">Resumen semanal por tienda</button>
+    </div>
+    <div id="qualityContent"></div>
+  </section>
+</main>
+
+<script>
+const FORECAST_API_URL = 'https://script.google.com/macros/s/AKfycbwFWN1OIzAmisOOTJ6OxorrIExpMNu1FtN-8WdAq5CVYOWzEV3_d_e1Lxp2p4NnYf8x/exec';
+const STORES = ['Milà', 'Sant Pau', 'Sant Joan'];
+const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];  // Mon..Sun for display
+
+const state = {
+  data: null,        // { startDate, endDate, rows: [...], errors }
+  store: STORES[0],
+  rangeDays: 30,
+  subtab: 'heatmap',
+};
+
+// ─── Utils ──────────────────────────────────────────────────
+
+function formatDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+function parseDecimalHour(t) {
+  // Accepts "HH:MM" or ISO; returns decimal hour or null.
+  if (!t) return null;
+  if (t.indexOf('T') !== -1) {
+    const d = new Date(t);
+    if (isNaN(d.getTime())) return null;
+    return d.getUTCHours() + d.getUTCMinutes() / 60;
+  }
+  const parts = t.split(':');
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10) || 0;
+  if (isNaN(h)) return null;
+  return h + m / 60;
+}
+
+function formatHour(h) {
+  if (h == null || isNaN(h)) return '—';
+  const hh = Math.floor(h);
+  const mm = Math.round((h - hh) * 60);
+  return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+}
+
+function mean(arr) {
+  if (!arr.length) return 0;
+  return arr.reduce(function(a, b) { return a + b; }, 0) / arr.length;
+}
+
+function roundTo(n, decimals) {
+  const f = Math.pow(10, decimals);
+  return Math.round(n * f) / f;
+}
+
+// ─── Fetch ──────────────────────────────────────────────────
+
+async function fetchAccuracyData() {
+  const end = new Date();
+  end.setDate(end.getDate() - 1);  // through yesterday
+  const start = new Date(end);
+  start.setDate(start.getDate() - (state.rangeDays - 1));
+
+  const url = FORECAST_API_URL +
+    '?action=accuracy' +
+    '&startDate=' + formatDateStr(start) +
+    '&endDate=' + formatDateStr(end);
+
+  showLoading();
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    state.data = data;
+    clearError();
+    render();
+  } catch (err) {
+    showError('No se pudo cargar los datos: ' + err.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+function showLoading() {
+  document.getElementById('updatedLabel').textContent = 'Cargando…';
+}
+
+function hideLoading() {
+  if (state.data) {
+    const d = new Date(state.data.generatedAt);
+    document.getElementById('updatedLabel').textContent =
+      'Datos de ' + state.data.startDate + ' a ' + state.data.endDate +
+      ' · actualizado ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorBanner');
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+
+function clearError() {
+  const el = document.getElementById('errorBanner');
+  // Keep any non-fatal backend errors visible even on success
+  if (state.data && state.data.errors && (state.data.errors.bq || state.data.errors.sobras)) {
+    el.style.display = 'block';
+    const parts = [];
+    if (state.data.errors.bq) parts.push('BigQuery: ' + state.data.errors.bq);
+    if (state.data.errors.sobras) parts.push('Sobras API: ' + state.data.errors.sobras);
+    el.textContent = 'Datos parciales — ' + parts.join(' · ');
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// ─── Suggestion logic (Section 1) ───────────────────────────
+
+function rowsForStore(store) {
+  if (!state.data || !state.data.rows) return [];
+  return state.data.rows.filter(function(r) { return r.store === store; });
+}
+
+// Group rows by (product_name, day_of_week) and compute aggregates.
+function buildSuggestions(store) {
+  const rows = rowsForStore(store).filter(function(r) { return r.sobras_available && r.produced > 0; });
+  const groups = {};
+  rows.forEach(function(r) {
+    const key = r.product_name + '|' + r.day_of_week;
+    if (!groups[key]) {
+      groups[key] = {
+        product_name: r.product_name,
+        category: r.category,
+        day_of_week: r.day_of_week,
+        produced: [], sobras: [], sold_out: [], sold_out_times: [],
+      };
+    }
+    groups[key].produced.push(r.produced);
+    groups[key].sobras.push(r.sobras);
+    groups[key].sold_out.push(r.sold_out ? 1 : 0);
+    if (r.sold_out && r.sold_out_time) {
+      const h = parseDecimalHour(r.sold_out_time);
+      if (h != null) groups[key].sold_out_times.push(h);
+    }
+  });
+
+  return Object.values(groups).map(function(g) {
+    const n = g.produced.length;
+    const avgProduced = mean(g.produced);
+    const avgSobras = mean(g.sobras);
+    const soldOutRate = mean(g.sold_out);  // fraction 0..1
+    const avgSoldOutTime = g.sold_out_times.length ? mean(g.sold_out_times) : null;
+
+    // Suggestion logic:
+    //   If sold-out rate ≥ 30% AND avg sobras < 1  → suggest +15% of produced.
+    //   If avg sobras ≥ max(2, 15% of produced) AND no sold-outs → suggest −avg sobras.
+    //   Else keep.
+    let direction = 'keep';
+    let delta = 0;
+    let reason = '';
+    if (n < 3) {
+      direction = 'few';
+      reason = 'Menos de 3 días con datos';
+    } else if (soldOutRate >= 0.3 && avgSobras < 1) {
+      direction = 'inc';
+      delta = Math.max(1, Math.ceil(avgProduced * 0.15));
+      reason = Math.round(soldOutRate * 100) + '% días agotado';
+    } else if (avgSobras >= Math.max(2, avgProduced * 0.15) && soldOutRate === 0) {
+      direction = 'dec';
+      delta = Math.max(1, Math.round(avgSobras));
+      reason = avgSobras.toFixed(1) + ' sobras de media';
+    }
+
+    return {
+      product_name: g.product_name,
+      category: g.category,
+      day_of_week: g.day_of_week,
+      n: n,
+      avg_produced: roundTo(avgProduced, 1),
+      avg_sobras: roundTo(avgSobras, 1),
+      sobras_pct: avgProduced > 0 ? (avgSobras / avgProduced) : 0,
+      sold_out_rate: roundTo(soldOutRate, 2),
+      avg_sold_out_time: avgSoldOutTime,
+      direction: direction,
+      delta: delta,
+      reason: reason,
+    };
+  });
+}
+
+function renderSuggestions() {
+  const container = document.getElementById('suggestionsContainer');
+  const categoryFilter = document.getElementById('categoryFilter').value;
+  const suggestionFilter = document.getElementById('suggestionFilter').value;
+
+  let suggestions = buildSuggestions(state.store);
+  if (categoryFilter !== 'all') {
+    suggestions = suggestions.filter(function(s) { return s.category === categoryFilter; });
+  }
+  if (suggestionFilter === 'change') {
+    suggestions = suggestions.filter(function(s) { return s.direction === 'inc' || s.direction === 'dec'; });
+  } else if (suggestionFilter === 'soldouts') {
+    suggestions = suggestions.filter(function(s) { return s.sold_out_rate > 0; });
+  }
+
+  // Sort: biggest suggested change first (descending by |delta|), then by product name.
+  suggestions.sort(function(a, b) {
+    if (b.delta !== a.delta) return b.delta - a.delta;
+    if (a.product_name !== b.product_name) return a.product_name.localeCompare(b.product_name);
+    return DOW_ORDER.indexOf(a.day_of_week) - DOW_ORDER.indexOf(b.day_of_week);
+  });
+
+  if (suggestions.length === 0) {
+    container.innerHTML = '<div class="empty-state">No hay datos suficientes para generar sugerencias.</div>';
+    return;
+  }
+
+  const rows = suggestions.map(function(s) {
+    const sobrasClass = s.sobras_pct > 0.20 ? 'cell-high'
+                     : s.sobras_pct > 0.10 ? 'cell-med'
+                     : 'cell-low';
+    const soldOutClass = s.sold_out_rate >= 0.20 ? 'cell-high'
+                       : s.sold_out_rate > 0      ? 'cell-med'
+                       : '';
+    let pill;
+    if (s.direction === 'inc')      pill = '<span class="pill inc">↑ +' + s.delta + '</span>';
+    else if (s.direction === 'dec') pill = '<span class="pill dec">↓ −' + s.delta + '</span>';
+    else if (s.direction === 'few') pill = '<span class="pill few">pocos datos</span>';
+    else                            pill = '<span class="pill keep">→ mantener</span>';
+
+    return '<tr>' +
+      '<td>' + escapeHTML(s.product_name) + '</td>' +
+      '<td>' + DAY_NAMES[s.day_of_week] + '</td>' +
+      '<td class="num">' + s.avg_produced.toFixed(1) + '</td>' +
+      '<td class="num ' + sobrasClass + '">' + s.avg_sobras.toFixed(1) +
+        ' <span style="color:var(--muted);font-size:11px">(' + Math.round(s.sobras_pct * 100) + '%)</span></td>' +
+      '<td class="num ' + soldOutClass + '">' + Math.round(s.sold_out_rate * 100) + '%</td>' +
+      '<td class="num">' + formatHour(s.avg_sold_out_time) + '</td>' +
+      '<td>' + pill + ' <span style="color:var(--muted);font-size:11px">' + escapeHTML(s.reason) + '</span></td>' +
+      '<td class="num" style="color:var(--muted)">' + s.n + '</td>' +
+      '</tr>';
+  }).join('');
+
+  container.innerHTML =
+    '<table><thead><tr>' +
+      '<th>Producto</th><th>Día</th>' +
+      '<th style="text-align:right">Producción</th>' +
+      '<th style="text-align:right">Sobras media</th>' +
+      '<th style="text-align:right">Agotado</th>' +
+      '<th style="text-align:right">Hora agotado</th>' +
+      '<th>Sugerencia</th>' +
+      '<th style="text-align:right">N</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function escapeHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+// ─── Data-quality views (Section 3) ─────────────────────────
+
+function gapBucket(gap) {
+  const abs = Math.abs(gap);
+  if (abs <= 2) return 'g0';
+  if (abs <= 5) return 'g1';
+  if (abs <= 10) return 'g2';
+  if (abs <= 20) return 'g3';
+  return 'g4';
+}
+
+function allDatesInRange() {
+  if (!state.data) return [];
+  const start = new Date(state.data.startDate + 'T12:00:00');
+  const end = new Date(state.data.endDate + 'T12:00:00');
+  const out = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    out.push(formatDateStr(d));
+  }
+  return out;
+}
+
+function productsForStore(store) {
+  const set = new Set();
+  rowsForStore(store).forEach(function(r) { set.add(r.product_name); });
+  return Array.from(set).sort();
+}
+
+function renderHeatmap() {
+  const container = document.getElementById('qualityContent');
+  const dates = allDatesInRange();
+  const products = productsForStore(state.store);
+
+  if (products.length === 0 || dates.length === 0) {
+    container.innerHTML = '<div class="empty-state">No hay datos en el rango seleccionado.</div>';
+    return;
+  }
+
+  // Build lookup: rows[product][date] = row.
+  const lookup = {};
+  rowsForStore(state.store).forEach(function(r) {
+    if (!lookup[r.product_name]) lookup[r.product_name] = {};
+    lookup[r.product_name][r.date] = r;
+  });
+
+  // Grid template: 1 label col + N date cols.
+  const gridTemplateColumns = '180px repeat(' + dates.length + ', 22px)';
+
+  const parts = ['<div class="heatmap"><div class="heatmap-grid" style="grid-template-columns:' + gridTemplateColumns + '">'];
+  // Header row: blank corner + date columns (only show every ~5th as a label to avoid clutter)
+  parts.push('<div></div>');
+  dates.forEach(function(date, idx) {
+    const short = date.slice(5);  // MM-DD
+    // Show label for every 5th day
+    const showLabel = (idx % 5 === 0) || idx === dates.length - 1;
+    parts.push('<div class="heatmap-col-label">' + (showLabel ? short : '') + '</div>');
+  });
+
+  products.forEach(function(product) {
+    parts.push('<div class="heatmap-row-label" title="' + escapeHTML(product) + '">' + escapeHTML(product) + '</div>');
+    dates.forEach(function(date) {
+      const row = lookup[product] && lookup[product][date];
+      if (!row || !row.sobras_available) {
+        parts.push('<div class="heatmap-cell empty" title="' + date + ' — sin datos"></div>');
+      } else {
+        const cls = gapBucket(row.gap);
+        const tip = date + '\n' +
+          'Producido: ' + row.produced + '\n' +
+          'Ventas: ' + row.sales + '\n' +
+          'Sobras: ' + row.sobras + '\n' +
+          'Descartes: ' + row.discards + '\n' +
+          'QC: ' + row.qc + '\n' +
+          'Hueco: ' + (row.gap > 0 ? '+' : '') + row.gap;
+        parts.push('<div class="heatmap-cell ' + cls + '" title="' + escapeHTML(tip) + '"></div>');
+      }
+    });
+  });
+
+  parts.push('</div></div>');
+  parts.push(
+    '<div class="legend">' +
+      '<span><span class="legend-swatch" style="background:#3d8e5c"></span>|hueco| ≤ 2</span>' +
+      '<span><span class="legend-swatch" style="background:#b7d36a"></span>2–5</span>' +
+      '<span><span class="legend-swatch" style="background:#e5c04b"></span>5–10</span>' +
+      '<span><span class="legend-swatch" style="background:#e48248"></span>10–20</span>' +
+      '<span><span class="legend-swatch" style="background:#c94040"></span>> 20</span>' +
+      '<span><span class="legend-swatch" style="background:#eae4db"></span>sin datos</span>' +
+    '</div>'
+  );
+
+  container.innerHTML = parts.join('');
+}
+
+function renderProductTrend() {
+  const container = document.getElementById('qualityContent');
+  const products = productsForStore(state.store);
+  if (products.length === 0) {
+    container.innerHTML = '<div class="empty-state">No hay datos en el rango seleccionado.</div>';
+    return;
+  }
+
+  const currentProduct = state._currentProduct && products.indexOf(state._currentProduct) !== -1
+    ? state._currentProduct : products[0];
+  state._currentProduct = currentProduct;
+
+  const options = products.map(function(p) {
+    return '<option value="' + escapeHTML(p) + '"' + (p === currentProduct ? ' selected' : '') + '>' + escapeHTML(p) + '</option>';
+  }).join('');
+
+  container.innerHTML =
+    '<div class="filter-row">' +
+      '<label>Producto: <select id="productTrendSelect">' + options + '</select></label>' +
+    '</div>' +
+    '<div class="chart-wrap" id="productTrendChart"></div>';
+
+  document.getElementById('productTrendSelect').addEventListener('change', function(e) {
+    state._currentProduct = e.target.value;
+    drawProductTrendChart(state._currentProduct);
+  });
+
+  drawProductTrendChart(currentProduct);
+}
+
+function drawProductTrendChart(productName) {
+  const chartEl = document.getElementById('productTrendChart');
+  const rows = rowsForStore(state.store)
+    .filter(function(r) { return r.product_name === productName && r.sobras_available; })
+    .sort(function(a, b) { return a.date.localeCompare(b.date); });
+
+  if (rows.length === 0) {
+    chartEl.innerHTML = '<div class="empty-state">Sin datos para este producto.</div>';
+    return;
+  }
+
+  const W = chartEl.clientWidth || 800;
+  const H = 220;
+  const PAD_L = 40, PAD_R = 14, PAD_T = 14, PAD_B = 28;
+  const innerW = W - PAD_L - PAD_R;
+  const innerH = H - PAD_T - PAD_B;
+
+  const gaps = rows.map(function(r) { return r.gap; });
+  const yMin = Math.min(-2, Math.min.apply(null, gaps));
+  const yMax = Math.max(2, Math.max.apply(null, gaps));
+  const yRange = yMax - yMin;
+
+  function xAt(i) { return PAD_L + (rows.length === 1 ? innerW / 2 : (i * innerW / (rows.length - 1))); }
+  function yAt(gap) { return PAD_T + innerH - ((gap - yMin) / yRange) * innerH; }
+  const zeroY = yAt(0);
+
+  const pathD = rows.map(function(r, i) {
+    return (i === 0 ? 'M' : 'L') + xAt(i) + ' ' + yAt(r.gap);
+  }).join(' ');
+
+  const dots = rows.map(function(r, i) {
+    return '<circle class="trend-dot" cx="' + xAt(i) + '" cy="' + yAt(r.gap) + '" r="3">' +
+      '<title>' + r.date + ' — hueco ' + (r.gap > 0 ? '+' : '') + r.gap + '</title></circle>';
+  }).join('');
+
+  // X-axis labels: first, middle, last
+  const xLabelIdx = rows.length > 4 ? [0, Math.floor(rows.length / 2), rows.length - 1] : rows.map(function(_, i) { return i; });
+  const xLabels = xLabelIdx.map(function(i) {
+    return '<text class="trend-axis-label" x="' + xAt(i) + '" y="' + (H - 8) + '" text-anchor="middle">' +
+      rows[i].date.slice(5) + '</text>';
+  }).join('');
+
+  // Y-axis ticks: min, 0, max
+  const yLabels = [yMin, 0, yMax].map(function(v) {
+    const y = yAt(v);
+    return '<text class="trend-axis-label" x="' + (PAD_L - 6) + '" y="' + (y + 3) + '" text-anchor="end">' +
+      (v > 0 ? '+' : '') + Math.round(v) + '</text>';
+  }).join('');
+
+  chartEl.innerHTML =
+    '<svg class="trend" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+      '<line class="trend-axis" x1="' + PAD_L + '" y1="' + PAD_T + '" x2="' + PAD_L + '" y2="' + (H - PAD_B) + '"/>' +
+      '<line class="trend-axis" x1="' + PAD_L + '" y1="' + (H - PAD_B) + '" x2="' + (W - PAD_R) + '" y2="' + (H - PAD_B) + '"/>' +
+      '<line class="trend-zero" x1="' + PAD_L + '" y1="' + zeroY + '" x2="' + (W - PAD_R) + '" y2="' + zeroY + '"/>' +
+      '<path class="trend-line" d="' + pathD + '"/>' +
+      dots + xLabels + yLabels +
+    '</svg>';
+}
+
+function renderWeeklySummary() {
+  const container = document.getElementById('qualityContent');
+  if (!state.data) return;
+
+  // Build weekly buckets per store: ISO-ish week = first day of 7-day block counted backward from endDate.
+  const allRows = (state.data.rows || []).filter(function(r) { return r.sobras_available; });
+  if (allRows.length === 0) {
+    container.innerHTML = '<div class="empty-state">No hay datos suficientes.</div>';
+    return;
+  }
+
+  // Group last 8 weeks counted back from endDate.
+  const end = new Date(state.data.endDate + 'T12:00:00');
+  const weeks = [];
+  for (let w = 0; w < 8; w++) {
+    const weekEnd = new Date(end);
+    weekEnd.setDate(end.getDate() - w * 7);
+    const weekStart = new Date(weekEnd);
+    weekStart.setDate(weekEnd.getDate() - 6);
+    weeks.unshift({ start: formatDateStr(weekStart), end: formatDateStr(weekEnd) });
+  }
+
+  const byStore = {};
+  STORES.forEach(function(s) { byStore[s] = weeks.map(function() { return []; }); });
+
+  allRows.forEach(function(r) {
+    weeks.forEach(function(w, i) {
+      if (r.date >= w.start && r.date <= w.end && byStore[r.store]) {
+        byStore[r.store][i].push(Math.abs(r.gap));
+      }
+    });
+  });
+
+  const header = '<th>Tienda</th>' + weeks.map(function(w) {
+    return '<th style="text-align:right">' + w.start.slice(5) + '</th>';
+  }).join('');
+
+  const rows = STORES.map(function(s) {
+    const cells = byStore[s].map(function(bucket) {
+      if (bucket.length === 0) return '<td class="num" style="color:var(--muted)">—</td>';
+      const avg = mean(bucket);
+      const cls = avg > 5 ? 'cell-high' : avg > 2 ? 'cell-med' : 'cell-low';
+      return '<td class="num ' + cls + '">' + avg.toFixed(1) + '</td>';
+    }).join('');
+    return '<tr><td><strong>' + s + '</strong></td>' + cells + '</tr>';
+  }).join('');
+
+  container.innerHTML =
+    '<p class="explainer">Hueco absoluto medio por semana y tienda (últimas 8 semanas). Menor = mejor calidad de datos.</p>' +
+    '<table><thead><tr>' + header + '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function renderQualitySubtab() {
+  if (state.subtab === 'heatmap') renderHeatmap();
+  else if (state.subtab === 'product') renderProductTrend();
+  else if (state.subtab === 'weekly') renderWeeklySummary();
+}
+
+// ─── Render orchestrator ────────────────────────────────────
+
+function render() {
+  renderStoreTabs();
+  const rangeLabelEls = document.querySelectorAll('.range-label');
+  rangeLabelEls.forEach(function(el) { el.textContent = state.rangeDays; });
+  hideLoading();
+  clearError();
+  renderSuggestions();
+  renderQualitySubtab();
+}
+
+function renderStoreTabs() {
+  const container = document.getElementById('storeTabs');
+  container.innerHTML = STORES.map(function(s) {
+    return '<button data-store="' + s + '"' + (s === state.store ? ' class="active"' : '') + '>' + s + '</button>';
+  }).join('');
+  container.querySelectorAll('button').forEach(function(b) {
+    b.addEventListener('click', function() {
+      state.store = b.dataset.store;
+      render();
+    });
+  });
+}
+
+// ─── Event wiring ───────────────────────────────────────────
+
+document.getElementById('rangeButtons').addEventListener('click', function(e) {
+  const btn = e.target.closest('button[data-days]');
+  if (!btn) return;
+  state.rangeDays = parseInt(btn.dataset.days, 10);
+  document.querySelectorAll('#rangeButtons button').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  fetchAccuracyData();
+});
+
+document.getElementById('refreshBtn').addEventListener('click', function() {
+  fetchAccuracyData();
+});
+
+document.getElementById('categoryFilter').addEventListener('change', renderSuggestions);
+document.getElementById('suggestionFilter').addEventListener('change', renderSuggestions);
+
+document.getElementById('qualitySubtabs').addEventListener('click', function(e) {
+  const btn = e.target.closest('button[data-subtab]');
+  if (!btn) return;
+  state.subtab = btn.dataset.subtab;
+  document.querySelectorAll('#qualitySubtabs button').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  renderQualitySubtab();
+});
+
+// ─── Init ────────────────────────────────────────────────────
+renderStoreTabs();
+fetchAccuracyData();
+</script>
+</body>
+</html>
