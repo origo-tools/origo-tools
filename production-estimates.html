@@ -1687,13 +1687,24 @@ function recalcPastryTotals() {
   });
 }
 
+// Stable slug derived from a flavor name. Replaces the old positional index
+// (fc-0, fc-1…) in data-keys so that saved edits survive when the flavor
+// ordering changes between sessions. E.g. "Tomate y cebolla" → "tomate-y-cebolla".
+function fcSlug(name) {
+  return String(name || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 function recalcFocacciaTotals() {
-  // Loop over all rendered focaccia/bocadillo rows by index
+  // Loop over all rendered focaccia/bocadillo rows by slug
   let grandTotal = 0;
   document.querySelectorAll('td[data-fc-total]').forEach(cell => {
-    const idx = cell.dataset.fcTotal;
-    const sv = parseInt((document.querySelector(`input[data-key="fc-${idx}-shop"]`) || {}).value) || 0;
-    const ov = parseInt((document.querySelector(`input[data-key="fc-${idx}-order"]`) || {}).value) || 0;
+    const slug = cell.dataset.fcTotal;
+    const sv = parseInt((document.querySelector(`input[data-key="fc-${slug}-shop"]`) || {}).value) || 0;
+    const ov = parseInt((document.querySelector(`input[data-key="fc-${slug}-order"]`) || {}).value) || 0;
     const rowTotal = sv + ov;
     grandTotal += rowTotal;
     cell.textContent = rowTotal || '';
@@ -1872,7 +1883,8 @@ function renderMain() {
     <th class="discard-header">Merma</th>
   </tr>`;
   let totalFcPortions = 0;
-  getFcNames().forEach((name, idx) => {
+  getFcNames().forEach((name) => {
+    const slug = fcSlug(name);
     const fcSobras = sobras.focaccia[name];
     const shopVal = shop.flavors[name] ?? '';
     const orderVal = 0;
@@ -1881,10 +1893,10 @@ function renderMain() {
     totalFcPortions += total;
     html += `<tr>
       <td class="product-name">${name}</td>
-      ${eCell(`fc-${idx}-shop`, shopVal, 'ai')}
-      ${isBocadillo ? '' : eCell(`fc-${idx}-order`, orderVal, 'manual order-cell')}
+      ${eCell(`fc-${slug}-shop`, shopVal, 'ai')}
+      ${isBocadillo ? '' : eCell(`fc-${slug}-order`, orderVal, 'manual order-cell')}
       <td class="sep"></td>
-      <td class="total-col" style="color:#2d6a4f;font-weight:600" data-fc-total="${idx}">${total || ''}</td>
+      <td class="total-col" style="color:#2d6a4f;font-weight:600" data-fc-total="${slug}">${total || ''}</td>
       <td class="sep"></td>
       ${sobrasCell(fcSobras)}
       ${discardsCell(fcSobras)}
@@ -2325,9 +2337,10 @@ async function confirmSync() {
 
   if (!isBocadillo) {
     const shopPortionsMap = {}, orderPortionsMap = {};
-    fcNames.forEach((name, idx) => {
-      const sInput = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
-      const oInput = document.querySelector(`input[data-key="fc-${idx}-order"]`);
+    fcNames.forEach((name) => {
+      const slug = fcSlug(name);
+      const sInput = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
+      const oInput = document.querySelector(`input[data-key="fc-${slug}-order"]`);
       shopPortionsMap[name]  = sInput ? (parseInt(sInput.value)  || 0) : 0;
       orderPortionsMap[name] = oInput ? (parseInt(oInput.value)  || 0) : 0;
     });
@@ -2338,8 +2351,9 @@ async function confirmSync() {
 
   fcNames.forEach((name, idx) => {
     if (idx >= FC_ROWS.length) return;
+    const slug = fcSlug(name);
     const row = FC_ROWS[idx];
-    const shopInput   = document.querySelector(`input[data-key="fc-${idx}-shop"]`);
+    const shopInput   = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
     const shopCount   = isBocadillo
       ? (shopInput ? (parseInt(shopInput.value) || 0) : 0)
       : (shopAllocation[name] || 0);
