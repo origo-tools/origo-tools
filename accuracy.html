@@ -360,7 +360,7 @@ function renderSuggestions() {
   });
 
   if (suggestions.length === 0) {
-    container.innerHTML = '<div class="empty-state">No hay datos suficientes para generar sugerencias.</div>';
+    container.innerHTML = renderEmptySuggestions();
     return;
   }
 
@@ -406,6 +406,33 @@ function escapeHTML(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
   });
+}
+
+// Diagnostic view — shown when the main table has nothing to display, so the
+// user can see which source (BQ produced, sales, sobras) is the bottleneck
+// without needing to open the browser devtools.
+function renderEmptySuggestions() {
+  const d = (state.data && state.data.diagnostics) || null;
+  if (!d) return '<div class="empty-state">No hay datos cargados aún.</div>';
+  const storeRows = state.data.rows.filter(function(r) { return r.store === state.store; });
+  const storeRowsWithSobras = storeRows.filter(function(r) { return r.sobras_available; });
+  const parts = ['<div class="empty-state">No hay datos suficientes para generar sugerencias.</div>'];
+  parts.push('<details style="margin-top:12px;padding:12px;background:var(--gray-soft);border-radius:8px;font-size:13px">');
+  parts.push('<summary style="cursor:pointer;font-weight:600">Diagnóstico</summary>');
+  parts.push('<ul style="margin:10px 0 0 20px;line-height:1.7">');
+  parts.push('<li>Filas en <code>Forecast_Log</code> × <code>Actual_Sales</code>: <strong>' + d.bq_rows_count + '</strong></li>');
+  parts.push('<li>Tiendas con sobras: <strong>' + d.sobras_stores_count + '</strong> · días con sobras: <strong>' + d.sobras_store_day_pairs + '</strong></li>');
+  parts.push('<li>Productos únicos en Forecast_Log: <strong>' + d.bq_unique_product_names + '</strong> · en sobras: <strong>' + d.sobras_unique_product_names + '</strong> · coincidentes: <strong>' + d.matched_product_names + '</strong></li>');
+  parts.push('<li>En <strong>' + state.store + '</strong>: ' + storeRows.length + ' filas de producción, ' + storeRowsWithSobras.length + ' con sobras</li>');
+  if (d.unmatched_bq_names_sample && d.unmatched_bq_names_sample.length) {
+    parts.push('<li>Productos sin sobras (muestra): <code>' + d.unmatched_bq_names_sample.map(escapeHTML).join('</code>, <code>') + '</code></li>');
+  }
+  if (d.unmatched_sobras_names_sample && d.unmatched_sobras_names_sample.length) {
+    parts.push('<li>Sobras sin producto (muestra): <code>' + d.unmatched_sobras_names_sample.map(escapeHTML).join('</code>, <code>') + '</code></li>');
+  }
+  parts.push('</ul>');
+  parts.push('</details>');
+  return parts.join('');
 }
 
 // ─── Data-quality views (Section 3) ─────────────────────────
