@@ -381,6 +381,46 @@ async function fetchJson(url, opts) {
 // Store name mapping: internal key → API store name
 const STORE_API_NAMES = { santpau: 'Sant Pau', mila: 'Milà', santjoan: 'Sant Joan' };
 
+// Cross-browser sync state. Populated from the backend (init bundle + on
+// store switches) and updated locally after each successful sync so the
+// "Última sync" label reflects whoever last pushed to the sheet, not just
+// this browser. Keyed by "${storeApiName}-${dateStr}".
+const syncStatusCache = {};
+function syncStatusKey(storeApiName, dateStr) { return storeApiName + '-' + dateStr; }
+function applySyncStatusMap(storeApiName, map) {
+  if (!storeApiName || !map) return;
+  for (const dateStr of Object.keys(map)) {
+    syncStatusCache[syncStatusKey(storeApiName, dateStr)] = map[dateStr];
+  }
+}
+function refreshSyncStatusDisplay() {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  const storeApiName = STORE_API_NAMES[currentStore];
+  const dateStr = formatDateStr(getTargetDate(currentDay));
+  const entry = syncStatusCache[syncStatusKey(storeApiName, dateStr)];
+  if (!entry || !entry.syncedAt) {
+    el.innerHTML = 'Sin sincronizar';
+    return;
+  }
+  // If the algorithm has produced a newer estimate since this sync, treat the
+  // sync as stale — that's exactly when Rafa needs to re-sync.
+  const cacheKey = `${currentStore}-${dateStr}`;
+  const currentGen = forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt;
+  if (currentGen && entry.generatedAt && new Date(currentGen).getTime() > new Date(entry.generatedAt).getTime()) {
+    el.innerHTML = 'Sin sincronizar <span style="color:#888;font-weight:400;">(nueva estimación)</span>';
+    return;
+  }
+  const synced = new Date(entry.syncedAt);
+  const today = new Date();
+  const sameDay = synced.toDateString() === today.toDateString();
+  const timeStr = synced.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  const whenStr = sameDay
+    ? `hoy ${timeStr}`
+    : synced.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }) + ' ' + timeStr;
+  el.innerHTML = `<strong>Última sync:</strong> ${whenStr} — ${storeApiName} · ${currentDay}`;
+}
+
 // Product cell → key mapping (from API response to internal key)
 const CELL_TO_KEY = {
   'D8': 'origo', 'D9': 'origoMolde', 'D10': 'origoIntegral',
@@ -724,7 +764,9 @@ async function loadInitBundle() {
         currentDay = bestDay;
         _inputsFetched.clear();
         // Re-fetch with correct day (the init bundle had the wrong day)
+        if (data.syncStatusMap) applySyncStatusMap(storeName, data.syncStatusMap);
         renderAll();
+        refreshSyncStatusDisplay();
         loadEstimatesForCurrentDay();
         fetchSobrasForCurrentDay();
         return true;
@@ -768,7 +810,13 @@ async function loadInitBundle() {
       }
     }
 
+    // 4. Sync status map — populates cross-browser "Última sync" state
+    if (data.syncStatusMap) {
+      applySyncStatusMap(storeName, data.syncStatusMap);
+    }
+
     renderAll();
+    refreshSyncStatusDisplay();
     return true;
   } catch(e) {
     console.warn('Init bundle failed, falling back to separate calls:', e);
@@ -796,6 +844,7 @@ async function loadEstimatesForCurrentDay() {
 
   if (forecastCache[cacheKey]) {
     renderAll();
+    refreshSyncStatusDisplay();
     return;
   }
 
@@ -870,8 +919,55 @@ async function loadEstimatesForCurrentDay() {
   } finally {
     forecastLoading = false;
     renderAll();
+    refreshSyncStatusDisplay();
   }
 }
+
+// Fetch the sync-status map for a store so switching to a store we haven't
+// seen in this session shows everyone's last sync. Fire-and-forget; a miss
+// just means the status bar shows "Sin sincronizar" until the fetch lands.
+async function fetchSyncStatusMap(storeApiName) {
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl || !storeApiName) return;
+  try {
+    const url = `${apiUrl}?action=syncStatusMap&store=${encodeURIComponent(storeApiName)}`;
+    const data = await fetchJson(url);
+    if (data && data.map) {
+      applySyncStatusMap(storeApiName, data.map);
+      refreshSyncStatusDisplay();
+    }
+  } catch(e) {
+    // Non-fatal — the status bar just stays blank for this store.
+  }
+}
+
+// Background poll so François sees Rafa's sync (or vice versa) without a
+// reload. 60s interval balances freshness against Apps Script quota; polling
+// is paused while the tab is hidden and an immediate refresh runs on focus.
+const SYNC_POLL_INTERVAL_MS = 60000;
+let _syncPollTimer = null;
+function startSyncStatusPolling() {
+  stopSyncStatusPolling();
+  if (document.visibilityState === 'hidden') return;
+  _syncPollTimer = setInterval(() => {
+    fetchSyncStatusMap(STORE_API_NAMES[currentStore]);
+  }, SYNC_POLL_INTERVAL_MS);
+}
+function stopSyncStatusPolling() {
+  if (_syncPollTimer) {
+    clearInterval(_syncPollTimer);
+    _syncPollTimer = null;
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // Returning to the tab: refresh immediately, then resume the interval.
+    fetchSyncStatusMap(STORE_API_NAMES[currentStore]);
+    startSyncStatusPolling();
+  } else {
+    stopSyncStatusPolling();
+  }
+});
 
 /**
  * Check if AI estimates are newer than what we had before.
@@ -2443,6 +2539,9 @@ async function confirmSync() {
   // 5. POST to Apps Script sync endpoint
   try {
     const storeName = STORE_API_NAMES[currentStore];
+    const targetDateStr = formatDateStr(getTargetDate(currentDay));
+    const cacheKey = `${currentStore}-${targetDateStr}`;
+    const generatedAt = (forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt) || null;
     const data = await fetchJson(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' }, // Apps Script needs text/plain for CORS
@@ -2450,7 +2549,8 @@ async function confirmSync() {
         action: 'sync',
         store: storeName,
         dayOfWeek: currentDay,
-        targetDate: formatDateStr(getTargetDate(currentDay)),
+        targetDate: targetDateStr,
+        generatedAt,
         estimates
       })
     });
@@ -2458,7 +2558,14 @@ async function confirmSync() {
     if (data.success) {
       btn.classList.add('synced');
       btn.innerHTML = `✓ Sincronizado — ${currentDay} (${data.updatedCells} celdas)`;
-      status.innerHTML = `<strong>Última sync:</strong> ${new Date().toLocaleTimeString('es-ES')} — ${storeName} · ${currentDay}`;
+      // Update local cache immediately so the label survives day/store switches
+      // without waiting for a re-fetch. Prefer the server's timestamp if it
+      // came back, else stamp client-side.
+      syncStatusCache[syncStatusKey(storeName, targetDateStr)] = {
+        syncedAt: data.syncedAt || new Date().toISOString(),
+        generatedAt,
+      };
+      refreshSyncStatusDisplay();
 
       // Also record Rafa's approved values in BigQuery (fire-and-forget)
       try {
@@ -2499,6 +2606,7 @@ function switchDay(day) {
   editedCells = {};
   _inputsFetched.clear();
   renderAll();
+  refreshSyncStatusDisplay();
   loadEstimatesForCurrentDay();
   fetchSobrasForCurrentDay();
 }
@@ -2509,6 +2617,11 @@ function switchStore(store) {
   editedCells = {};
   _inputsFetched.clear();
   renderAll();
+  refreshSyncStatusDisplay();
+  // Refresh sync map for the new store so we pick up other browsers' syncs,
+  // and restart the poll so it tracks the currently viewed store.
+  fetchSyncStatusMap(STORE_API_NAMES[store]);
+  startSyncStatusPolling();
   loadEstimatesForCurrentDay();
   fetchSobrasForCurrentDay();
 }
@@ -2559,7 +2672,9 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
     if (!initOk) {
       if (!hadCachedDates) await loadGeneratedDates();
       await loadEstimatesForCurrentDay();
+      fetchSyncStatusMap(STORE_API_NAMES[currentStore]);
     }
+    startSyncStatusPolling();
   }
 
   // Run data loading and sobras fetch in parallel
