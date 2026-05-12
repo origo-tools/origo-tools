@@ -817,6 +817,9 @@ async function loadInitBundle() {
 
     renderAll();
     refreshSyncStatusDisplay();
+    // Sant Joan only: pull tomorrow's estimates so the focaccia row can
+    // recalculate live from current bocadillo numbers (fire-and-forget).
+    prefetchNextDayForFocaccia();
     return true;
   } catch(e) {
     console.warn('Init bundle failed, falling back to separate calls:', e);
@@ -845,6 +848,7 @@ async function loadEstimatesForCurrentDay() {
   if (forecastCache[cacheKey]) {
     renderAll();
     refreshSyncStatusDisplay();
+    prefetchNextDayForFocaccia();
     return;
   }
 
@@ -920,6 +924,9 @@ async function loadEstimatesForCurrentDay() {
     forecastLoading = false;
     renderAll();
     refreshSyncStatusDisplay();
+    // Sant Joan only: pull tomorrow's estimates so the focaccia row can
+    // recalculate live from current bocadillo numbers (fire-and-forget).
+    prefetchNextDayForFocaccia();
   }
 }
 
@@ -1017,6 +1024,143 @@ function clearEditsIfNewAIRun(dateStr) {
     // Remember this AI run so we don't clear edits again until next run
     localStorage.setItem(genKey, cached.generatedAt);
   }
+}
+
+// Sant Joan focaccia: bocadillos per focaccia (focacciaCount = ceil(bocadillos / 12)).
+// Mirrors CONFIG.BOCADILLO_PER_FOCACCIA in apps-script-forecasting.js.
+const BOCADILLO_PER_FOCACCIA = 12;
+
+// Next day within the same Mon–Sun production week.
+// Mon→Tue, …, Sat→Sun, Sun→Mon (same week — production is a weekly batch,
+// so Sunday's focaccia is sized from THIS week's Monday bocadillos).
+function getNextDayOfWeek(dayName) {
+  const idx = DAYS.indexOf(dayName);
+  if (idx < 0) return dayName;
+  return DAYS[(idx + 1) % 7];   // DAYS = [Lunes…Domingo], wraps Domingo→Lunes
+}
+
+// Compute the dynamic focaccia count for the currently viewed Sant Joan day:
+// focacciaCount = ceil(total bocadillos NEXT day-of-week / BOCADILLO_PER_FOCACCIA).
+// Pulls next-day bocadillo estimates from forecastCache and applies any
+// user overrides on next-day fc-*-shop inputs. Falls back to the backend's
+// stored shipping split if next-day data hasn't loaded yet.
+//
+// Returns { count, totalBocadillos, perFocaccia, nextDateStr, formula }
+// or null when not Sant Joan.
+function getFocacciaDynamicCalc() {
+  if (currentStore !== 'santjoan') return null;
+  const perFocaccia = BOCADILLO_PER_FOCACCIA;
+
+  const nextDay = getNextDayOfWeek(currentDay);
+  const nextDate = getTargetDate(nextDay);
+  const nextDateStr = formatDateStr(nextDate);
+  const nextCacheKey = `${currentStore}-${nextDateStr}`;
+  const nextCached = forecastCache[nextCacheKey];
+
+  if (nextCached && nextCached.estimates) {
+    const overrides = (_activeOverrides[nextCacheKey] || {}).shop || {};
+    let total = 0;
+    for (const est of nextCached.estimates) {
+      if (est.type !== 'bread' || !est.flavorName || est.isFocaccia) continue;
+      const slug = fcSlug(est.flavorName);
+      const k = `fc-${slug}-shop`;
+      const ov = overrides[k];
+      const v = (ov !== undefined && ov !== '' && ov !== null)
+        ? (parseInt(ov) || 0)
+        : (parseInt(est.estimate) || 0);
+      total += Math.max(0, v);
+    }
+    const count = Math.ceil(total / perFocaccia);
+    return {
+      count,
+      totalBocadillos: total,
+      perFocaccia,
+      nextDateStr,
+      formula: `${total} bocadillos ÷ ${perFocaccia} = ${count} focaccias`,
+    };
+  }
+
+  // Next-day not loaded yet — show the backend's stored value with the same
+  // formula format. It updates to the live count as soon as prefetch lands.
+  const split = getBreadShippingSplit('focaccia');
+  const backendCount = split && typeof split.envio2 === 'number' ? split.envio2 : 0;
+  const currentDate = getTargetDate(currentDay);
+  const cached = forecastCache[`${currentStore}-${formatDateStr(currentDate)}`];
+  let backendTotal = null;
+  if (cached && cached.estimates) {
+    const fEst = cached.estimates.find(e => e.isFocaccia || e.product === 'FOCACCIA');
+    if (fEst && fEst.focacciaCalc) backendTotal = fEst.focacciaCalc.nextDayBocadilloTotal;
+  }
+  return {
+    count: backendCount,
+    totalBocadillos: backendTotal,
+    perFocaccia,
+    nextDateStr,
+    formula: backendTotal != null
+      ? `${backendTotal} bocadillos ÷ ${perFocaccia} = ${backendCount} focaccias`
+      : `${backendCount} focaccias`,
+  };
+}
+
+// Track in-flight next-day prefetches to avoid duplicate fetches per session.
+const _nextDayPrefetched = new Set();
+
+// Prefetch the next-day Sant Joan estimates + inputs so the focaccia row can
+// recalculate live from current bocadillo numbers. Fire-and-forget — re-renders
+// when data lands. No-op for other stores or when already cached.
+async function prefetchNextDayForFocaccia() {
+  if (currentStore !== 'santjoan') return;
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl) return;
+
+  const nextDay = getNextDayOfWeek(currentDay);
+  const nextDate = getTargetDate(nextDay);
+  const nextDateStr = formatDateStr(nextDate);
+  const nextKey = `${currentStore}-${nextDateStr}`;
+
+  // Skip the very last generated day (no next-day estimates exist yet)
+  if (!generatedDatesSet.has(nextDateStr)) return;
+
+  const needEstimates = !forecastCache[nextKey];
+  const needInputs = !_inputsFetched.has(nextKey);
+  if (!needEstimates && !needInputs) return;
+  if (_nextDayPrefetched.has(nextKey)) return;
+  _nextDayPrefetched.add(nextKey);
+
+  const storeApiName = STORE_API_NAMES[currentStore];
+  const dow = String(nextDate.getDay());  // 0=Sun … 6=Sat
+  const tasks = [];
+  if (needEstimates) {
+    tasks.push(
+      fetchJson(`${apiUrl}?action=estimates&store=${encodeURIComponent(storeApiName)}&date=${nextDateStr}`)
+        .then(data => {
+          if (data && !data.error) {
+            forecastCache[nextKey] = data;
+            if (data.weather) weatherCache[nextDateStr] = data.weather;
+          }
+        })
+        .catch(() => {})
+    );
+  }
+  if (needInputs) {
+    _inputsFetched.add(nextKey);
+    tasks.push(
+      fetchJson(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${nextDateStr}&dayOfWeek=${dow}`)
+        .then(data => {
+          if (data && data.success) {
+            _cachedBqInputs[nextKey] = data;
+            if (!_activeOverrides[nextKey]) _activeOverrides[nextKey] = { shop: {}, orders: {} };
+            if (data.shop) Object.assign(_activeOverrides[nextKey].shop, data.shop);
+            if (data.orders) Object.assign(_activeOverrides[nextKey].orders, data.orders);
+          }
+        })
+        .catch(() => { _inputsFetched.delete(nextKey); })
+    );
+  }
+  if (tasks.length === 0) return;
+  try { await Promise.all(tasks); } catch(_) {}
+  // Re-render so the focaccia row picks up the fresh next-day numbers
+  if (currentStore === 'santjoan') renderMain();
 }
 
 // Get the shipping split for a Sant Joan bread product from cached estimates
@@ -1439,9 +1583,13 @@ function getActiveOverrides() {
 
 // Sant Joan bread uses algorithm-driven envío 1 / envío 2 columns,
 // so BQ shop/order overrides must never replace the AI-generated split.
+// Focaccia is the one exception: Rafa can override the dynamically calculated
+// count, so its bread-focaccia-{shop,order} overrides must be honored.
 function isSantJoanBreadKey(store, key) {
-  return store === 'santjoan' && key.startsWith('bread-') &&
-         (key.endsWith('-order') || key.endsWith('-shop'));
+  if (store !== 'santjoan') return false;
+  if (!key.startsWith('bread-')) return false;
+  if (key.startsWith('bread-focaccia-')) return false;  // focaccia overrides allowed
+  return key.endsWith('-order') || key.endsWith('-shop');
 }
 
 async function restoreInputState() {
@@ -1935,17 +2083,30 @@ function renderMain() {
       }
     }
 
+    // Sant Joan focaccia: replace backend value with live count derived from
+    // the NEXT day's bocadillo estimates. envío 1 is always 0 (no retail);
+    // envío 2 = ceil(totalBocadillosNextDay / 12). Rafa can override the
+    // calculated value by editing envío 2; clearing the cell reverts to it.
+    let focacciaCalc = null;
+    let displayName = item.name;
+    if (isSantJoan && item.key === 'focaccia') {
+      focacciaCalc = getFocacciaDynamicCalc();
+      shopVal = 0;
+      orderVal = focacciaCalc ? focacciaCalc.count : orderVal;
+      const subtitle = focacciaCalc
+        ? `<div style="font-weight:400;font-size:11px;color:#888;margin-top:2px;">${escapeHtml(focacciaCalc.formula)}</div>`
+        : '';
+      displayName = `FOCACCIA <span style="font-weight:400;font-size:11px;color:#666">(bocadillos)</span>${subtitle}`;
+    } else if (item.key === 'especial') {
+      // Show active variety for Especial rotation
+      const variety = getActiveEspecialVariety();
+      if (variety) displayName = `ESPECIAL <span style="font-weight:400;font-size:12px;color:#666">(${variety})</span>`;
+    }
+
     const sobrasData = sobras.bread[item.key];
     const shopNum = parseInt(shopVal) || 0;
     const orderNum = parseInt(orderVal) || 0;
     const total = shopNum + orderNum;
-
-    // Show active variety for Especial rotation
-    let displayName = item.name;
-    if (item.key === 'especial') {
-      const variety = getActiveEspecialVariety();
-      if (variety) displayName = `ESPECIAL <span style="font-weight:400;font-size:12px;color:#666">(${variety})</span>`;
-    }
 
     html += `<tr>
       ${productNameCell(displayName, item.label, item.key)}
@@ -2101,17 +2262,31 @@ function renderMain() {
     // Validate, mark edited, and save on change (blur)
     input.addEventListener('change', function() {
       this.value = this.value.replace(/[^\d]/g, '');
+      const rawCleared = this.value === '';
       const v = parseInt(this.value) || 0;
       this.value = Math.max(0, Math.min(9999, v)) || '';
-      editedCells[this.dataset.key] = true;
-      this.closest('td').className = 'editable edited';
-      // Update active overrides so DOM rebuilds (estimates/sobras load) preserve this edit
+      const k = this.dataset.key;
       const targetDate = getTargetDate(currentDay);
       const dateStr = formatDateStr(targetDate);
       const overKey = `${currentStore}-${dateStr}`;
       if (!_activeOverrides[overKey]) _activeOverrides[overKey] = { shop: {}, orders: {} };
-      const k = this.dataset.key;
       const isOrd = k.includes('-order') || /-(b[123]o)$/.test(k);
+
+      // Sant Joan focaccia: clearing the cell reverts to the live calculated
+      // value (ceil(next-day bocadillos / 12)) rather than persisting an
+      // empty override.
+      const isSantJoanFocaccia = currentStore === 'santjoan' && k.startsWith('bread-focaccia-');
+      if (isSantJoanFocaccia && rawCleared) {
+        delete _activeOverrides[overKey][isOrd ? 'orders' : 'shop'][k];
+        delete editedCells[k];
+        this.closest('td').className = 'editable ai';
+        saveInputState();
+        renderMain();  // re-render so the calculated value reappears
+        return;
+      }
+
+      editedCells[k] = true;
+      this.closest('td').className = 'editable edited';
       _activeOverrides[overKey][isOrd ? 'orders' : 'shop'][k] = v || '';
       saveInputState();
       recalcBreadTotals();
@@ -2478,10 +2653,14 @@ async function confirmSync() {
   function cellRow(dCell) { return dCell.replace('D', ''); }
 
   // Bread: shop → column G, orders → column J
-  // Skip 'focaccia' here — it is handled below in the per-flavor section,
-  // which writes individual rows (48-55) AND calculates the correct G19 total.
+  // Skip 'focaccia' for stores that aggregate it from per-flavor rows 48-55
+  // (santpau, mila). Sant Joan's focaccia row writes directly to row 19:
+  // envío 1 → G19 (always 0), envío 2 → J19 (= ceil(next-day bocadillos / 12)
+  // or Rafa's override).
+  const _isSantJoan = currentStore === 'santjoan';
   BREAD.forEach(item => {
-    if (!item.key || item.key === 'focaccia') return;
+    if (!item.key) return;
+    if (item.key === 'focaccia' && !_isSantJoan) return;
     const dCell = KEY_TO_CELL[item.key];
     if (!dCell) return;
     const row = cellRow(dCell);
