@@ -1028,7 +1028,12 @@ function clearEditsIfNewAIRun(dateStr) {
 
 // Sant Joan focaccia: bocadillos per focaccia (focacciaCount = ceil(bocadillos / 12)).
 // Mirrors CONFIG.BOCADILLO_PER_FOCACCIA in apps-script-forecasting.js.
+// Physical yield is 15 — 12 is the safe planning number to absorb holes.
 const BOCADILLO_PER_FOCACCIA = 12;
+// Round the bocadillo total DOWN to a multiple of 12 if the remainder is
+// within this many units — avoids baking an extra focaccia just for 1-2
+// extra sandwiches.  Mirrors CONFIG.BOCADILLO_FOCACCIA_ROUND_DOWN_THRESHOLD.
+const BOCADILLO_FOCACCIA_ROUND_DOWN_THRESHOLD = 2;
 
 // Next day within the same Mon–Sun production week.
 // Mon→Tue, …, Sat→Sun, Sun→Mon (same week — production is a weekly batch,
@@ -1070,13 +1075,20 @@ function getFocacciaDynamicCalc() {
         : (parseInt(est.estimate) || 0);
       total += Math.max(0, v);
     }
-    const count = Math.ceil(total / perFocaccia);
+    const remainder = total % perFocaccia;
+    const effectiveTotal = (total >= perFocaccia && remainder > 0 && remainder <= BOCADILLO_FOCACCIA_ROUND_DOWN_THRESHOLD)
+      ? total - remainder
+      : total;
+    const count = Math.ceil(effectiveTotal / perFocaccia);
     return {
       count,
       totalBocadillos: total,
+      effectiveTotal,
       perFocaccia,
       nextDateStr,
-      formula: `${total} bocadillos ÷ ${perFocaccia} = ${count} focaccias`,
+      formula: effectiveTotal !== total
+        ? `${total} → ${effectiveTotal} bocadillos ÷ ${perFocaccia} = ${count} focaccias`
+        : `${total} bocadillos ÷ ${perFocaccia} = ${count} focaccias`,
     };
   }
 
