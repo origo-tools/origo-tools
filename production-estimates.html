@@ -202,6 +202,67 @@
   .settings-panel .status.ok { color: #2e7d32; }
   .settings-panel .status.err { color: #c0392b; }
   .sobras-loading { color: #888; font-style: italic; font-size: 12px; }
+
+  /* Per-product note icon (inline next to the product name) */
+  .note-icon {
+    border: none; background: transparent; cursor: pointer; padding: 2px 4px;
+    font-size: 13px; line-height: 1; color: #c8c2b8; margin-left: 4px;
+    border-radius: 4px; transition: background 0.15s, color 0.15s;
+    vertical-align: middle;
+  }
+  .note-icon:hover { background: rgba(26,58,42,0.08); color: #1a3a2a; }
+  .note-icon.has-note { color: #b7791f; }
+  .note-icon.has-note:hover { color: #8a5a14; }
+
+  /* Day note textarea (above bread section) */
+  .day-note {
+    background: #fffbef; border: 1px solid #ead9a8; border-radius: 8px;
+    padding: 10px 12px; margin: 0 0 14px 0;
+  }
+  .day-note label {
+    display: block; font-size: 12px; font-weight: 600; color: #8a5a14;
+    margin-bottom: 4px;
+  }
+  .day-note textarea {
+    width: 100%; min-height: 38px; resize: vertical; border: none;
+    background: transparent; font-family: inherit; font-size: 13px;
+    color: #5a3a10; outline: none; padding: 2px 0;
+  }
+  .day-note textarea::placeholder { color: #c8b888; }
+  .day-note.saving { border-color: #1a3a2a; }
+
+  /* Note edit modal */
+  .note-modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    z-index: 300; align-items: center; justify-content: center;
+  }
+  .note-modal-overlay.show { display: flex; }
+  .note-modal {
+    background: #fff; border-radius: 12px; padding: 20px; max-width: 480px;
+    width: 92%; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .note-modal h3 { font-size: 15px; margin: 0 0 4px 0; color: #1a3a2a; }
+  .note-modal .note-target { font-size: 12px; color: #888; margin-bottom: 12px; }
+  .note-modal textarea {
+    width: 100%; min-height: 110px; resize: vertical; padding: 10px;
+    border: 1px solid #d5cfc7; border-radius: 8px; font-family: inherit;
+    font-size: 14px; color: #222; box-sizing: border-box;
+  }
+  .note-modal textarea:focus { outline: none; border-color: #1a3a2a; }
+  .note-modal-btns { display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end; }
+  .note-modal-btns button {
+    padding: 8px 18px; border-radius: 8px; font-size: 14px; font-weight: 600;
+    cursor: pointer; border: none;
+  }
+  .note-modal-btns .cancel { background: #eee; color: #555; }
+  .note-modal-btns .delete { background: #fce4e4; color: #c0392b; margin-right: auto; }
+  .note-modal-btns .save   { background: #1a3a2a; color: white; }
+
+  /* Day-tab indicator dot for days with notes */
+  .day-tab .note-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #b7791f; margin-left: 4px; vertical-align: middle;
+  }
 </style>
 </head>
 <body>
@@ -277,6 +338,20 @@
     <div class="sync-modal-btns">
       <button class="cancel" onclick="closeSyncPreview()">Cancelar</button>
       <button class="confirm" onclick="confirmSync()">Confirmar y sincronizar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Per-product note edit modal -->
+<div class="note-modal-overlay" id="noteModal" onclick="if (event.target === this) closeNoteModal()">
+  <div class="note-modal">
+    <h3 id="noteModalTitle">Nota</h3>
+    <div class="note-target" id="noteModalTarget"></div>
+    <textarea id="noteModalText" placeholder="Escribe una nota (ej: 'Aumenté +10, el algoritmo se quedó corto 3 semanas seguidas')"></textarea>
+    <div class="note-modal-btns">
+      <button class="delete" onclick="deleteCurrentNote()" id="noteModalDelete" style="display:none">Borrar</button>
+      <button class="cancel" onclick="closeNoteModal()">Cancelar</button>
+      <button class="save" onclick="saveCurrentNote()">Guardar</button>
     </div>
   </div>
 </div>
@@ -387,6 +462,15 @@ const STORE_API_NAMES = { santpau: 'Sant Pau', mila: 'Milà', santjoan: 'Sant Jo
 // this browser. Keyed by "${storeApiName}-${dateStr}".
 const syncStatusCache = {};
 function syncStatusKey(storeApiName, dateStr) { return storeApiName + '-' + dateStr; }
+// True when the current store has already synced shop values for `dateStr`
+// to the production sheet. Synced values are authoritative — AI regenerations
+// must NOT wipe them, and stale-vs-AI timestamp checks must NOT discard them.
+function hasSyncedShop(dateStr) {
+  const storeApiName = STORE_API_NAMES[currentStore];
+  if (!storeApiName || !dateStr) return false;
+  const entry = syncStatusCache[syncStatusKey(storeApiName, dateStr)];
+  return !!(entry && entry.syncedAt);
+}
 function applySyncStatusMap(storeApiName, map) {
   if (!storeApiName || !map) return;
   for (const dateStr of Object.keys(map)) {
@@ -780,7 +864,14 @@ async function loadInitBundle() {
       if (data.estimates.weather) weatherCache[dateStr] = data.estimates.weather;
     }
 
-    // 2b. If target date changed (new week), clear stale shop edits
+    // 2b. Sync status map FIRST — clearEditsIfNewAIRun and the BQ skipShop
+    // logic below both consult syncStatusCache to preserve synced values.
+    if (data.syncStatusMap) {
+      applySyncStatusMap(storeName, data.syncStatusMap);
+    }
+
+    // 2c. If target date changed (new week), clear stale shop edits — but
+    // only if the day hasn't been synced (synced values are authoritative).
     clearEditsIfNewAIRun(dateStr);
 
     // 3. Cache BQ inputs AND populate _activeOverrides BEFORE renderAll
@@ -788,6 +879,7 @@ async function loadInitBundle() {
       const fetchKey = `${currentStore}-${dateStr}`;
       _inputsFetched.add(fetchKey);
       _cachedBqInputs[fetchKey] = data.inputs;
+      ingestNotesFromInputsResp(currentStore, dateStr, data.inputs);
 
       if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
       let skipShop = false;
@@ -796,6 +888,8 @@ async function loadInitBundle() {
         const aiTime = new Date(forecastCache[fetchKey].generatedAt).getTime();
         if (bqTime < aiTime) skipShop = true;
       }
+      // Synced values always win over the timestamp staleness check.
+      if (skipShop && hasSyncedShop(dateStr)) skipShop = false;
       if (!skipShop && data.inputs.shop) {
         const filtered = Object.fromEntries(
           Object.entries(data.inputs.shop).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
@@ -808,11 +902,6 @@ async function loadInitBundle() {
         );
         Object.assign(_activeOverrides[fetchKey].orders, filtered);
       }
-    }
-
-    // 4. Sync status map — populates cross-browser "Última sync" state
-    if (data.syncStatusMap) {
-      applySyncStatusMap(storeName, data.syncStatusMap);
     }
 
     renderAll();
@@ -890,12 +979,14 @@ async function loadEstimatesForCurrentDay() {
     if (inputsResp.success) {
       _cachedBqInputs[cacheKey] = inputsResp;
       _inputsFetched.add(cacheKey);
+      ingestNotesFromInputsResp(currentStore, dateStr, inputsResp);
 
       if (!_activeOverrides[cacheKey]) _activeOverrides[cacheKey] = { shop: {}, orders: {} };
 
       // Decide whether BQ shop edits are stale: compare edit time vs AI generation time.
       // _aiRunCleared only affects localStorage cleanup, NOT BQ data — the timestamp
-      // comparison is the sole arbiter for BQ edits.
+      // comparison is the sole arbiter for BQ edits, EXCEPT when the day has been
+      // synced to the production sheet — synced values are authoritative.
       let skipShop = false;
       if (inputsResp.updatedAt && forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt) {
         const bqTime = Number(inputsResp.updatedAt) * 1000;
@@ -904,6 +995,10 @@ async function loadEstimatesForCurrentDay() {
           skipShop = true;
           console.log('[Origo] Skipping stale BQ shop inputs — saved', new Date(bqTime).toISOString(), 'vs AI generated', forecastCache[cacheKey].generatedAt);
         }
+      }
+      if (skipShop && hasSyncedShop(dateStr)) {
+        skipShop = false;
+        console.log('[Origo] Keeping BQ shop inputs — day already synced, synced values win');
       }
       if (!skipShop && inputsResp.shop && Object.keys(inputsResp.shop).length > 0) {
         const filtered = Object.fromEntries(
@@ -1000,8 +1095,17 @@ function clearEditsIfNewAIRun(dateStr) {
   }
 
   if (lastKnown !== cached.generatedAt) {
-    // AI was genuinely regenerated since last visit — clear shop edits
-    // so the user sees the fresh AI estimates in green.
+    // AI was genuinely regenerated since last visit. Normally we clear shop
+    // edits so the user sees the fresh AI estimates in green — but if the
+    // day has already been synced to the production sheet, those synced
+    // values are authoritative and must NOT be wiped.
+    if (hasSyncedShop(dateStr)) {
+      // Just remember the new AI gen so we don't keep retriggering this branch,
+      // without wiping anything.
+      localStorage.setItem(genKey, cached.generatedAt);
+      return;
+    }
+
     const shopKey = getShopStorageKey();
     localStorage.removeItem(shopKey);
 
@@ -1066,7 +1170,7 @@ function getFocacciaDynamicCalc() {
     const overrides = (_activeOverrides[nextCacheKey] || {}).shop || {};
     let total = 0;
     for (const est of nextCached.estimates) {
-      if (est.type !== 'bread' || !est.flavorName || est.isFocaccia) continue;
+      if (!est.isBocadillo) continue;
       const slug = fcSlug(est.flavorName);
       const k = `fc-${slug}-shop`;
       const ov = overrides[k];
@@ -1175,6 +1279,30 @@ async function prefetchNextDayForFocaccia() {
   if (currentStore === 'santjoan') renderMain();
 }
 
+// Aggregate FOCACCIA proposal from the backend — per-flavor proposed pieces
+// plus W1 sales for context. Returns the array (sorted desc by lastWeekSales)
+// or null when not available.
+function getFocacciaFlavorProposal() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cached = forecastCache[`${currentStore}-${dateStr}`];
+  if (!cached || !cached.estimates) return null;
+  const fEst = cached.estimates.find(function(e) {
+    return (e.isFocaccia || e.product === 'FOCACCIA') && !e.flavorName;
+  });
+  return (fEst && fEst.flavorProposal) ? fEst.flavorProposal : null;
+}
+function getFocacciaTotalPieces() {
+  const targetDate = getTargetDate(currentDay);
+  const dateStr = formatDateStr(targetDate);
+  const cached = forecastCache[`${currentStore}-${dateStr}`];
+  if (!cached || !cached.estimates) return null;
+  const fEst = cached.estimates.find(function(e) {
+    return (e.isFocaccia || e.product === 'FOCACCIA') && !e.flavorName;
+  });
+  return fEst && (fEst.totalPieces != null) ? fEst.totalPieces : null;
+}
+
 // Get the shipping split for a Sant Joan bread product from cached estimates
 function getBreadShippingSplit(breadKey) {
   const targetDate = getTargetDate(currentDay);
@@ -1231,9 +1359,17 @@ function getShopSuggestions() {
 
   if (!cached || !cached.estimates) return result;
 
-  // Extract per-flavor focaccia / bocadillo estimates (flavorName set, cell is null)
+  // Per-flavor entries (Sant Joan bocadillos): direct estimates.
   for (const est of cached.estimates) {
     if (est.flavorName) result.flavors[est.flavorName] = est.estimate;
+  }
+  // Aggregate FOCACCIA (Sant Pau / Milà): seed the per-flavor inputs from
+  // the backend's proposal so Rafa starts from an algorithm-driven split.
+  const fEst = cached.estimates.find(e => (e.isFocaccia || e.product === 'FOCACCIA') && !e.flavorName);
+  if (fEst && Array.isArray(fEst.flavorProposal)) {
+    for (const fp of fEst.flavorProposal) {
+      if (result.flavors[fp.flavor] == null) result.flavors[fp.flavor] = fp.proposedPieces;
+    }
   }
 
   for (const est of cached.estimates) {
@@ -1586,6 +1722,167 @@ const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
 // This eliminates race conditions: values are baked into the HTML, not patched async.
 const _activeOverrides = {};
 
+// ===== NOTES STATE =====
+// Notes are scoped per (store, date). Keyed by `${storeId}-${dateStr}`,
+// value = { dayNote: '', products: { '<key>': 'text' } }. Populated when
+// loadInputs returns; persisted via the existing saveInputs action with
+// `type: 'note'` and `textValue` set.
+const _notesCache = {};
+// Set of dates (YYYY-MM-DD) where the CURRENT store has any non-empty note.
+// Drives the day-tab dot indicator. Refreshed on switchStore + after each note save.
+let _noteDays = new Set();
+let _noteModalContext = null;  // { key, label, isDay }
+
+function notesCacheKey(store, dateStr) { return `${store}-${dateStr}`; }
+function getNotesForCurrentView() {
+  const dateStr = formatDateStr(getTargetDate(currentDay));
+  return _notesCache[notesCacheKey(currentStore, dateStr)] || { dayNote: '', products: {} };
+}
+function getProductNoteText(productKey) {
+  const notes = getNotesForCurrentView();
+  return (notes.products && notes.products[productKey]) || '';
+}
+// Persist a note for an explicit (store, date) context. Uses the existing
+// syncInputsToBigQuery path so transient failures hit the same retry queue
+// the numeric inputs use — no silent data loss on network blips.
+function persistNoteForContext(store, dateStr, noteKey, textValue) {
+  if (!store || !dateStr) return;
+  const input = {
+    key: noteKey,
+    type: 'note',
+    dateKey: dateStr,
+    textValue: textValue || '',
+  };
+  // Fire-and-forget. syncInputsToBigQuery handles retry on failure.
+  syncInputsToBigQuery([input], store);
+}
+function persistNote(noteKey, textValue) {
+  persistNoteForContext(currentStore, formatDateStr(getTargetDate(currentDay)), noteKey, textValue);
+}
+
+// Update local note state + refresh tab indicators after a successful save.
+// applyNoteForContext takes explicit (store, dateStr); applyNoteLocally is the
+// convenience wrapper for the current view.
+function applyNoteForContext(store, dateStr, noteKey, textValue) {
+  if (!store || !dateStr) return;
+  const key = notesCacheKey(store, dateStr);
+  if (!_notesCache[key]) _notesCache[key] = { dayNote: '', products: {} };
+  const slot = _notesCache[key];
+  const text = (textValue || '').trim();
+  if (noteKey === '_day_note') {
+    slot.dayNote = text;
+  } else if (text) {
+    slot.products[noteKey] = text;
+  } else {
+    delete slot.products[noteKey];
+  }
+  // Keep the BQ inputs cache in sync so a later re-render (which re-ingests
+  // notes from _cachedBqInputs) doesn't revert this local edit.
+  if (_cachedBqInputs[key]) {
+    if (!_cachedBqInputs[key].notes) _cachedBqInputs[key].notes = {};
+    if (text) _cachedBqInputs[key].notes[noteKey] = text;
+    else delete _cachedBqInputs[key].notes[noteKey];
+  }
+  // _noteDays + day-tab dots reflect the CURRENT store only — they only update
+  // when the saved store matches the active view.
+  if (store === currentStore) {
+    const hasAny = slot.dayNote || Object.keys(slot.products).length > 0;
+    if (hasAny) _noteDays.add(dateStr); else _noteDays.delete(dateStr);
+    renderDayTabs();
+  }
+}
+function applyNoteLocally(noteKey, textValue) {
+  applyNoteForContext(currentStore, formatDateStr(getTargetDate(currentDay)), noteKey, textValue);
+}
+
+// Open the per-product note edit modal. `label` is the human-readable
+// product name shown for context.
+function openNoteModal(noteKey, label) {
+  _noteModalContext = { key: noteKey, label: label, isDay: noteKey === '_day_note' };
+  const text = noteKey === '_day_note'
+    ? getNotesForCurrentView().dayNote
+    : getProductNoteText(noteKey);
+  document.getElementById('noteModalTitle').textContent = _noteModalContext.isDay ? 'Notas del día' : 'Nota — ' + label;
+  document.getElementById('noteModalTarget').textContent = currentDay + ' · ' + STORES[currentStore].name;
+  const ta = document.getElementById('noteModalText');
+  ta.value = text || '';
+  document.getElementById('noteModalDelete').style.display = (text && text.length > 0) ? '' : 'none';
+  document.getElementById('noteModal').classList.add('show');
+  setTimeout(() => ta.focus(), 50);
+}
+function closeNoteModal() {
+  _noteModalContext = null;
+  document.getElementById('noteModal').classList.remove('show');
+}
+async function saveCurrentNote() {
+  if (!_noteModalContext) return;
+  const { key } = _noteModalContext;
+  const val = (document.getElementById('noteModalText').value || '').trim();
+  applyNoteLocally(key, val);
+  closeNoteModal();
+  renderMain();  // re-render so the icon's has-note class and day-note textarea reflect the new state
+  persistNote(key, val);  // fire-and-forget
+}
+async function deleteCurrentNote() {
+  if (!_noteModalContext) return;
+  const { key } = _noteModalContext;
+  applyNoteLocally(key, '');
+  closeNoteModal();
+  renderMain();
+  persistNote(key, '');
+}
+
+// Debounced auto-save for the always-visible day-note textarea.
+// Captures store + date at SCHEDULE time so a switchStore/switchDay between
+// keystroke and timer-fire can't misroute the save to the new context.
+// flushPendingDayNote() is called from the switch handlers to drain the
+// pending value synchronously before state resets.
+let _dayNoteSaveTimer = null;
+let _dayNotePending = null;  // { store, dateStr, ta }
+function scheduleDayNoteSave() {
+  const ta = document.getElementById('dayNoteInput');
+  if (!ta) return;
+  clearTimeout(_dayNoteSaveTimer);
+  _dayNotePending = {
+    store: currentStore,
+    dateStr: formatDateStr(getTargetDate(currentDay)),
+    ta: ta,
+  };
+  _dayNoteSaveTimer = setTimeout(flushPendingDayNote, 1200);
+}
+function flushPendingDayNote() {
+  if (_dayNoteSaveTimer) { clearTimeout(_dayNoteSaveTimer); _dayNoteSaveTimer = null; }
+  const ctx = _dayNotePending;
+  _dayNotePending = null;
+  if (!ctx) return;
+  // Read the textarea value at flush time. If the DOM has been rebuilt the
+  // reference is detached but ta.value still holds the last typed text.
+  const val = (ctx.ta && ctx.ta.value || '').trim();
+  // Write to the cache + persist using the CAPTURED store/date, not the
+  // current one — a switchStore between schedule and flush must not redirect
+  // the save to the new store.
+  applyNoteForContext(ctx.store, ctx.dateStr, '_day_note', val);
+  persistNoteForContext(ctx.store, ctx.dateStr, '_day_note', val);
+}
+
+function ingestNotesFromInputsResp(storeId, dateStr, inputsResp) {
+  if (!inputsResp || !inputsResp.success) return;
+  const key = notesCacheKey(storeId, dateStr);
+  const raw = inputsResp.notes || {};
+  const dayNote = raw._day_note || '';
+  const products = {};
+  for (const k of Object.keys(raw)) {
+    if (k === '_day_note') continue;
+    if (raw[k]) products[k] = raw[k];
+  }
+  _notesCache[key] = { dayNote, products };
+  // Track presence in the per-store noteDays set so the day-tab dot is correct
+  // immediately for this date (before the noteDays fetch lands).
+  const hasAny = dayNote || Object.keys(products).length > 0;
+  if (hasAny) _noteDays.add(dateStr);
+  else _noteDays.delete(dateStr);
+}
+
 function getActiveOverrides() {
   const targetDate = getTargetDate(currentDay);
   const dateStr = formatDateStr(targetDate);
@@ -1618,15 +1915,17 @@ async function restoreInputState() {
     const shopSaved = localStorage.getItem(getShopStorageKey());
     if (shopSaved) {
       const parsed = JSON.parse(shopSaved);
-      // Skip localStorage shop edits if they're older than the current AI generation.
-      // After a regeneration, stale edits in localStorage would overwrite fresh AI values.
+      // Skip localStorage shop edits if they're older than the current AI generation,
+      // UNLESS the day has been synced — synced values are authoritative and survive
+      // AI regenerations.
       const targetDate = getTargetDate(currentDay);
       const dateStr = formatDateStr(targetDate);
       const cacheKey = `${currentStore}-${dateStr}`;
       const aiGenAt = forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt
         ? new Date(forecastCache[cacheKey].generatedAt).getTime() : 0;
       const shopSavedAt = parsed.savedAt || 0;
-      const isStaleEdit = aiGenAt && (!shopSavedAt || shopSavedAt < aiGenAt);
+      let isStaleEdit = aiGenAt && (!shopSavedAt || shopSavedAt < aiGenAt);
+      if (isStaleEdit && hasSyncedShop(dateStr)) isStaleEdit = false;
       if (isStaleEdit) {
         // Edits predate the AI run (or have no timestamp) — discard them
         localStorage.removeItem(getShopStorageKey());
@@ -1695,9 +1994,12 @@ async function restoreInputState() {
   }
 
   if (bqData && bqData.success) {
+    ingestNotesFromInputsResp(snapshotStore, dateStr, bqData);
     // Restore shop inputs — but skip if they're older than the AI generation.
     // After a regeneration, BQ still holds pre-regen edits that would overwrite
     // the fresh AI estimates and turn them red.  Compare timestamps to detect this.
+    // EXCEPT when the day has been synced to the production sheet — those values
+    // are authoritative and survive AI regenerations.
     let skipShop = false;
     if (bqData.updatedAt && forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt) {
       const bqTime = Number(bqData.updatedAt) * 1000;  // epoch seconds → ms
@@ -1706,6 +2008,10 @@ async function restoreInputState() {
         skipShop = true;
         console.log('[Origo] Skipping stale BQ shop inputs — saved', new Date(bqTime).toISOString(), 'vs AI generated', forecastCache[fetchKey].generatedAt);
       }
+    }
+    if (skipShop && hasSyncedShop(dateStr)) {
+      skipShop = false;
+      console.log('[Origo] Keeping BQ shop inputs — day already synced, synced values win');
     }
     // Store BQ overrides so renderMain can bake them into the HTML on every rebuild.
     // This eliminates race conditions where async restoreInputState loses to a DOM rebuild.
@@ -1903,22 +2209,68 @@ function getProductFactorTooltip(estKey) {
   return parts.join('\n');
 }
 
-function productNameCell(name, label, estKey) {
+function productNameCell(name, label, estKey, noteKey) {
   const multHtml = label ? `<span class="mult">${label}</span>` : '';
   const tooltip = estKey ? getProductFactorTooltip(estKey) : '';
   const titleAttr = tooltip ? ` title="${tooltip.replace(/"/g, '&quot;')}"` : '';
-  return `<td class="product-name"${titleAttr}>${name}${multHtml}</td>`;
+  let iconHtml = '';
+  if (noteKey) {
+    const text = getProductNoteText(noteKey);
+    const hasNote = text && text.length > 0;
+    // Strip HTML out of `name` for the data-note-label so the modal subtitle
+    // reads cleanly (some product names contain spans for variety/rotation).
+    const plainLabel = String(name).replace(/<[^>]+>/g, '').trim();
+    const labelAttr = plainLabel.replace(/"/g, '&quot;');
+    const titleTip = hasNote ? text.replace(/"/g, '&quot;') : 'Añadir nota';
+    iconHtml = `<button type="button" class="note-icon${hasNote ? ' has-note' : ''}" data-note-key="${noteKey}" data-note-label="${labelAttr}" title="${titleTip}" aria-label="${hasNote ? 'Editar nota' : 'Añadir nota'}">📝</button>`;
+  }
+  // Some callers embed a block-level subtitle (e.g. a <div> with the focaccia
+  // formula) inside `name`. To keep the note icon inline with the headline
+  // text, split `name` at the first block element and place the icon between
+  // the headline and the block. If no block element, just append.
+  const blockMatch = String(name).match(/<(div|p|ul|ol|table)\b/i);
+  let nameHtml;
+  if (blockMatch) {
+    const idx = blockMatch.index;
+    const headline = name.slice(0, idx);
+    const block    = name.slice(idx);
+    nameHtml = `${headline}${multHtml} ${iconHtml}${block}`;
+  } else {
+    nameHtml = `${name}${multHtml} ${iconHtml}`;
+  }
+  return `<td class="product-name"${titleAttr}>${nameHtml}</td>`;
 }
 
 // ============ RENDER ============
 function renderDayTabs() {
   document.getElementById('dayTabs').innerHTML = DAYS.map(d => {
     const target = getTargetDate(d);
+    const dateStr = formatDateStr(target);
     const dateLabel = target.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
     const generated = isDayGenerated(d);
     const icon = generated ? '✓ ' : '';
-    return `<button class="day-tab ${d === currentDay ? 'active' : ''}" onclick="switchDay('${d}')">${icon}${d} <span style="font-weight:400;font-size:12px;opacity:0.8">${dateLabel}</span></button>`;
+    const noteDot = _noteDays.has(dateStr) ? '<span class="note-dot" title="Tiene notas"></span>' : '';
+    return `<button class="day-tab ${d === currentDay ? 'active' : ''}" onclick="switchDay('${d}')">${icon}${d} <span style="font-weight:400;font-size:12px;opacity:0.8">${dateLabel}</span>${noteDot}</button>`;
   }).join('');
+}
+
+// Fetch the list of dates with notes for `storeId` and refresh the day-tab
+// indicators. Fire-and-forget — failures are non-fatal.
+async function fetchNoteDays(storeId) {
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl || !storeId) return;
+  const snapshotStore = storeId;
+  try {
+    const url = `${apiUrl}?action=noteDays&store=${encodeURIComponent(STORE_API_NAMES[storeId] || storeId)}`;
+    const data = await fetchJson(url);
+    if (storeId !== currentStore) return;  // discarded — user switched store
+    if (data && Array.isArray(data.dates)) {
+      _noteDays = new Set(data.dates);
+      renderDayTabs();
+    }
+  } catch (e) {
+    // Non-fatal — the dots just don't appear on first load
+  }
 }
 
 function renderAlertsBar() {
@@ -2025,8 +2377,21 @@ function recalcFocacciaTotals() {
   // Update whole-focaccia summary row (portions ÷ 15, rounded up)
   const wholeSummary = document.getElementById('fcWholeSummary');
   const portionSummary = document.getElementById('fcPortionSummary');
-  if (wholeSummary) wholeSummary.textContent = grandTotal > 0 ? Math.ceil(grandTotal / 15) : '';
+  const wholeFocaccias = grandTotal > 0 ? Math.ceil(grandTotal / 15) : 0;
+  if (wholeSummary) wholeSummary.textContent = wholeFocaccias || '';
   if (portionSummary) portionSummary.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
+
+  // Drive the read-only FOCACCIA row in the BREAD section (Sant Pau / Milà).
+  // The row mirrors the per-flavor sum so Rafa sees the bake count update
+  // live as she adjusts flavor pieces.
+  if (currentStore !== 'santjoan') {
+    const shopCell = document.querySelector('td[data-bread-focaccia-display="shop"]');
+    const piecesCell = document.querySelector('td[data-bread-focaccia-display="pieces"]');
+    const totalCell = document.querySelector('td[data-bread-total="focaccia"]');
+    if (shopCell) shopCell.textContent = wholeFocaccias || '';
+    if (piecesCell) piecesCell.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
+    if (totalCell) totalCell.textContent = wholeFocaccias || '';
+  }
 }
 
 /**
@@ -2039,15 +2404,30 @@ function getFcNames() {
   const dateStr = formatDateStr(targetDate);
   const cached = forecastCache[`${currentStore}-${dateStr}`];
   if (cached && cached.estimates) {
+    // Sant Joan bocadillos: per-flavor bread entries (flavorName set)
     const fromEstimates = cached.estimates
       .filter(e => e.flavorName && e.type === 'bread')
       .map(e => e.flavorName);
     if (fromEstimates.length > 0) return fromEstimates;
+    // Sant Pau / Milà focaccia: flavors live on the aggregate's flavorProposal
+    const fEst = cached.estimates.find(e => (e.isFocaccia || e.product === 'FOCACCIA') && !e.flavorName);
+    if (fEst && Array.isArray(fEst.flavorProposal) && fEst.flavorProposal.length > 0) {
+      return fEst.flavorProposal.map(p => p.flavor);
+    }
   }
   return STORES[currentStore].fcNames;
 }
 
 function renderMain() {
+  // Preserve in-flight day-note typing: if Rafa is mid-edit and something
+  // else triggers a re-render (prefetch landing, etc.), capture the current
+  // textarea value into the cache before the DOM is rebuilt.
+  const existingDayNote = document.getElementById('dayNoteInput');
+  if (existingDayNote) {
+    const k = notesCacheKey(currentStore, formatDateStr(getTargetDate(currentDay)));
+    if (!_notesCache[k]) _notesCache[k] = { dayNote: '', products: {} };
+    _notesCache[k].dayNote = existingDayNote.value || '';
+  }
   const store = STORES[currentStore];
   const shop = getShopSuggestions();
   const orders = getLastWeekOrders();
@@ -2060,6 +2440,15 @@ function renderMain() {
       Cargando estimaciones desde la API...
     </div>`;
   }
+
+  // ===== DAY NOTE =====
+  // Free-form notes for the day overall (e.g. "Sunny weekend, bumped pastries").
+  // Auto-saves on blur with a 1.2s debounce.
+  const dayNoteText = getNotesForCurrentView().dayNote || '';
+  html += `<div class="day-note">
+    <label for="dayNoteInput">📝 Notas del día — ${currentDay}</label>
+    <textarea id="dayNoteInput" placeholder="Tendencias, ajustes manuales, contexto del día…">${escapeHtml(dayNoteText)}</textarea>
+  </div>`;
 
   // ===== BREAD =====
   const isSantJoan = currentStore === 'santjoan';
@@ -2120,8 +2509,27 @@ function renderMain() {
     const orderNum = parseInt(orderVal) || 0;
     const total = shopNum + orderNum;
 
+    // Sant Pau / Milà focaccia: the bread row is a READ-ONLY summary of the
+    // per-flavor section below (total whole focaccias = ceil(Σ pieces / 15)).
+    // Rafa edits the per-flavor inputs; this row updates live.
+    if (item.key === 'focaccia' && !isSantJoan) {
+      const totalPieces = parseInt(getFocacciaTotalPieces()) || 0;
+      const totalFocaccias = total;  // shop.bread.focaccia (already whole-focaccia count)
+      html += `<tr>
+        ${productNameCell(displayName + ' <span style="font-weight:400;font-size:11px;color:#999">(auto · ver flavores ↓)</span>', item.label, item.key, `bread-${item.key}`)}
+        ${sobrasCell(sobrasData)}
+        ${discardsCell(sobrasData)}
+        <td class="sep"></td>
+        <td data-bread-focaccia-display="shop" style="background:#f6f1e8;color:#666;text-align:right;padding-right:10px;font-size:13px;border-radius:4px;">${totalFocaccias || ''}</td>
+        <td data-bread-focaccia-display="pieces" style="color:#999;text-align:right;padding-right:10px;font-size:11px;">${totalPieces ? totalPieces + ' porc.' : ''}</td>
+        <td class="sep"></td>
+        <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${totalFocaccias || ''}</td>
+      </tr>`;
+      return;
+    }
+
     html += `<tr>
-      ${productNameCell(displayName, item.label, item.key)}
+      ${productNameCell(displayName, item.label, item.key, `bread-${item.key}`)}
       ${sobrasCell(sobrasData)}
       ${discardsCell(sobrasData)}
       <td class="sep"></td>
@@ -2173,7 +2581,7 @@ function renderMain() {
       const b3Alert = pastryBatchSobras(sd, 3);
 
       html += `<tr>
-        ${productNameCell(p.name, p.label, p.key)}
+        ${productNameCell(p.name, p.label, p.key, `pastry-${p.key}`)}
         ${pastryTotalSobras(sd)}
         ${discardsCell(sd)}
         <td class="sep"></td>
@@ -2194,6 +2602,11 @@ function renderMain() {
   html += `</table>`;
 
   // ===== FOCACCIA / BOCADILLO =====
+  // Sant Pau / Milà: per-flavor focaccia inputs (pieces). Defaults come from
+  // the backend's flavorProposal (W1-weighted split of the aggregate pieces).
+  // Sum × ÷15 ceil = total focaccias, displayed in the BREAD row above + the
+  // summary row below.
+  // Sant Joan: per-flavor bocadillo inputs (unchanged flow).
   const isBocadillo = store.fcType === 'bocadillo';
   const fcLabel = isBocadillo ? 'Bocadillos' : 'Focaccias';
   const fcIcon = isBocadillo ? '🥖' : '🫓';
@@ -2217,8 +2630,14 @@ function renderMain() {
     const shopNum = parseInt(shopVal) || 0;
     const total = shopNum + orderVal;
     totalFcPortions += total;
+    const fcNoteKey = `fc-${slug}`;
+    const fcNoteText = getProductNoteText(fcNoteKey);
+    const fcHasNote = fcNoteText && fcNoteText.length > 0;
+    const fcLabelAttr = String(name).replace(/"/g, '&quot;');
+    const fcNoteTip = fcHasNote ? fcNoteText.replace(/"/g, '&quot;') : 'Añadir nota';
+    const fcIconHtml = ` <button type="button" class="note-icon${fcHasNote ? ' has-note' : ''}" data-note-key="${fcNoteKey}" data-note-label="${fcLabelAttr}" title="${fcNoteTip}" aria-label="${fcHasNote ? 'Editar nota' : 'Añadir nota'}">📝</button>`;
     html += `<tr>
-      <td class="product-name">${name}</td>
+      <td class="product-name">${name}${fcIconHtml}</td>
       ${eCell(`fc-${slug}-shop`, shopVal, 'ai')}
       ${isBocadillo ? '' : eCell(`fc-${slug}-order`, orderVal, 'manual order-cell')}
       <td class="sep"></td>
@@ -2257,6 +2676,32 @@ function renderMain() {
   }
 
   document.getElementById('mainContent').innerHTML = html;
+
+  // Day-note textarea: debounced auto-save on input + flush on blur.
+  const dayNoteEl = document.getElementById('dayNoteInput');
+  if (dayNoteEl) {
+    dayNoteEl.addEventListener('input', scheduleDayNoteSave);
+    dayNoteEl.addEventListener('blur', function() {
+      // If nothing changed vs the cached value, skip — flushPendingDayNote
+      // would still emit a no-op save otherwise.
+      const val = (dayNoteEl.value || '').trim();
+      if (val === (getNotesForCurrentView().dayNote || '')) {
+        if (_dayNoteSaveTimer) clearTimeout(_dayNoteSaveTimer);
+        _dayNotePending = null;
+        return;
+      }
+      // Ensure a pending context exists (in case blur fires before any input
+      // event scheduled one), then flush.
+      if (!_dayNotePending) {
+        _dayNotePending = {
+          store: currentStore,
+          dateStr: formatDateStr(getTargetDate(currentDay)),
+          ta: dayNoteEl,
+        };
+      }
+      flushPendingDayNote();
+    });
+  }
 
   // Recalculate all totals after rendering
   recalcBreadTotals();
@@ -2572,49 +3017,27 @@ const KEY_TO_CELL = {};
 for (const [cell, key] of Object.entries(CELL_TO_KEY)) { KEY_TO_CELL[key] = cell; }
 
 /**
- * Allocate whole focaccias to flavors using the largest-remainder method.
- *
- * Steps:
- *  1. Sum all flavor portions → totalPortions
- *  2. ceil(totalPortions / 15) → totalFocaccias  (rounds the TOTAL up, not each flavor)
- *  3. Give each flavor a proportional share:
- *       rawShare_i = portions_i / totalPortions × totalFocaccias
- *  4. Each flavor starts with floor(rawShare_i).
- *  5. Remaining focaccias (due to flooring) are given one-by-one to the flavors
- *     with the largest fractional remainders — so the most in-demand flavors
- *     get priority.
- *
- * Example:  {A:15, B:12, C:8, D:6, E:4, F:2} → total=47 → 4 focaccias
- *   Shares:   1.28   1.02  0.68  0.51  0.34  0.17
- *   Floors:      1      1     0     0     0     0   → sum=2, need 2 more
- *   Remainders: .28   .02  .68   .51   .34   .17
- *   Top-2 rem: C(.68), D(.51) → get +1 each
- *   Result:  {A:1, B:1, C:1, D:1, E:0, F:0}
- *
- * @param {Object} flavorsPortions  { flavorName: portionsEstimate, … }
- * @returns {Object}                { flavorName: wholeForaccias, … }
+ * Allocate whole focaccias to flavors via largest-remainder, given each
+ * flavor's portion count. Total focaccias = ceil(Σ portions / 15).
+ * Most-in-demand flavors get the +1 leftover units after flooring.
+ *   Example: {A:15, B:12, C:8, D:6, E:4, F:2} → 4 focaccias, {A:1, B:1, C:1, D:1, E:0, F:0}
  */
 function allocateFocaccias(flavorsPortions) {
   const PORTIONS_PER_FOCACCIA = 15;
   const names    = Object.keys(flavorsPortions);
   const portions = names.map(n => Math.max(0, parseInt(flavorsPortions[n]) || 0));
   const total    = portions.reduce((s, v) => s + v, 0);
-
   const out = {};
   if (total === 0) { names.forEach(n => out[n] = 0); return out; }
-
   const totalFocaccias = Math.ceil(total / PORTIONS_PER_FOCACCIA);
-  const shares         = portions.map(p => p / total * totalFocaccias);
-  const floors         = shares.map(Math.floor);
-  const remainders     = shares.map((s, i) => s - floors[i]);
-
-  // Distribute leftover focaccias (caused by flooring) to highest remainders
+  const shares     = portions.map(p => p / total * totalFocaccias);
+  const floors     = shares.map(Math.floor);
+  const remainders = shares.map((s, i) => s - floors[i]);
   let remaining = totalFocaccias - floors.reduce((s, v) => s + v, 0);
   remainders
     .map((r, i) => ({ i, r }))
     .sort((a, b) => b.r - a.r)
     .forEach(({ i }) => { if (remaining-- > 0) floors[i]++; });
-
   names.forEach((n, i) => out[n] = floors[i]);
   return out;
 }
@@ -2665,10 +3088,11 @@ async function confirmSync() {
   function cellRow(dCell) { return dCell.replace('D', ''); }
 
   // Bread: shop → column G, orders → column J
-  // Skip 'focaccia' for stores that aggregate it from per-flavor rows 48-55
-  // (santpau, mila). Sant Joan's focaccia row writes directly to row 19:
-  // envío 1 → G19 (always 0), envío 2 → J19 (= ceil(next-day bocadillos / 12)
-  // or Rafa's override).
+  // FOCACCIA row 19:
+  //   - Sant Joan: envío 1 → G19 (always 0), envío 2 → J19 (= ceil(next-day
+  //     bocadillos / 12) or Rafa's override). Written by this BREAD loop.
+  //   - Sant Pau / Milà: per-flavor whole focaccia counts → B/G rows 48-55
+  //     and Σ → G19. Written by the focaccia section below. Skipped here.
   const _isSantJoan = currentStore === 'santjoan';
   BREAD.forEach(item => {
     if (!item.key) return;
@@ -2707,66 +3131,54 @@ async function confirmSync() {
     }
   });
 
-  // Focaccia / Bocadillos: rows 48-55 reserved for per-flavor entries.
-  // Each row: B = flavor name, G = shop count, H = orders.
-  //
-  // Focaccia allocation (not per-flavor rounding — that would over-produce massively):
-  //   1. Sum all flavor portions → totalPortions
-  //   2. ceil(totalPortions / 15) → totalFocaccias  (rounds the WHOLE, not each flavor)
-  //   3. Distribute focaccias to flavors by demand using largest-remainder method
-  //      → most popular flavors get priority; low-demand flavors may get 0
-  //   4. G19 = totalFocaccias (for dough calculation)
-  //
-  // Bocadillo: values are direct unit counts (no conversion).
-  // Unused rows are cleared to prevent stale data from previous weeks.
-  const FC_ROWS = [48, 49, 50, 51, 52, 53, 54, 55]; // 8-row reserved block
+  // Rows 48-55: per-flavor entries.
+  //   - Sant Joan (bocadillo): B = flavor name, G = shop count (units).
+  //   - Sant Pau / Milà (focaccia): B = flavor name, G = whole-focaccia count
+  //     allocated via largest-remainder from per-flavor pieces. Σ → G19.
+  // Unused rows in the block are cleared so stale flavors from earlier weeks
+  // don't linger.
+  const FC_ROWS = [48, 49, 50, 51, 52, 53, 54, 55];
   const isBocadillo = STORES[currentStore].fcType === 'bocadillo';
   const fcNames = getFcNames();
 
-  // Build shop + order allocations upfront (only for focaccia; bocadillo uses direct counts)
-  let shopAllocation = {}, orderAllocation = {};
-  let totalFocaccias = 0;
-
-  if (!isBocadillo) {
-    const shopPortionsMap = {}, orderPortionsMap = {};
+  if (isBocadillo) {
+    fcNames.forEach((name, idx) => {
+      if (idx >= FC_ROWS.length) return;
+      const slug = fcSlug(name);
+      const row = FC_ROWS[idx];
+      const shopInput = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
+      const shopCount = shopInput ? (parseInt(shopInput.value) || 0) : 0;
+      estimates.push({ cell: 'B' + row, value: name });
+      estimates.push({ cell: 'G' + row, value: shopCount });
+    });
+  } else {
+    // Focaccia: read per-flavor pieces and allocate whole focaccias by
+    // largest-remainder. Σ also goes to G19 for the dough calc.
+    const piecesMap = {};
     fcNames.forEach((name) => {
       const slug = fcSlug(name);
       const sInput = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
-      const oInput = document.querySelector(`input[data-key="fc-${slug}-order"]`);
-      shopPortionsMap[name]  = sInput ? (parseInt(sInput.value)  || 0) : 0;
-      orderPortionsMap[name] = oInput ? (parseInt(oInput.value)  || 0) : 0;
+      piecesMap[name] = sInput ? (parseInt(sInput.value) || 0) : 0;
     });
-    shopAllocation  = allocateFocaccias(shopPortionsMap);
-    orderAllocation = allocateFocaccias(orderPortionsMap);
-    totalFocaccias  = Object.values(shopAllocation).reduce((s, v) => s + v, 0);
+    const allocation = allocateFocaccias(piecesMap);
+    const totalFocaccias = Object.values(allocation).reduce((s, v) => s + v, 0);
+    fcNames.forEach((name, idx) => {
+      if (idx >= FC_ROWS.length) return;
+      const row = FC_ROWS[idx];
+      estimates.push({ cell: 'B' + row, value: name });
+      estimates.push({ cell: 'G' + row, value: allocation[name] || 0 });
+    });
+    estimates.push({ cell: 'G19', value: totalFocaccias });
+    // Clear the J19 orders cell so a previous Sant-Joan-style sync doesn't
+    // leave stale envío-2 data on this row.
+    estimates.push({ cell: 'J19', value: '' });
   }
 
-  fcNames.forEach((name, idx) => {
-    if (idx >= FC_ROWS.length) return;
-    const slug = fcSlug(name);
-    const row = FC_ROWS[idx];
-    const shopInput   = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
-    const shopCount   = isBocadillo
-      ? (shopInput ? (parseInt(shopInput.value) || 0) : 0)
-      : (shopAllocation[name] || 0);
-    estimates.push({ cell: 'B' + row, value: name });
-    estimates.push({ cell: 'G' + row, value: shopCount });
-    if (!isBocadillo) {
-      estimates.push({ cell: 'H' + row, value: orderAllocation[name] || 0 });
-    }
-  });
-
-  // Clear unused rows so stale data never lingers
+  // Clear unused rows so stale flavors from prior weeks don't linger.
   for (let i = fcNames.length; i < FC_ROWS.length; i++) {
     const row = FC_ROWS[i];
     estimates.push({ cell: 'B' + row, value: '' });
     estimates.push({ cell: 'G' + row, value: '' });
-    if (!isBocadillo) estimates.push({ cell: 'H' + row, value: '' });
-  }
-
-  // For focaccia stores: write total whole-focaccia count to G19 (used for dough)
-  if (!isBocadillo) {
-    estimates.push({ cell: 'G19', value: totalFocaccias });
   }
 
   // 4. Show syncing state
@@ -2841,6 +3253,7 @@ function switchDay(day) {
   // resetting state — otherwise the debounced save would fire with the new
   // currentStore/currentDay and corrupt data across days.
   flushPendingBqSync();
+  flushPendingDayNote();
   currentDay = day;
   editedCells = {};
   _inputsFetched.clear();
@@ -2851,10 +3264,12 @@ function switchDay(day) {
 }
 function switchStore(store) {
   flushPendingBqSync();
+  flushPendingDayNote();
   currentStore = store;
   localStorage.setItem('origo-current-store', store);
   editedCells = {};
   _inputsFetched.clear();
+  _noteDays = new Set();  // reset until the per-store fetch lands
   renderAll();
   refreshSyncStatusDisplay();
   // Refresh sync map for the new store so we pick up other browsers' syncs,
@@ -2863,6 +3278,7 @@ function switchStore(store) {
   startSyncStatusPolling();
   loadEstimatesForCurrentDay();
   fetchSobrasForCurrentDay();
+  fetchNoteDays(store);
 }
 function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
@@ -2901,6 +3317,27 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
   // 3. Render immediately with cached data (instant — no waiting for API)
   renderAll();
+
+  // Delegated click handler for note icons. Single document-level listener
+  // covers every product/flavor row + future re-renders without per-row
+  // wiring. The handler reads the note key from data attributes set by
+  // productNameCell() / the flavor-row renderer.
+  document.addEventListener('click', function(e) {
+    const btn = e.target && e.target.closest && e.target.closest('.note-icon');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openNoteModal(btn.dataset.noteKey, btn.dataset.noteLabel || '');
+  });
+  // Escape closes the modal
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && document.getElementById('noteModal').classList.contains('show')) {
+      closeNoteModal();
+    }
+  });
+
+  // Per-store note-days set drives the day-tab dot indicator
+  fetchNoteDays(currentStore);
 
   // 4. Fire all API calls in parallel (non-blocking)
   // Sobras comes from a different server, so it runs concurrently
