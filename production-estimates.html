@@ -1547,7 +1547,12 @@ async function fetchSobrasForCurrentDay() {
       } else if (key && PASTRY_KEYS.has(key)) {
         result.pastry[key] = sobrasObj;
       } else {
-        result.focaccia[name] = sobrasObj;
+        // Key by slug, not raw name — the focaccia row's render reads via
+        // fcSlug(name), and the name source (getFcNames) can switch between
+        // hardcoded STORES.fcNames and the algorithm's flavorProposal,
+        // which may have subtly different name strings for the same flavor.
+        // Slug is the stable identifier used everywhere else.
+        result.focaccia[fcSlug(name)] = sobrasObj;
       }
     }
 
@@ -2616,18 +2621,18 @@ function renderMain() {
   html += `<div class="section-header">${fcIcon} ${fcLabel}</div>`;
   html += `<table class="grid"><tr>
     <th style="min-width:200px">Producto</th>
+    <th class="sobras-header">Sem. pasada</th>
+    <th class="discard-header">Merma</th>
+    <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th class="shop-header">${isBocadillo ? 'Shop' : 'Porciones'}</th>
     ${isBocadillo ? '' : '<th class="orders-header">Pedidos</th>'}
     <th class="sep" style="background:#f5f0eb;border:none"></th>
     <th>${isBocadillo ? 'Total' : 'Porc.'}</th>
-    <th class="sep" style="background:#f5f0eb;border:none"></th>
-    <th class="sobras-header">Sem. pasada</th>
-    <th class="discard-header">Merma</th>
   </tr>`;
   let totalFcPortions = 0;
   getFcNames().forEach((name) => {
     const slug = fcSlug(name);
-    const fcSobras = sobras.focaccia[name];
+    const fcSobras = sobras.focaccia[slug];
     const shopVal = shop.flavors[name] ?? '';
     const orderVal = 0;
     const shopNum = parseInt(shopVal) || 0;
@@ -2641,13 +2646,13 @@ function renderMain() {
     const fcIconHtml = ` <button type="button" class="note-icon${fcHasNote ? ' has-note' : ''}" data-note-key="${fcNoteKey}" data-note-label="${fcLabelAttr}" title="${fcNoteTip}" aria-label="${fcHasNote ? 'Editar nota' : 'Añadir nota'}">📝</button>`;
     html += `<tr>
       <td class="product-name">${name}${fcIconHtml}</td>
+      ${sobrasCell(fcSobras)}
+      ${discardsCell(fcSobras)}
+      <td class="sep"></td>
       ${eCell(`fc-${slug}-shop`, shopVal, 'ai')}
       ${isBocadillo ? '' : eCell(`fc-${slug}-order`, orderVal, 'manual order-cell')}
       <td class="sep"></td>
       <td class="total-col" style="color:#2d6a4f;font-weight:600" data-fc-total="${slug}">${total || ''}</td>
-      <td class="sep"></td>
-      ${sobrasCell(fcSobras)}
-      ${discardsCell(fcSobras)}
     </tr>`;
   });
   // Summary row: total whole focaccias (portions ÷ 15, rounded up)
@@ -2655,10 +2660,12 @@ function renderMain() {
     const wholeFocaccias = Math.ceil(totalFcPortions / 15);
     html += `<tr style="border-top:2px solid #d5cfc7;font-weight:600;">
       <td style="text-align:right;color:#555;padding-right:8px;">Total focaccias</td>
+      <td></td>
+      <td></td>
+      <td class="sep"></td>
       <td colspan="2" style="text-align:center;color:#1a3a2a;font-size:15px;" id="fcWholeSummary">${wholeFocaccias || ''}</td>
       <td class="sep"></td>
       <td style="color:#888;font-size:12px;" id="fcPortionSummary">${totalFcPortions} porc.</td>
-      <td class="sep"></td><td></td><td></td>
     </tr>`;
   }
   html += `</table>`;
