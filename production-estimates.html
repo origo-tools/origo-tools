@@ -1890,15 +1890,23 @@ function getActiveOverrides() {
   return _activeOverrides[key] || { shop: {}, orders: {} };
 }
 
-// Sant Joan bread uses algorithm-driven envío 1 / envío 2 columns,
-// so BQ shop/order overrides must never replace the AI-generated split.
-// Focaccia is the one exception: Rafa can override the dynamically calculated
-// count, so its bread-focaccia-{shop,order} overrides must be honored.
+// Historically this guard blocked ALL BQ overrides for Sant Joan bread so the
+// algorithm's envío 1 / envío 2 split couldn't be replaced. In practice that
+// stripped Rafa's legitimate envío edits on every reload — she'd change a
+// value, sync to the sheet, then the web reverted to AI on next render.
+//
+// Protection now lives in two correct mechanisms:
+//   1. clearShopEditsForDate_() wipes BQ shop edits on regeneration UNLESS the
+//      day was synced — so an unsynced edit is replaced by fresh AI numbers,
+//      while a synced edit (Rafa's authoritative decision) survives.
+//   2. The "stale BQ input" timestamp check in the restore paths drops BQ
+//      edits older than the latest AI run, except for synced days.
+//
+// Returning false everywhere lets Sant Joan bread behave like every other
+// store — Rafa can override envío 1 / envío 2 directly. Total is derived
+// from envío1 + envío2 in the render, so she edits the parts, not the sum.
 function isSantJoanBreadKey(store, key) {
-  if (store !== 'santjoan') return false;
-  if (!key.startsWith('bread-')) return false;
-  if (key.startsWith('bread-focaccia-')) return false;  // focaccia overrides allowed
-  return key.endsWith('-order') || key.endsWith('-shop');
+  return false;
 }
 
 async function restoreInputState() {
@@ -2039,11 +2047,6 @@ async function restoreInputState() {
 function applyInputValues(inputMap, markAsEdited) {
   if (!inputMap) return;
   for (const [key, val] of Object.entries(inputMap)) {
-    // Sant Joan: bread shop/order inputs are algorithm-driven envío 1/2 values,
-    // so don't overwrite them with stale manual data
-    if (currentStore === 'santjoan' && key.startsWith('bread-') &&
-        (key.endsWith('-order') || key.endsWith('-shop'))) continue;
-
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
       // Skip restoring 0 for shop cells — 0 means user cleared it, so show AI value
