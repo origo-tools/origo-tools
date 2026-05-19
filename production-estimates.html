@@ -231,6 +231,29 @@
   .day-note textarea::placeholder { color: #c8b888; }
   .day-note.saving { border-color: #1a3a2a; }
 
+  /* Data-quality warning banner — shown when the Square→BQ pipeline has
+     dropped sales data for several products. Encourages a manual regenerate
+     once the pipeline catches up. Amber palette to distinguish from the
+     red error notices used elsewhere. */
+  .data-warning-banner {
+    background: #fff4d6; border: 1px solid #e0b94a; border-radius: 8px;
+    padding: 10px 14px; margin: 0 0 14px 0;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    color: #6b4a0a; font-size: 13px; line-height: 1.4;
+  }
+  .data-warning-banner .data-warning-icon { font-size: 18px; flex-shrink: 0; }
+  .data-warning-banner .data-warning-text { flex: 1; min-width: 220px; }
+  .data-warning-banner .data-warning-text strong { color: #4a3306; }
+  .data-warning-banner button {
+    background: #b87a17; color: white; border: none;
+    padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: background 0.15s;
+  }
+  .data-warning-banner button:hover { background: #8e5c10; }
+  .data-warning-banner button:disabled {
+    background: #cbb88a; cursor: wait;
+  }
+
   /* Note edit modal */
   .note-modal-overlay {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
@@ -2426,6 +2449,135 @@ function getFcNames() {
   return STORES[currentStore].fcNames;
 }
 
+// Threshold for showing the data-quality warning banner. We require at
+// least this many products to have an unexplained-null W1 before warning,
+// so a single recently-introduced product (or a per-flavor focaccia that
+// didn't exist last week) doesn't trigger banner spam. A real pipeline
+// gap drops sales for the whole store at once, so 10+ is easy to clear.
+const DATA_WARNING_MIN_PRODUCTS = 10;
+
+/**
+ * Pure check: does the current day's data show enough missing-W1 products
+ * to warrant a data-quality warning?
+ *
+ * Returns { triggered: bool, affectedCount: int, affectedProducts: [names] }.
+ * Skipped products (Especial off-Thursday, croissant d'ametlla weekdays,
+ * etc.) and per-flavor focaccia/bocadillo entries are excluded — they
+ * naturally drop in/out of the historical data based on rotation or Square
+ * activity, so they shouldn't count toward the threshold.
+ */
+function computeDataQualityIssues(estimates) {
+  if (!Array.isArray(estimates) || estimates.length === 0) {
+    return { triggered: false, affectedCount: 0, affectedProducts: [] };
+  }
+  const affected = [];
+  for (const e of estimates) {
+    if (!e || !Array.isArray(e.unexplainedNulls)) continue;
+    if (!e.unexplainedNulls.includes(0)) continue;           // care only about W1
+    if (e.factors && e.factors.skipped) continue;            // rotation / DOW skip
+    if (e.flavorName) continue;                              // per-flavor focaccia/bocadillo
+    affected.push(e.product);
+  }
+  return {
+    triggered: affected.length >= DATA_WARNING_MIN_PRODUCTS,
+    affectedCount: affected.length,
+    affectedProducts: affected,
+  };
+}
+
+/**
+ * Triggered by the "Regenerar estimaciones" button in the data-quality
+ * banner. Asks for confirmation (manual regenerate wipes Rafa's edits for
+ * that day, same as the daily run), captures the target date so a mid-flight
+ * day-switch doesn't apply results to the wrong day, calls the backend
+ * `regenerate` action (covers all 3 stores), then refreshes the local
+ * forecast cache and re-renders.
+ */
+async function regenerateEstimates() {
+  if (!confirm('Esto regenerará las estimaciones para las 3 tiendas para este día. Tus cambios manuales serán reemplazados. ¿Continuar?')) return;
+
+  const snapshotStore = currentStore;
+  const snapshotDay = currentDay;
+  const snapshotDate = formatDateStr(getTargetDate(snapshotDay));
+
+  // Disable the button to prevent double-clicks while in-flight.
+  const btn = document.querySelector('.data-warning-banner button');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Regenerando…';
+  }
+
+  try {
+    const apiUrl = getForecastApiUrl();
+    if (!apiUrl) {
+      alert('Conecta primero la API de estimaciones arriba.');
+      return;
+    }
+    const url = `${apiUrl}?action=regenerate&date=${snapshotDate}`;
+    const data = await fetchJson(url);
+    if (!data || data.error) {
+      alert('Error al regenerar: ' + ((data && data.error) || 'sin detalle'));
+      return;
+    }
+    // Drop ALL cached forecast entries for this date (across stores) so the
+    // next render pulls fresh data. The regenerate response already contains
+    // the slim payload for every store — seed the cache directly to avoid
+    // round-trips on store-switch.
+    // NOTE: backend keys responses by display name ('Milà', 'Sant Pau',
+    // 'Sant Joan') while the frontend cache is keyed by the lowercase store
+    // ID ('mila', 'santpau', 'santjoan'). Build a reverse map from STORES.
+    const displayNameToId = {};
+    for (const sk of Object.keys(STORES)) {
+      displayNameToId[STORES[sk].name] = sk;
+    }
+    if (data.estimates && typeof data.estimates === 'object') {
+      for (const [displayName, storeData] of Object.entries(data.estimates)) {
+        const storeKey = displayNameToId[displayName];
+        if (!storeKey || !storeData || storeData.error) continue;
+        forecastCache[`${storeKey}-${snapshotDate}`] = {
+          date: snapshotDate,
+          dayOfWeek: snapshotDay,
+          generatedAt: data.generatedAt,
+          estimates: storeData.estimates || [],
+        };
+      }
+    }
+    // Wipe per-day localStorage shop edits + active overrides for this date
+    // across all stores (matches what clearShopEditsForDate_ did server-side).
+    for (const sk of Object.keys(STORES)) {
+      try { localStorage.removeItem(`origo-shop-${sk}-${snapshotDate}`); } catch(e) {}
+      delete _activeOverrides[`${sk}-${snapshotDate}`];
+    }
+
+    // Only touch editedCells / re-render if Rafa is still looking at the
+    // regenerated day (she may have navigated to a different day during the
+    // request — wiping its editedCells would lose her in-progress work).
+    if (currentStore === snapshotStore && currentDay === snapshotDay) {
+      editedCells = {};
+      renderMain();
+    }
+
+    // Re-check warning state to tailor the success message — if the
+    // pipeline is still broken upstream, the banner will reappear.
+    const refreshedEstimates = (forecastCache[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`] || {}).estimates || [];
+    const stillTriggered = computeDataQualityIssues(refreshedEstimates).triggered;
+    alert(stillTriggered
+      ? 'Estimaciones regeneradas, pero todavía faltan datos. Vuelve a intentarlo más tarde.'
+      : 'Estimaciones regeneradas correctamente.');
+  } catch (err) {
+    console.warn('Regenerate failed:', err);
+    alert('Error al regenerar: ' + (err.message || 'fallo de red'));
+  } finally {
+    // If the banner is still rendered (likely re-rendered with same state),
+    // restore the button label so the user can retry.
+    const refreshedBtn = document.querySelector('.data-warning-banner button');
+    if (refreshedBtn) {
+      refreshedBtn.disabled = false;
+      refreshedBtn.textContent = 'Regenerar estimaciones (3 tiendas)';
+    }
+  }
+}
+
 function renderMain() {
   // Preserve in-flight day-note typing: if Rafa is mid-edit and something
   // else triggers a re-render (prefetch landing, etc.), capture the current
@@ -2447,6 +2599,28 @@ function renderMain() {
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1a3a2a" stroke-width="2" style="animation:spin 1s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px;"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
       Cargando estimaciones desde la API...
     </div>`;
+  }
+
+  // ===== DATA QUALITY WARNING =====
+  // Only shows when ≥DATA_WARNING_MIN_PRODUCTS products have an unexplained
+  // null W1 — i.e. last week's sales went missing from BigQuery for the bulk
+  // of the catalog (Square → BQ pipeline gap). Suppressed during the loading
+  // spinner so we don't flash a stale "everything missing" warning.
+  if (!forecastLoading) {
+    const cached = forecastCache[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`];
+    const issues = computeDataQualityIssues((cached && cached.estimates) || []);
+    if (issues.triggered) {
+      const preview = issues.affectedProducts.slice(0, 5).join(', ');
+      const more = issues.affectedProducts.length > 5 ? ` (+${issues.affectedProducts.length - 5} más)` : '';
+      html += `<div class="data-warning-banner">
+        <span class="data-warning-icon">⚠️</span>
+        <span class="data-warning-text">
+          <strong>Datos de ventas incompletos</strong> — faltan ventas de la semana pasada para ${issues.affectedCount} productos. Las estimaciones pueden ser inexactas.<br>
+          <span style="color:#7a5a14;font-size:12px;">Afectados: ${escapeHtml(preview)}${escapeHtml(more)}</span>
+        </span>
+        <button type="button" onclick="regenerateEstimates()">Regenerar estimaciones (3 tiendas)</button>
+      </div>`;
+    }
   }
 
   // ===== DAY NOTE =====
