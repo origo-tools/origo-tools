@@ -2411,18 +2411,6 @@ function recalcFocacciaTotals() {
   const wholeFocaccias = grandTotal > 0 ? Math.ceil(grandTotal / 15) : 0;
   if (wholeSummary) wholeSummary.textContent = wholeFocaccias || '';
   if (portionSummary) portionSummary.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
-
-  // Drive the read-only FOCACCIA row in the BREAD section (Sant Pau / Milà).
-  // The row mirrors the per-flavor sum so Rafa sees the bake count update
-  // live as she adjusts flavor pieces.
-  if (currentStore !== 'santjoan') {
-    const shopCell = document.querySelector('td[data-bread-focaccia-display="shop"]');
-    const piecesCell = document.querySelector('td[data-bread-focaccia-display="pieces"]');
-    const totalCell = document.querySelector('td[data-bread-total="focaccia"]');
-    if (shopCell) shopCell.textContent = wholeFocaccias || '';
-    if (piecesCell) piecesCell.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
-    if (totalCell) totalCell.textContent = wholeFocaccias || '';
-  }
 }
 
 /**
@@ -2690,25 +2678,6 @@ function renderMain() {
     const shopNum = parseInt(shopVal) || 0;
     const orderNum = parseInt(orderVal) || 0;
     const total = shopNum + orderNum;
-
-    // Sant Pau / Milà focaccia: the bread row is a READ-ONLY summary of the
-    // per-flavor section below (total whole focaccias = ceil(Σ pieces / 15)).
-    // Rafa edits the per-flavor inputs; this row updates live.
-    if (item.key === 'focaccia' && !isSantJoan) {
-      const totalPieces = parseInt(getFocacciaTotalPieces()) || 0;
-      const totalFocaccias = total;  // shop.bread.focaccia (already whole-focaccia count)
-      html += `<tr>
-        ${productNameCell(displayName + ' <span style="font-weight:400;font-size:11px;color:#999">(auto · ver flavores ↓)</span>', item.label, item.key, `bread-${item.key}`)}
-        ${sobrasCell(sobrasData)}
-        ${discardsCell(sobrasData)}
-        <td class="sep"></td>
-        <td data-bread-focaccia-display="shop" style="background:#f6f1e8;color:#666;text-align:right;padding-right:10px;font-size:13px;border-radius:4px;">${totalFocaccias || ''}</td>
-        <td data-bread-focaccia-display="pieces" style="color:#999;text-align:right;padding-right:10px;font-size:11px;">${totalPieces ? totalPieces + ' porc.' : ''}</td>
-        <td class="sep"></td>
-        <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${totalFocaccias || ''}</td>
-      </tr>`;
-      return;
-    }
 
     html += `<tr>
       ${productNameCell(displayName, item.label, item.key, `bread-${item.key}`)}
