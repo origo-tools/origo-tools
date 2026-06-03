@@ -399,7 +399,7 @@ const BREAD = [
   { name: 'LLAVORS', key: 'llavors', roundTo: null },
   { sep: true },
   { name: 'SÈGOL INTEGRAL', key: 'segolIntegral', roundTo: 3, label: 'x3' },
-  { name: 'COPENHAGUE', key: 'copenhague', roundTo: 5, label: 'x5' },
+  { name: 'COPENHAGUE', key: 'copenhague', roundTo: 2, label: 'x2' },
   { name: 'BAGUETTE', key: 'baguette', roundTo: null },
   { name: 'FOCACCIA', key: 'focaccia', roundTo: null },
   { name: 'ESPELTA PETITA', key: 'espeltaPetita', roundTo: 3, label: 'x3' }
@@ -458,6 +458,27 @@ const PRODUCT_NAME_TO_KEY = {
 
 const BREAD_KEYS = new Set(['origo','origoMolde','origoIntegral','especial','llavors','segolIntegral','copenhague','baguette','focaccia','espeltaPetita']);
 const PASTRY_KEYS = new Set(['canelaTwist','cardamomoTwist','vainillaRoll','brioixClassic','croissant','painChocolat','napolitana','mico','niuTemporada','croissantAmetlla','cookieChocolate','pastryMes','pastisLlimona']);
+
+// Long (Square / sobras-app) → short (algorithm display) name maps. Mirror of
+// CONFIG.FOCACCIA_FLAVOR_MAP and CONFIG.BOCADILLO_FLAVOR_MAP in
+// apps-script-forecasting.js. The sobras app submits the LONG name (e.g.
+// "Mortadella Stracciatella i festuc"), but once the algorithm has produced
+// a flavorProposal, getFcNames() returns the SHORT name ("Mortadella"). We
+// alias both slugs so the leftovers / sold-out / merma cells line up
+// regardless of which name source the render is currently using.
+const FOCACCIA_DISPLAY_MAP = {
+  'Panxeta, creme fraiche i cibulet':    'Panceta & crème fraîche',
+  'Mortadella Stracciatella i festuc':   'Mortadella',
+  'Olivada, tomates secos y alcaparras': 'Olivas',
+  'Xoriço picant i fonoll':              'Chorizo',
+  'Alberginia escalivada':               'Berenjena',
+  'Temporada':                           'Temporada',
+};
+const BOCADILLO_DISPLAY_MAP = {
+  'Mortadel·la i pesto de festuc':         'Mortadella pesto',
+  'Pernil i formatge':                     'Pernil i formatge',
+  'albergínia escalivada i pesto vermell': 'Berenjena pesto',
+};
 
 // ===== FORECASTING API INTEGRATION =====
 let forecastCache = {};  // cache: { 'store-date': apiResponse }
@@ -1572,10 +1593,18 @@ async function fetchSobrasForCurrentDay() {
       } else {
         // Key by slug, not raw name — the focaccia row's render reads via
         // fcSlug(name), and the name source (getFcNames) can switch between
-        // hardcoded STORES.fcNames and the algorithm's flavorProposal,
-        // which may have subtly different name strings for the same flavor.
-        // Slug is the stable identifier used everywhere else.
+        // hardcoded STORES.fcNames (long, e.g. "Mortadella Stracciatella i
+        // festuc") and the algorithm's flavorProposal (short display name,
+        // e.g. "Mortadella"). Store under BOTH slugs so the lookup hits
+        // regardless of which one the render is using.
         result.focaccia[fcSlug(name)] = sobrasObj;
+        const shortName = FOCACCIA_DISPLAY_MAP[name] || BOCADILLO_DISPLAY_MAP[name];
+        if (shortName) {
+          const shortSlug = fcSlug(shortName);
+          if (shortSlug && shortSlug !== fcSlug(name)) {
+            result.focaccia[shortSlug] = sobrasObj;
+          }
+        }
       }
     }
 
@@ -1824,9 +1853,19 @@ function applyNoteLocally(noteKey, textValue) {
 }
 
 // Open the per-product note edit modal. `label` is the human-readable
-// product name shown for context.
+// product name shown for context. Capture (store, dateStr) on open so a
+// switchDay/switchStore between opening the modal and clicking Guardar
+// can't misroute the save to a different day or store.
 function openNoteModal(noteKey, label) {
-  _noteModalContext = { key: noteKey, label: label, isDay: noteKey === '_day_note' };
+  const dateStr = formatDateStr(getTargetDate(currentDay));
+  _noteModalContext = {
+    key: noteKey,
+    label: label,
+    isDay: noteKey === '_day_note',
+    store: currentStore,
+    dateStr: dateStr,
+    day: currentDay,
+  };
   const text = noteKey === '_day_note'
     ? getNotesForCurrentView().dayNote
     : getProductNoteText(noteKey);
@@ -1844,20 +1883,20 @@ function closeNoteModal() {
 }
 async function saveCurrentNote() {
   if (!_noteModalContext) return;
-  const { key } = _noteModalContext;
+  const { key, store, dateStr } = _noteModalContext;
   const val = (document.getElementById('noteModalText').value || '').trim();
-  applyNoteLocally(key, val);
+  applyNoteForContext(store, dateStr, key, val);
   closeNoteModal();
   renderMain();  // re-render so the icon's has-note class and day-note textarea reflect the new state
-  persistNote(key, val);  // fire-and-forget
+  persistNoteForContext(store, dateStr, key, val);  // fire-and-forget
 }
 async function deleteCurrentNote() {
   if (!_noteModalContext) return;
-  const { key } = _noteModalContext;
-  applyNoteLocally(key, '');
+  const { key, store, dateStr } = _noteModalContext;
+  applyNoteForContext(store, dateStr, key, '');
   closeNoteModal();
   renderMain();
-  persistNote(key, '');
+  persistNoteForContext(store, dateStr, key, '');
 }
 
 // Debounced auto-save for the always-visible day-note textarea.
@@ -2570,11 +2609,28 @@ function renderMain() {
   // Preserve in-flight day-note typing: if Rafa is mid-edit and something
   // else triggers a re-render (prefetch landing, etc.), capture the current
   // textarea value into the cache before the DOM is rebuilt.
+  // Use the textarea's data-render-{store,date} attributes — NOT
+  // currentStore/currentDay — because switchDay/switchStore mutate those
+  // BEFORE calling renderMain. Without this, the OLD textarea's content
+  // would be written into the NEW day/store's cache slot, making notes
+  // appear to "copy" across days and locations.
   const existingDayNote = document.getElementById('dayNoteInput');
   if (existingDayNote) {
-    const k = notesCacheKey(currentStore, formatDateStr(getTargetDate(currentDay)));
-    if (!_notesCache[k]) _notesCache[k] = { dayNote: '', products: {} };
-    _notesCache[k].dayNote = existingDayNote.value || '';
+    const renderStore = existingDayNote.dataset.renderStore;
+    const renderDate = existingDayNote.dataset.renderDate;
+    if (renderStore && renderDate) {
+      const k = notesCacheKey(renderStore, renderDate);
+      if (!_notesCache[k]) _notesCache[k] = { dayNote: '', products: {} };
+      _notesCache[k].dayNote = existingDayNote.value || '';
+      // Mirror into the BQ inputs cache so a later restoreInputState (which
+      // re-ingests _cachedBqInputs) doesn't clobber the still-unsaved text.
+      if (_cachedBqInputs[k]) {
+        if (!_cachedBqInputs[k].notes) _cachedBqInputs[k].notes = {};
+        const txt = existingDayNote.value || '';
+        if (txt) _cachedBqInputs[k].notes._day_note = txt;
+        else delete _cachedBqInputs[k].notes._day_note;
+      }
+    }
   }
   const store = STORES[currentStore];
   const shop = getShopSuggestions();
@@ -2614,10 +2670,16 @@ function renderMain() {
   // ===== DAY NOTE =====
   // Free-form notes for the day overall (e.g. "Sunny weekend, bumped pastries").
   // Auto-saves on blur with a 1.2s debounce.
+  // data-render-store / data-render-date stamp the textarea with the (store,
+  // date) it was built for — read back at the top of renderMain so the
+  // capture writes to the correct _notesCache slot even after currentStore/
+  // currentDay have already advanced (switchDay/switchStore call renderAll
+  // AFTER mutating them).
   const dayNoteText = getNotesForCurrentView().dayNote || '';
+  const dayNoteRenderDate = formatDateStr(getTargetDate(currentDay));
   html += `<div class="day-note">
     <label for="dayNoteInput">📝 Notas del día — ${currentDay}</label>
-    <textarea id="dayNoteInput" placeholder="Tendencias, ajustes manuales, contexto del día…">${escapeHtml(dayNoteText)}</textarea>
+    <textarea id="dayNoteInput" data-render-store="${currentStore}" data-render-date="${dayNoteRenderDate}" placeholder="Tendencias, ajustes manuales, contexto del día…">${escapeHtml(dayNoteText)}</textarea>
   </div>`;
 
   // ===== BREAD =====
@@ -3305,16 +3367,21 @@ async function confirmSync() {
       estimates.push({ cell: 'G' + row, value: shopCount });
     });
   } else {
-    // Focaccia: read per-flavor pieces and allocate whole focaccias by
-    // largest-remainder. Σ also goes to G19 for the dough calc.
+    // Focaccia: read per-flavor shop pieces and allocate whole focaccias by
+    // largest-remainder. Σ shop pieces → G19; Σ order pieces (rounded up to
+    // whole focaccias) → J19.
     const piecesMap = {};
+    let totalOrderPieces = 0;
     fcNames.forEach((name) => {
       const slug = fcSlug(name);
       const sInput = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
+      const oInput = document.querySelector(`input[data-key="fc-${slug}-order"]`);
       piecesMap[name] = sInput ? (parseInt(sInput.value) || 0) : 0;
+      totalOrderPieces += oInput ? (parseInt(oInput.value) || 0) : 0;
     });
     const allocation = allocateFocaccias(piecesMap);
     const totalFocaccias = Object.values(allocation).reduce((s, v) => s + v, 0);
+    const totalOrderFocaccias = totalOrderPieces > 0 ? Math.ceil(totalOrderPieces / 15) : 0;
     fcNames.forEach((name, idx) => {
       if (idx >= FC_ROWS.length) return;
       const row = FC_ROWS[idx];
@@ -3322,9 +3389,7 @@ async function confirmSync() {
       estimates.push({ cell: 'G' + row, value: allocation[name] || 0 });
     });
     estimates.push({ cell: 'G19', value: totalFocaccias });
-    // Clear the J19 orders cell so a previous Sant-Joan-style sync doesn't
-    // leave stale envío-2 data on this row.
-    estimates.push({ cell: 'J19', value: '' });
+    estimates.push({ cell: 'J19', value: totalOrderFocaccias });
   }
 
   // Clear unused rows so stale flavors from prior weeks don't linger.
