@@ -1440,9 +1440,14 @@ function getShopSuggestions() {
         const b3 = Math.max(0, total - b1);
         result.pastry[key] = { b1, b2: 0, b3 };
       } else {
+        // Round B1 and B2 directly via their percentages so the safety
+        // margin / sold-out shift boost actually lands in the batch it was
+        // intended for. B3 takes the residual (matches the backend's "B3
+        // absorbs" model). Previously B3 was rounded and B2 was the residual,
+        // which sometimes swallowed B2's percentage boost as a rounding loss.
         const b1 = Math.round(total * split.b1Pct);
-        const b3 = Math.round(total * split.b3Pct);
-        const b2 = Math.max(0, total - b1 - b3);
+        const b2 = Math.round(total * split.b2Pct);
+        const b3 = Math.max(0, total - b1 - b2);
         result.pastry[key] = { b1, b2, b3 };
       }
     }
@@ -1785,6 +1790,26 @@ const _activeOverrides = {};
 // loadInputs returns; persisted via the existing saveInputs action with
 // `type: 'note'` and `textValue` set.
 const _notesCache = {};
+// In-flight local note edits that haven't been confirmed-saved to BQ yet.
+// Structure: `${notesCacheKey}` → Map<noteKey, { text, ts }>. Consulted by
+// ingestNotesFromInputsResp so a stale BQ refetch can't clobber a local edit
+// whose save POST hasn't completed yet (this was the root cause of Rafa's
+// "notes deleted after sync" complaint — switchDay triggers _inputsFetched
+// reset, the refetch returned pre-edit BQ state, and ingest wholesale-
+// overwrote _notesCache before the save POST had landed).
+const _pendingNoteEdits = {};
+function markNoteEditPending(store, dateStr, noteKey, text) {
+  const k = notesCacheKey(store, dateStr);
+  if (!_pendingNoteEdits[k]) _pendingNoteEdits[k] = new Map();
+  _pendingNoteEdits[k].set(noteKey, { text: text || '', ts: Date.now() });
+}
+function clearNoteEditPending(store, dateStr, noteKey) {
+  const k = notesCacheKey(store, dateStr);
+  if (_pendingNoteEdits[k]) {
+    _pendingNoteEdits[k].delete(noteKey);
+    if (_pendingNoteEdits[k].size === 0) delete _pendingNoteEdits[k];
+  }
+}
 // Set of dates (YYYY-MM-DD) where the CURRENT store has any non-empty note.
 // Drives the day-tab dot indicator. Refreshed on switchStore + after each note save.
 let _noteDays = new Set();
@@ -1804,14 +1829,24 @@ function getProductNoteText(productKey) {
 // the numeric inputs use — no silent data loss on network blips.
 function persistNoteForContext(store, dateStr, noteKey, textValue) {
   if (!store || !dateStr) return;
+  const sentText = textValue || '';
   const input = {
     key: noteKey,
     type: 'note',
     dateKey: dateStr,
-    textValue: textValue || '',
+    textValue: sentText,
   };
-  // Fire-and-forget. syncInputsToBigQuery handles retry on failure.
-  syncInputsToBigQuery([input], store);
+  // Mark as in-flight so a refetch+ingest before this POST lands can't
+  // clobber the local edit. Only cleared once the POST resolves AND the
+  // pending entry still matches what we sent — if a newer edit came in
+  // mid-flight, leave the marker so the newer text stays authoritative.
+  markNoteEditPending(store, dateStr, noteKey, sentText);
+  syncInputsToBigQuery([input], store).then(function(ok) {
+    if (!ok) return;  // failure → _bqRetryQueue handles retry; keep marker
+    const k = notesCacheKey(store, dateStr);
+    const cur = _pendingNoteEdits[k] && _pendingNoteEdits[k].get(noteKey);
+    if (cur && cur.text === sentText) clearNoteEditPending(store, dateStr, noteKey);
+  });
 }
 function persistNote(noteKey, textValue) {
   persistNoteForContext(currentStore, formatDateStr(getTargetDate(currentDay)), noteKey, textValue);
@@ -1936,12 +1971,30 @@ function ingestNotesFromInputsResp(storeId, dateStr, inputsResp) {
   if (!inputsResp || !inputsResp.success) return;
   const key = notesCacheKey(storeId, dateStr);
   const raw = inputsResp.notes || {};
-  const dayNote = raw._day_note || '';
+  let dayNote = raw._day_note || '';
   const products = {};
   for (const k of Object.keys(raw)) {
     if (k === '_day_note') continue;
     if (raw[k]) products[k] = raw[k];
   }
+
+  // Preserve any local edits whose save POST hasn't completed yet — without
+  // this, a refetch (e.g. switchDay → _inputsFetched.clear() → loadInputs)
+  // would wholesale-overwrite the local edit with stale BQ state.
+  const pending = _pendingNoteEdits[key];
+  if (pending && pending.size > 0) {
+    for (const [noteKey, entry] of pending.entries()) {
+      const txt = entry.text || '';
+      if (noteKey === '_day_note') {
+        dayNote = txt;
+      } else if (txt) {
+        products[noteKey] = txt;
+      } else {
+        delete products[noteKey];
+      }
+    }
+  }
+
   _notesCache[key] = { dayNote, products };
   // Track presence in the per-store noteDays set so the day-tab dot is correct
   // immediately for this date (before the noteDays fetch lands).
