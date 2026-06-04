@@ -135,6 +135,10 @@
   .sync-btn:hover { background: #22503a; transform: translateY(-1px); }
   .sync-btn:active { transform: translateY(0); }
   .sync-btn.synced { background: #2e7d32; }
+  .sync-btn:disabled,
+  .sync-btn.loading { background: #9aa6a0; cursor: not-allowed; transform: none; }
+  .sync-btn:disabled:hover,
+  .sync-btn.loading:hover { background: #9aa6a0; transform: none; }
   .sync-status { font-size: 13px; color: #888; }
   .sync-status strong { color: #2e7d32; }
   .legend { display: flex; gap: 16px; font-size: 12px; color: #888; align-items: center; flex-wrap: wrap; }
@@ -483,7 +487,13 @@ const BOCADILLO_DISPLAY_MAP = {
 // ===== FORECASTING API INTEGRATION =====
 let forecastCache = {};  // cache: { 'store-date': apiResponse }
 let weatherCache = {};   // cache: { 'date': weatherData }
-let forecastLoading = false;
+// Start in loading state: gates the sync button until loadInitBundle has had
+// a chance to apply BQ-restored order overrides to the DOM. Without this gate
+// a click during the init-bundle fetch would push empty/incorrect orders to
+// the sheet, and a later click (after init had landed) would push the
+// just-applied recurring orders — matching Rafa's "previous Thursday's
+// numbers got synced on the second click" report.
+let forecastLoading = true;
 
 // Shared fetch helper: throws on non-2xx HTTP status BEFORE attempting to parse
 // JSON. Without this, a 5xx that returns an HTML error page triggers a
@@ -852,6 +862,7 @@ async function loadInitBundle() {
   if (!apiUrl) return false;
 
   forecastLoading = true;
+  updateSyncButtonState();
   renderMain();
 
   const storeName = STORE_API_NAMES[currentStore];
@@ -961,6 +972,7 @@ async function loadInitBundle() {
   } finally {
     clearTimeout(timeout);
     forecastLoading = false;
+    updateSyncButtonState();
   }
 }
 
@@ -986,6 +998,7 @@ async function loadEstimatesForCurrentDay() {
   }
 
   forecastLoading = true;
+  updateSyncButtonState();
   renderMain();
 
   try {
@@ -1061,6 +1074,7 @@ async function loadEstimatesForCurrentDay() {
     console.warn('Failed to fetch estimates/inputs:', e);
   } finally {
     forecastLoading = false;
+    updateSyncButtonState();
     renderAll();
     refreshSyncStatusDisplay();
     // Sant Joan only: pull tomorrow's estimates so the focaccia row can
@@ -3234,7 +3248,28 @@ function collectRoundingChanges() {
   return changes;
 }
 
+// Reflects forecastLoading on the sync button so it's visibly disabled while
+// the init bundle / day-switch fetch is in flight. Called after each
+// forecastLoading transition.
+function updateSyncButtonState() {
+  const btn = document.getElementById('syncBtn');
+  if (!btn) return;
+  if (forecastLoading) {
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.title = 'Cargando estimaciones — espera unos segundos';
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.title = '';
+  }
+}
+
 function showSyncPreview() {
+  if (forecastLoading) {
+    alert('Las estimaciones aún se están cargando. Espera unos segundos antes de sincronizar.');
+    return;
+  }
   const changes = collectRoundingChanges();
   const content = document.getElementById('syncPreviewContent');
 
@@ -3312,6 +3347,14 @@ function allocateFocaccias(flavorsPortions) {
 
 async function confirmSync() {
   closeSyncPreview();
+
+  // Defensive — showSyncPreview already gates on this, but in case the
+  // modal stayed open across a switchDay/switchStore that re-armed
+  // forecastLoading, bail before pushing partial DOM state to the sheet.
+  if (forecastLoading) {
+    alert('Las estimaciones aún se están cargando. Espera unos segundos antes de sincronizar.');
+    return;
+  }
 
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) {
@@ -3504,16 +3547,16 @@ async function confirmSync() {
       } catch(_) {}
 
       setTimeout(() => {
-        btn.disabled = false;
         btn.classList.remove('synced');
         btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
+        updateSyncButtonState();  // respects forecastLoading if a switchDay re-armed it mid-sync
       }, 3000);
     } else {
       throw new Error(data.error || 'Error desconocido');
     }
   } catch(e) {
-    btn.disabled = false;
     btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
+    updateSyncButtonState();
     status.innerHTML = `<span style="color:#c0392b;">✗ Error: ${e.message}</span>`;
     console.error('Sync failed:', e);
   }
@@ -3559,6 +3602,11 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
   // Restore store selector to match persisted value
   document.getElementById('storeSelect').value = currentStore;
+
+  // Reflect the initial forecastLoading=true on the sync button so the user
+  // can't click it before the init bundle (which applies BQ-recurring order
+  // overrides to the DOM) has had a chance to land.
+  updateSyncButtonState();
 
   // Migration v4.1: clear stale localStorage shop data that was saved before
   // the fix that only saves user-edited cells. Old saves included AI values and
