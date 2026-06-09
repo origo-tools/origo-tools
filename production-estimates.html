@@ -3421,8 +3421,18 @@ async function confirmSync() {
   // syncs then closes the tab can lose the edit from Manual_Inputs even
   // though it hit the spreadsheet — next session reads stale BQ data and
   // the edits appear to "revert to the original AI proposal."
+  //
+  // Cap the wait at 5 seconds with Promise.race: fetchJson has no built-in
+  // timeout, so a hung POST (DNS, dead backend) would otherwise pin the
+  // sync button on "Sincronizando..." forever. Even if the flush times out,
+  // the persistSyncedSnapshot_ call after a successful sheet sync covers
+  // the missed edit — losing the pre-flush isn't catastrophic, but losing
+  // the whole sync to a stuck POST is.
   try {
-    await flushPendingBqSync();
+    await Promise.race([
+      flushPendingBqSync(),
+      new Promise(function(resolve) { setTimeout(resolve, 5000); }),
+    ]);
   } catch (e) {
     console.warn('flushPendingBqSync before sync failed (continuing):', e);
   }
