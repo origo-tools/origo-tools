@@ -40,6 +40,9 @@
     background: #eef6ff; padding: 5px 12px; border-radius: 20px;
     font-size: 13px; font-weight: 500; color: #1a5276;
   }
+  .weather-badge-error {
+    background: #fdf3e3; color: #7a5a14;
+  }
   .event-badge {
     display: flex; align-items: center; gap: 6px;
     padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 600;
@@ -1484,12 +1487,23 @@ function getWeatherForDay(dayName) {
   const dateStr = formatDateStr(targetDate);
   const cached = weatherCache[dateStr];
   if (cached) {
+    // An "API: ..." description (or missing temp/code entirely) means the
+    // weather fetch failed and the backend fell through to an error
+    // sentinel. The old code rendered `Math.round(null || 0) = 0` which
+    // showed a misleading "0°C — API: Daily API request limit exceeded"
+    // in mid-summer. Treat the error sentinel as a no-data state.
+    const desc = cached.description ? String(cached.description) : '';
+    const isErrorSentinel = (desc.indexOf('API:') === 0 || desc.indexOf('API ') === 0)
+      || (cached.temp_max == null && cached.weathercode == null);
+    if (isErrorSentinel) {
+      return { icon: '⚠️', temp: '—', desc: 'Pronóstico no disponible', rain: '—', error: true };
+    }
     const icon = weatherCodeToIcon(cached.weathercode);
     return {
       icon,
-      temp: `${Math.round(cached.temp_max || 0)}°C`,
+      temp: cached.temp_max != null ? `${Math.round(cached.temp_max)}°C` : '—',
       desc: cached.description || 'N/A',
-      rain: `${Math.round(cached.precipitation_mm || 0)}mm`
+      rain: cached.precipitation_mm != null ? `${Math.round(cached.precipitation_mm)}mm` : '—',
     };
   }
   return { icon: '❓', temp: '—', desc: 'Cargando...', rain: '—' };
@@ -1765,6 +1779,44 @@ async function flushPendingBqSync() {
   }
 
   if (inputs.length && store) await syncInputsToBigQuery(inputs, store);
+}
+
+// Persist the *entire current DOM state* (every shop + order cell on the
+// current view) to Manual_Inputs immediately after a successful sheet sync.
+// Unlike saveInputState — which only saves cells marked editedCells — this
+// captures EVERY synced value, so the next page load is guaranteed to
+// reproduce what Rafa just synced regardless of whether the per-edit
+// debounce fired, whether the AI later regenerates with different numbers,
+// or whether the user closed the tab immediately after sync. The store and
+// dateStr are captured at call time so a switchDay/switchStore mid-flight
+// can't misroute the writes.
+function persistSyncedSnapshot_(dateStr) {
+  const store = currentStore;
+  const dow = DAYS_TO_DOW[currentDay] || '1';
+  if (!store || !dateStr) return;
+
+  const inputs = [];
+  document.querySelectorAll('.editable input').forEach(input => {
+    const key = input.dataset.key;
+    if (!key) return;
+    // Sant Joan bread envío values are algorithm-driven (envío1 always 0,
+    // envío2 from the focaccia↔bocadillo rule). Skipping them keeps the
+    // override store clean and matches the existing filter in
+    // restoreInputState's apply loop.
+    if (isSantJoanBreadKey(store, key)) return;
+    const val = input.value;
+    const saveVal = val === '' ? '0' : val;
+    const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+    if (isOrder) {
+      inputs.push({ key, type: 'order', dateKey: dow, value: saveVal });
+    } else {
+      inputs.push({ key, type: 'shop', dateKey: dateStr, value: saveVal });
+    }
+  });
+  if (inputs.length === 0) return;
+  // Fire-and-forget. syncInputsToBigQuery handles retry via _bqRetryQueue
+  // on transient failures, so this can't silently drop the snapshot.
+  syncInputsToBigQuery(inputs, store);
 }
 
 // Returns true on success, false on failure (and re-queues the batch for next
@@ -2416,7 +2468,9 @@ function renderAlertsBar() {
   const targetDate = getTargetDate(currentDay);
   const dateStr = targetDate.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   let html = `<span class="date-label">${dateStr}</span>`;
-  html += `<div class="weather-badge">${w.icon} ${w.temp} — ${w.desc} · Precip: ${w.rain}</div>`;
+  html += w.error
+    ? `<div class="weather-badge weather-badge-error" title="El pronóstico no se pudo cargar — las estimaciones se calculan sin ajuste meteorológico">${w.icon} ${w.desc}</div>`
+    : `<div class="weather-badge">${w.icon} ${w.temp} — ${w.desc} · Precip: ${w.rain}</div>`;
 
   if (factors) {
     if (factors.isHoliday) html += `<div class="event-badge high">🎉 Festivo — producción tipo sábado</div>`;
@@ -3362,6 +3416,17 @@ async function confirmSync() {
     return;
   }
 
+  // Drain any in-flight edit POSTs (2s debounce in saveInputState) BEFORE
+  // touching the sheet. Without this, a user who edits then immediately
+  // syncs then closes the tab can lose the edit from Manual_Inputs even
+  // though it hit the spreadsheet — next session reads stale BQ data and
+  // the edits appear to "revert to the original AI proposal."
+  try {
+    await flushPendingBqSync();
+  } catch (e) {
+    console.warn('flushPendingBqSync before sync failed (continuing):', e);
+  }
+
   // 1. Apply rounding to bread (round shop+orders total, add extra to shop)
   BREAD.forEach(item => {
     if (!item.roundTo) return;
@@ -3545,6 +3610,20 @@ async function confirmSync() {
           })
         }).catch(() => {}); // Non-blocking, ok if it fails
       } catch(_) {}
+
+      // SAFETY NET — persist every value Rafa just pushed to the sheet into
+      // Manual_Inputs so the next page load is guaranteed to display what
+      // she synced, even if (a) her individual edits never made it through
+      // the 2s debounce, or (b) the AI later regenerates with different
+      // numbers. hasSyncedShop() + the timestamp-skip logic in
+      // restoreInputState already treat synced values as authoritative, so
+      // these overrides survive subsequent algorithm runs. Fire-and-forget;
+      // uses the same retry queue as edits.
+      try {
+        persistSyncedSnapshot_(targetDateStr);
+      } catch (snapErr) {
+        console.warn('persistSyncedSnapshot_ failed (non-fatal):', snapErr);
+      }
 
       setTimeout(() => {
         btn.classList.remove('synced');
