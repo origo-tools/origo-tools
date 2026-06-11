@@ -3110,8 +3110,9 @@ function renderMain() {
     if (isSantJoanBreadKey(currentStore, key)) continue;
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
+      const matchesRendered = String(val) === String(input.value);
       input.value = val;
-      input.closest('td').className = 'editable edited';
+      if (!matchesRendered) input.closest('td').className = 'editable edited';
     }
   }
   for (const [key, val] of Object.entries(ov.orders)) {
@@ -3119,8 +3120,9 @@ function renderMain() {
     if (isSantJoanBreadKey(currentStore, key)) continue;
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
+      const matchesRendered = String(val) === String(input.value);
       input.value = val;
-      input.closest('td').className = 'editable edited';
+      if (!matchesRendered) input.closest('td').className = 'editable edited';
     }
   }
   recalcBreadTotals();
