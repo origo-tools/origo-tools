@@ -2239,8 +2239,16 @@ function applyInputValues(inputMap, markAsEdited) {
       const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
       if (!isOrder && (val === 0 || val === '0')) continue;
 
+      // If the restored value matches what's already rendered (e.g. Sant Joan
+      // envío 2 where the previously-synced value equals today's algorithm
+      // baseline), keep the cell's original class — don't paint it red.
+      const currentVal = input.value;
+      const matchesRendered = String(val) === String(currentVal);
+
       input.value = val;
-      input.closest('td').className = 'editable edited';
+      if (!matchesRendered) {
+        input.closest('td').className = 'editable edited';
+      }
       // Only mark as user-edited when explicitly requested (e.g. for localStorage shop edits).
       // Restored BQ/localStorage orders should NOT be flagged — otherwise editing any cell
       // re-saves all restored orders, which can amplify data inconsistencies.
@@ -2260,18 +2268,24 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function eCell(key, value, cls) {
+function eCell(key, value, cls, aiBaseline) {
   const overrides = getActiveOverrides();
   const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
   const overrideMap = isOrder ? overrides.orders : overrides.shop;
   // Sant Joan bread envío values are algorithm-driven — never override with BQ edits
   const sjGuard = isSantJoanBreadKey(currentStore, key);
-  const hasOverride = !sjGuard && overrideMap[key] !== undefined && overrideMap[key] !== 0 && overrideMap[key] !== '0';
+  const rawOverride = overrideMap[key];
+  const overridePresent = !sjGuard && rawOverride !== undefined && rawOverride !== 0 && rawOverride !== '0';
+  // When a baseline is provided (Sant Joan envío 2), an override that equals
+  // the algorithm value is NOT a real edit — keep the cell green.
+  const overrideMatchesBaseline = overridePresent && aiBaseline !== undefined &&
+    Number(rawOverride) === Number(aiBaseline);
+  const hasOverride = overridePresent && !overrideMatchesBaseline;
 
   const isEdited = editedCells[key] || hasOverride;
   const cellCls = isEdited ? 'edited' : cls;
   const displayVal = hasOverride
-    ? overrideMap[key]
+    ? rawOverride
     : ((value === 0 || value === '0') ? '0' : (value || ''));
   return `<td class="editable ${cellCls}"><input type="text" data-key="${key}" value="${displayVal}" inputmode="numeric"></td>`;
 }
@@ -2868,7 +2882,7 @@ function renderMain() {
       ${discardsCell(sobrasData)}
       <td class="sep"></td>
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
-      ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell')}
+      ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell', isSantJoan ? orderVal : undefined)}
       <td class="sep"></td>
       <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
     </tr>`;
