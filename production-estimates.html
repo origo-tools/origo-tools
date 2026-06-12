@@ -956,7 +956,14 @@ async function loadInitBundle() {
       }
       if (data.inputs.orders) {
         const filtered = Object.fromEntries(
-          Object.entries(data.inputs.orders).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
+          Object.entries(data.inputs.orders).filter(([k]) => {
+            if (isSantJoanBreadKey(currentStore, k)) return false;
+            // Sant Joan envío 2 (bread-*-order) is algorithm-driven. When the
+            // BQ values predate today's AI run and the day isn't synced, drop
+            // them so today's algorithm baseline renders green instead of red.
+            if (skipShop && currentStore === 'santjoan' && /^bread-[^-]+-order$/.test(k)) return false;
+            return true;
+          })
         );
         Object.assign(_activeOverrides[fetchKey].orders, filtered);
       }
@@ -1068,7 +1075,14 @@ async function loadEstimatesForCurrentDay() {
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
         const filtered = Object.fromEntries(
-          Object.entries(inputsResp.orders).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
+          Object.entries(inputsResp.orders).filter(([k]) => {
+            if (isSantJoanBreadKey(currentStore, k)) return false;
+            // Sant Joan envío 2 (bread-*-order) is algorithm-driven. When the
+            // BQ values predate today's AI run and the day isn't synced, drop
+            // them so today's algorithm baseline renders green instead of red.
+            if (skipShop && currentStore === 'santjoan' && /^bread-[^-]+-order$/.test(k)) return false;
+            return true;
+          })
         );
         Object.assign(_activeOverrides[cacheKey].orders, filtered);
       }
@@ -2217,14 +2231,20 @@ async function restoreInputState() {
       Object.assign(_activeOverrides[fetchKey].shop, filteredShop);
       applyInputValues(bqData.shop, false);   // Also apply to current DOM (applyInputValues has its own guard)
     }
-    // Orders are always restored (weekly recurring, not tied to AI runs)
+    // Orders are always restored (weekly recurring, not tied to AI runs) —
+    // EXCEPT Sant Joan envío 2 (bread-*-order), which is algorithm-driven and
+    // gets the same staleness check as shop edits.
     if (bqData.orders && Object.keys(bqData.orders).length > 0) {
       const filteredOrders = Object.fromEntries(
-        Object.entries(bqData.orders).filter(([k]) => !isSantJoanBreadKey(snapshotStore, k))
+        Object.entries(bqData.orders).filter(([k]) => {
+          if (isSantJoanBreadKey(snapshotStore, k)) return false;
+          if (skipShop && snapshotStore === 'santjoan' && /^bread-[^-]+-order$/.test(k)) return false;
+          return true;
+        })
       );
       Object.assign(_activeOverrides[fetchKey].orders, filteredOrders);
-      applyInputValues(bqData.orders, false); // Also apply to current DOM (applyInputValues has its own guard)
-      const merged = { ...localOrders, ...bqData.orders };
+      applyInputValues(filteredOrders, false); // Also apply to current DOM (applyInputValues has its own guard)
+      const merged = { ...localOrders, ...filteredOrders };
       localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
     }
   }
