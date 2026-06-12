@@ -1350,6 +1350,35 @@ async function prefetchNextDayForFocaccia() {
   }
   if (tasks.length === 0) return;
   try { await Promise.all(tasks); } catch(_) {}
+
+  // Sant Joan envío 2 staleness filter — same logic as loadInitBundle /
+  // loadEstimatesForCurrentDay / restoreInputState. Applied after both promises
+  // settle because the AI timestamp is only available once the estimates fetch
+  // completes. Without this, the prefetched next-day overrides keep stale BQ
+  // values that make envío 2 cells render red on the next page.
+  if (currentStore === 'santjoan' && _activeOverrides[nextKey] && _activeOverrides[nextKey].orders) {
+    const cachedInputs = _cachedBqInputs[nextKey];
+    const aiData = forecastCache[nextKey];
+    if (cachedInputs && cachedInputs.updatedAt && aiData && aiData.generatedAt) {
+      const bqTime = Number(cachedInputs.updatedAt) * 1000;
+      const aiTime = new Date(aiData.generatedAt).getTime();
+      const stale = bqTime < aiTime;
+      // hasSyncedShop reads syncStatusCache for currentStore — safe here because
+      // the prefetch only runs for currentStore === 'santjoan'.
+      const synced = (function() {
+        const entry = syncStatusCache[syncStatusKey(STORE_API_NAMES[currentStore], nextDateStr)];
+        return !!(entry && entry.syncedAt);
+      })();
+      if (stale && !synced) {
+        for (const k of Object.keys(_activeOverrides[nextKey].orders)) {
+          if (/^bread-[^-]+-order$/.test(k)) {
+            delete _activeOverrides[nextKey].orders[k];
+          }
+        }
+      }
+    }
+  }
+
   // Re-render so the focaccia row picks up the fresh next-day numbers
   if (currentStore === 'santjoan') renderMain();
 }
