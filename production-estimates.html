@@ -1577,6 +1577,9 @@ function getEstimateFactors() {
   let contextType = 'none', contextReason = '', contextMultiplier = 1;
   let learningActive = false, learningAvg = 1, learningSamples = 0;
   let learningSum = 0, learningCount = 0;
+  // Dominant weather rule (any product's reason — they all see the same weather,
+  // but bread/pastry can diverge on cool_dip multiplier; the *reason* is shared).
+  let weatherReason = null, weatherMultiplier = 1;
 
   if (cached.estimates && cached.estimates.length > 0) {
     for (const est of cached.estimates) {
@@ -1585,6 +1588,10 @@ function getEstimateFactors() {
         contextType = est.factors.contextType;
         contextReason = est.factors.contextReason;
         contextMultiplier = est.factors.context;
+      }
+      if (!weatherReason && est.factors.weatherReason) {
+        weatherReason = est.factors.weatherReason;
+        weatherMultiplier = est.factors.weather;
       }
       if (est.factors.feedback && est.factors.feedback !== 1) {
         learningActive = true;
@@ -1599,6 +1606,8 @@ function getEstimateFactors() {
   return {
     isHoliday: cached.isHoliday,
     weather: cached.weather,
+    weatherReason,
+    weatherMultiplier,
     contextType,
     contextReason,
     contextMultiplier,
@@ -2445,7 +2454,17 @@ function getProductFactorTooltip(estKey) {
   else if (f.contextType === 'postHoliday') parts.push(`Post-vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
   if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
-  if (f.weather !== 1) parts.push(`Lluvia: ${Math.round((f.weather - 1) * 100)}%`);
+  if (f.weather !== 1) {
+    const wPct = Math.round((f.weather - 1) * 100);
+    const wSign = wPct > 0 ? '+' : '';
+    const wLabel = {
+      heat_spike:   'Calor',
+      cool_dip:     'Frescor',
+      heavy_rain:   'Lluvia',
+      extreme_heat: 'Calor extremo',
+    }[f.weatherReason] || 'Clima';
+    parts.push(`${wLabel}: ${wSign}${wPct}%`);
+  }
   if (f.soldOut !== 1) parts.push(`Agotado (sem. anteriores): +${Math.round((f.soldOut - 1) * 100)}% total`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
@@ -2559,10 +2578,21 @@ function renderAlertsBar() {
       html += `<div class="event-badge ${cls}">📊 Tendencia estacional: ${sign}${pct}%</div>`;
     }
 
-    // Weather badge
-    if (factors.weather && factors.weather.precipitation_mm > 3) {
-      const adj = factors.weather.precipitation_mm > 10 ? '-10%' : '-5%';
-      html += `<div class="event-badge medium">🌧️ Ajuste lluvia: ${adj}</div>`;
+    // Weather badge — driven by the rule the algorithm actually fired
+    // (heat_spike / cool_dip / heavy_rain / extreme_heat). Mislabelling these
+    // as "rain" misled the team in June 2026.
+    if (factors.weatherReason) {
+      const wPct = Math.round((factors.weatherMultiplier - 1) * 100);
+      const wSign = wPct > 0 ? '+' : '';
+      const meta = {
+        heat_spike:   { icon: '🥵', label: 'Calor',         cls: 'medium' },
+        cool_dip:     { icon: '🧥', label: 'Frescor',       cls: 'info' },
+        heavy_rain:   { icon: '🌧️', label: 'Lluvia',       cls: 'medium' },
+        extreme_heat: { icon: '🔥', label: 'Calor extremo', cls: 'high' },
+      }[factors.weatherReason];
+      if (meta) {
+        html += `<div class="event-badge ${meta.cls}">${meta.icon} Ajuste ${meta.label.toLowerCase()}: ${wSign}${wPct}%</div>`;
+      }
     }
 
     // Learning factor badge
