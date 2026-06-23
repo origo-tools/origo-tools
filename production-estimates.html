@@ -954,6 +954,17 @@ async function loadInitBundle() {
         );
         Object.assign(_activeOverrides[fetchKey].shop, filtered);
       }
+      if (!skipShop && data.inputs.syncShop) {
+        // 0 → '' so the cell renders empty AND the override is treated as real
+        // (see eCell — 0/'0' overrides are skipped, '' is not). See
+        // restoreInputState for the long-form explanation.
+        const syncMap = {};
+        for (const [k, v] of Object.entries(data.inputs.syncShop)) {
+          if (isSantJoanBreadKey(currentStore, k)) continue;
+          syncMap[k] = (v === 0 || v === '0') ? '' : v;
+        }
+        Object.assign(_activeOverrides[fetchKey].shop, syncMap);
+      }
       if (data.inputs.orders) {
         const filtered = Object.fromEntries(
           Object.entries(data.inputs.orders).filter(([k]) => {
@@ -1072,6 +1083,16 @@ async function loadEstimatesForCurrentDay() {
           Object.entries(inputsResp.shop).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
         );
         Object.assign(_activeOverrides[cacheKey].shop, filtered);
+      }
+      if (!skipShop && inputsResp.syncShop && Object.keys(inputsResp.syncShop).length > 0) {
+        // 0 → '' so empty cells render correctly and bypass skip-zero guards.
+        // See restoreInputState for the rationale.
+        const syncMap = {};
+        for (const [k, v] of Object.entries(inputsResp.syncShop)) {
+          if (isSantJoanBreadKey(currentStore, k)) continue;
+          syncMap[k] = (v === 0 || v === '0') ? '' : v;
+        }
+        Object.assign(_activeOverrides[cacheKey].shop, syncMap);
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
         const filtered = Object.fromEntries(
@@ -1342,6 +1363,14 @@ async function prefetchNextDayForFocaccia() {
             _cachedBqInputs[nextKey] = data;
             if (!_activeOverrides[nextKey]) _activeOverrides[nextKey] = { shop: {}, orders: {} };
             if (data.shop) Object.assign(_activeOverrides[nextKey].shop, data.shop);
+            if (data.syncShop) {
+              // 0 → '' so the cell renders empty and bypasses skip-zero guards.
+              const syncMap = {};
+              for (const [k, v] of Object.entries(data.syncShop)) {
+                syncMap[k] = (v === 0 || v === '0') ? '' : v;
+              }
+              Object.assign(_activeOverrides[nextKey].shop, syncMap);
+            }
             if (data.orders) Object.assign(_activeOverrides[nextKey].orders, data.orders);
           }
         })
@@ -1862,7 +1891,13 @@ function persistSyncedSnapshot_(dateStr) {
     if (isOrder) {
       inputs.push({ key, type: 'order', dateKey: dow, value: saveVal });
     } else {
-      inputs.push({ key, type: 'shop', dateKey: dateStr, value: saveVal });
+      // Use 'syncShop' (not 'shop') so the value is treated as authoritative
+      // on restore — even when rounded to 0. Plain 'shop' rows from user
+      // edits still apply skip-zero (cleared field → AI baseline); syncShop
+      // rows skip that guard. Multi-user safety: every device that restores
+      // sees the rounded value Rafa just pushed to the spreadsheet, so a
+      // re-sync from another browser doesn't re-introduce dropped batches.
+      inputs.push({ key, type: 'syncShop', dateKey: dateStr, value: saveVal });
     }
   });
   if (inputs.length === 0) return;
@@ -2268,6 +2303,22 @@ async function restoreInputState() {
       );
       Object.assign(_activeOverrides[fetchKey].shop, filteredShop);
       applyInputValues(bqData.shop, false);   // Also apply to current DOM (applyInputValues has its own guard)
+    }
+    // syncShop overrides: values pushed to the spreadsheet by confirmSync's
+    // rounding step. Treated as authoritative even when 0 — the backend's
+    // latest-wins merge already ensures a key appears in EITHER shop OR
+    // syncShop (whichever row has the newer updated_at), so applying both
+    // maps is safe: they're disjoint. Encoding: 0 → '' so the cell renders
+    // empty AND _activeOverrides recognises the entry as a real override
+    // (the existing skip-zero guards skip 0/'0' but treat '' as authoritative).
+    if (!skipShop && bqData.syncShop && Object.keys(bqData.syncShop).length > 0) {
+      const syncMap = {};
+      for (const [k, v] of Object.entries(bqData.syncShop)) {
+        if (isSantJoanBreadKey(snapshotStore, k)) continue;
+        syncMap[k] = (v === 0 || v === '0') ? '' : v;
+      }
+      Object.assign(_activeOverrides[fetchKey].shop, syncMap);
+      applyInputValues(syncMap, false);
     }
     // Orders are always restored (weekly recurring, not tied to AI runs) —
     // EXCEPT Sant Joan envío 2 (bread-*-order), which is algorithm-driven and
@@ -3532,6 +3583,39 @@ async function confirmSync() {
     console.warn('flushPendingBqSync before sync failed (continuing):', e);
   }
 
+  // Helper — applies a rounded value to a shop input AND records it in
+  // _activeOverrides / editedCells so subsequent re-renders (day/store
+  // switches, regenerate, prefetch landing) don't revert the cell to the AI
+  // baseline. Without this, a re-sync would re-round the AI value and double-
+  // increment the spreadsheet. Storing '' (empty string) for a rounded-to-0
+  // value is intentional: eCell treats `''` as a real override (cell renders
+  // empty), whereas storing `0`/`'0'` would be skipped by the override guards
+  // and the AI baseline would bleed through.
+  const _roundOverKey = (function() {
+    const td = getTargetDate(currentDay);
+    return `${currentStore}-${formatDateStr(td)}`;
+  })();
+  if (!_activeOverrides[_roundOverKey]) _activeOverrides[_roundOverKey] = { shop: {}, orders: {} };
+  function applyRoundedShop_(input, newShop) {
+    if (!input) return;
+    const k = input.dataset.key;
+    if (!k) return;
+    const oldShop = parseInt(input.value) || 0;
+    if (oldShop === newShop) return;
+    input.value = newShop || '';
+    _activeOverrides[_roundOverKey].shop[k] = newShop ? newShop : '';
+    // Intentionally NOT setting editedCells[k] = true. Sync-rounded cells are
+    // persisted to BQ as input_type='syncShop' by persistSyncedSnapshot_; if we
+    // marked them as edited, a later saveInputState() (triggered by Rafa
+    // editing a different cell) would loop through editedCells and re-save
+    // every sync-rounded key as input_type='shop' — which is newer and would
+    // beat the syncShop row on the next restore. Clearing the flag here keeps
+    // the two paths cleanly separated.
+    delete editedCells[k];
+    const td = input.closest('td');
+    if (td) td.className = 'editable edited';
+  }
+
   // 1. Apply rounding to bread (round shop+orders total, add extra to shop)
   BREAD.forEach(item => {
     if (!item.roundTo) return;
@@ -3542,7 +3626,7 @@ async function confirmSync() {
     const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
     const total = shopVal + orderVal;
     const rounded = roundToNearest(total, item.roundTo);
-    shopInput.value = rounded - orderVal;  // add rounding difference to shop
+    applyRoundedShop_(shopInput, rounded - orderVal);
   });
 
   // 2. Apply pastry rounding (cascade + smart-skip + B3 threshold).
@@ -3553,9 +3637,15 @@ async function confirmSync() {
     const result = computePastryRounding(p);
     ['b1','b2','b3'].forEach(b => {
       const r = result.batches[b];
-      if (r.shopInput) r.shopInput.value = r.finalShop;
+      applyRoundedShop_(r.shopInput, r.finalShop);
     });
   });
+
+  // Refresh the visible row totals so "Total Shop" / "Total" columns match
+  // the rounded batch values (the change event that normally triggers recalc
+  // doesn't fire on programmatic .value assignments).
+  recalcBreadTotals();
+  recalcPastryTotals();
 
   // 3. Collect all values to sync (cell → value)
   // Column mapping verified from actual production sheets:
