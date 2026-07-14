@@ -489,6 +489,46 @@ const BOCADILLO_DISPLAY_MAP = {
 
 // ===== FORECASTING API INTEGRATION =====
 let forecastCache = {};  // cache: { 'store-date': apiResponse }
+
+// ADDED 2026-07-14: tracks estimate-load failures per 'store-date' so the UI
+// can show a visible error banner and gate the sync button (previously a
+// failed load left an empty grid with sync enabled and only a console.warn).
+let _estimatesLoadFailed = {};  // { 'store-date': errorMessage }
+
+function _currentEstimatesKey_() {
+  try {
+    return `${currentStore}-${formatDateStr(getTargetDate(currentDay))}`;
+  } catch (e) { return null; }
+}
+
+// Failed AND nothing cached from an earlier successful load → block sync.
+function _isCurrentEstimatesFailed_() {
+  const key = _currentEstimatesKey_();
+  return !!(key && _estimatesLoadFailed[key] && !forecastCache[key]);
+}
+
+function updateEstimatesErrorBanner_() {
+  const main = document.getElementById('mainContent');
+  if (!main) return;
+  let banner = document.getElementById('estimatesErrorBanner');
+  if (!_isCurrentEstimatesFailed_()) {
+    if (banner) banner.remove();
+    return;
+  }
+  const msg = _estimatesLoadFailed[_currentEstimatesKey_()];
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'estimatesErrorBanner';
+    banner.style.cssText = 'background:#fdecea;border:1px solid #e57373;border-radius:8px;' +
+      'padding:12px 16px;margin:0 0 12px 0;color:#b71c1c;font-size:14px;display:flex;' +
+      'align-items:center;justify-content:space-between;gap:12px;';
+    main.parentNode.insertBefore(banner, main);
+  }
+  banner.innerHTML = `<span>⚠️ No se pudieron cargar las estimaciones (${escapeHtml(String(msg))}). ` +
+    `La sincronización está bloqueada para evitar enviar datos vacíos a la hoja.</span>` +
+    `<button type="button" onclick="loadEstimatesForCurrentDay()" ` +
+    `style="background:#b71c1c;color:#fff;border:none;border-radius:6px;padding:8px 14px;cursor:pointer;white-space:nowrap;">Reintentar</button>`;
+}
 let weatherCache = {};   // cache: { 'date': weatherData }
 // Start in loading state: gates the sync button until loadInitBundle has had
 // a chance to apply BQ-restored order overrides to the DOM. Without this gate
@@ -1012,6 +1052,7 @@ async function loadEstimatesForCurrentDay() {
   const cacheKey = `${currentStore}-${dateStr}`;
 
   if (forecastCache[cacheKey]) {
+    updateEstimatesErrorBanner_();  // hide any stale failure banner for this day
     renderAll();
     refreshSyncStatusDisplay();
     prefetchNextDayForFocaccia();
@@ -1044,8 +1085,15 @@ async function loadEstimatesForCurrentDay() {
 
     // 1. Process estimates
     if (estimatesResp.error) {
+      // FIX 2026-07-14: surface the failure instead of only console.warn —
+      // Rafa couldn't tell "API down" from "everything is 0", and the sync
+      // button stayed enabled on an empty grid. Tracked per store+date;
+      // updateEstimatesErrorBanner_() shows a visible banner with Reintentar
+      // and updateSyncButtonState() gates the sync button on it.
+      _estimatesLoadFailed[cacheKey] = estimatesResp.error;
       console.warn('Forecast API error:', estimatesResp.error);
     } else {
+      delete _estimatesLoadFailed[cacheKey];
       forecastCache[cacheKey] = estimatesResp;
       if (estimatesResp.weather) {
         weatherCache[dateStr] = estimatesResp.weather;
@@ -1109,10 +1157,12 @@ async function loadEstimatesForCurrentDay() {
       }
     }
   } catch(e) {
+    _estimatesLoadFailed[cacheKey] = e.message || 'Error de red';
     console.warn('Failed to fetch estimates/inputs:', e);
   } finally {
     forecastLoading = false;
     updateSyncButtonState();
+    updateEstimatesErrorBanner_();
     renderAll();
     refreshSyncStatusDisplay();
     // Sant Joan only: pull tomorrow's estimates so the focaccia row can
@@ -2471,7 +2521,10 @@ function pastryTotalSobras(data) {
 
   if (!hasSobras && !hasSoldOuts) return `<td class="sobras-cell">—</td>`;
 
-  const cls = (!hasSobras && hasSoldOuts) ? 'ran-out' : (data.sobras === 0 ? 'perfect' : 'leftover');
+  // FIX 2026-07-14: also treat string '0' as perfect — the content check above
+  // already does; without this a '0' from the API rendered a green "✓ 0"
+  // inside an amber leftover-styled cell.
+  const cls = (!hasSobras && hasSoldOuts) ? 'ran-out' : ((data.sobras === 0 || data.sobras === '0') ? 'perfect' : 'leftover');
   return `<td class="sobras-cell ${cls}">${html}</td>`;
 }
 
@@ -2499,6 +2552,10 @@ function getProductFactorTooltip(estKey) {
     parts.push(`⚠️ Error de cálculo: ${f.errorMessage || 'desconocido'}`);
     return parts.join('\n');
   }
+  // ADDED 2026-07-14: show the full chain — where the number comes FROM
+  // (4-week weighted base) and where it lands (final estimate). This is what
+  // lets Rafa judge whether to trust or override the suggestion.
+  if (f.base != null) parts.push(`📊 Base (media 4 semanas): ${f.base}`);
   if (f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
   if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
@@ -2516,7 +2573,8 @@ function getProductFactorTooltip(estKey) {
     }[f.weatherReason] || 'Clima';
     parts.push(`${wLabel}: ${wSign}${wPct}%`);
   }
-  if (f.soldOut !== 1) parts.push(`Agotado (sem. anteriores): +${Math.round((f.soldOut - 1) * 100)}% total`);
+  if (f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}`);
+  if (f.soldOutFloorApplied) parts.push(`🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
@@ -2527,7 +2585,9 @@ function getProductFactorTooltip(estKey) {
     }
   }
   if (est.activeVariety) parts.push(`🔄 Variedad: ${est.activeVariety}`);
-  if (parts.length === 0) parts.push('Sin ajustes especiales');
+  if (parts.length === 0 || (parts.length === 1 && f.base != null)) parts.push('Sin ajustes especiales');
+  // Close the chain with the final number (ADDED 2026-07-14)
+  if (f.base != null && est.estimate != null) parts.push(`→ Estimación: ${est.estimate}`);
   return parts.join('\n');
 }
 
@@ -2698,21 +2758,45 @@ function fcSlug(name) {
     .replace(/^-+|-+$/g, '');
 }
 
+// Whole-focaccia count exactly as confirmSync writes it to the sheet:
+// shop pieces and order pieces are rounded up to whole focaccias SEPARATELY
+// (G19 = ceil(Σshop/15) via allocateFocaccias, J19 = ceil(Σorders/15)).
+// FIX 2026-07-14: the display used to round the COMBINED pieces
+// (ceil((shop+orders)/15)), so e.g. shop=8 + order=1 displayed 1 focaccia
+// while the sheet received G19=1 + J19=1 = 2. One shared helper now feeds
+// both display sites so what Rafa sees is always what gets synced.
+function computeWholeFocacciasSplit(shopPieces, orderPieces) {
+  const shopWhole  = shopPieces  > 0 ? Math.ceil(shopPieces  / 15) : 0;
+  const orderWhole = orderPieces > 0 ? Math.ceil(orderPieces / 15) : 0;
+  return { shopWhole, orderWhole, totalWhole: shopWhole + orderWhole };
+}
+
 function recalcFocacciaTotals() {
   // Loop over all rendered focaccia/bocadillo rows by slug
-  let grandTotal = 0;
+  let grandTotal = 0, shopGrand = 0, orderGrand = 0;
   document.querySelectorAll('td[data-fc-total]').forEach(cell => {
     const slug = cell.dataset.fcTotal;
     const sv = parseInt((document.querySelector(`input[data-key="fc-${slug}-shop"]`) || {}).value) || 0;
     const ov = parseInt((document.querySelector(`input[data-key="fc-${slug}-order"]`) || {}).value) || 0;
     const rowTotal = sv + ov;
     grandTotal += rowTotal;
+    shopGrand += sv;
+    orderGrand += ov;
     cell.textContent = rowTotal || '';
   });
-  // Update whole-focaccia summary row (portions ÷ 15, rounded up)
+  // Update whole-focaccia summary row — shop/orders rounded separately,
+  // mirroring the sync payload (see computeWholeFocacciasSplit).
+  // FIX 2026-07-14: also count B2B pedidos from the bread FOCACCIA row (whole
+  // focaccias) — they are part of J19 since the Rafa B2B sync fix, so the
+  // summary must include them to keep "displayed = synced". Sant Joan is
+  // excluded: its bread-focaccia-order cell is the envío 2 bocadillo-driven
+  // count, handled by the bread loop, and it has no fcWholeSummary row anyway.
   const wholeSummary = document.getElementById('fcWholeSummary');
   const portionSummary = document.getElementById('fcPortionSummary');
-  const wholeFocaccias = grandTotal > 0 ? Math.ceil(grandTotal / 15) : 0;
+  const _breadFcInput = currentStore !== 'santjoan'
+    ? document.querySelector('input[data-key="bread-focaccia-order"]') : null;
+  const _breadFcOrders = _breadFcInput ? (parseInt(_breadFcInput.value) || 0) : 0;
+  const wholeFocaccias = computeWholeFocacciasSplit(shopGrand, orderGrand).totalWhole + _breadFcOrders;
   if (wholeSummary) wholeSummary.textContent = wholeFocaccias || '';
   if (portionSummary) portionSummary.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
 }
@@ -3115,7 +3199,7 @@ function renderMain() {
     const fcNoteTip = fcHasNote ? fcNoteText.replace(/"/g, '&quot;') : 'Añadir nota';
     const fcIconHtml = ` <button type="button" class="note-icon${fcHasNote ? ' has-note' : ''}" data-note-key="${fcNoteKey}" data-note-label="${fcLabelAttr}" title="${fcNoteTip}" aria-label="${fcHasNote ? 'Editar nota' : 'Añadir nota'}">📝</button>`;
     html += `<tr>
-      <td class="product-name">${name}${fcIconHtml}</td>
+      <td class="product-name">${escapeHtml(name)}${fcIconHtml}</td>
       ${sobrasCell(fcSobras)}
       ${discardsCell(fcSobras)}
       <td class="sep"></td>
@@ -3125,9 +3209,14 @@ function renderMain() {
       <td class="total-col" style="color:#2d6a4f;font-weight:600" data-fc-total="${slug}">${total || ''}</td>
     </tr>`;
   });
-  // Summary row: total whole focaccias (portions ÷ 15, rounded up)
+  // Summary row: total whole focaccias — shop/orders rounded separately to
+  // match the sync payload (at initial render per-flavor orders are 0, so this
+  // equals the old ceil(total/15); recalcFocacciaTotals keeps it in sync after
+  // edits). FIX 2026-07-14: includes B2B pedidos from the bread FOCACCIA row
+  // (whole focaccias) — part of J19 since the Rafa B2B sync fix.
   if (!isBocadillo) {
-    const wholeFocaccias = Math.ceil(totalFcPortions / 15);
+    const _breadFcOrdersRender = parseInt(orders.bread.focaccia) || 0;
+    const wholeFocaccias = computeWholeFocacciasSplit(totalFcPortions, 0).totalWhole + _breadFcOrdersRender;
     html += `<tr style="border-top:2px solid #d5cfc7;font-weight:600;">
       <td style="text-align:right;color:#555;padding-right:8px;">Total focaccias</td>
       <td></td>
@@ -3200,8 +3289,11 @@ function renderMain() {
     input.addEventListener('change', function() {
       this.value = this.value.replace(/[^\d]/g, '');
       const rawCleared = this.value === '';
-      const v = parseInt(this.value) || 0;
-      this.value = Math.max(0, Math.min(9999, v)) || '';
+      // FIX 2026-07-14: clamp BEFORE storing in _activeOverrides. Previously
+      // the pre-clamp value was stored (e.g. 99999), so BQ/sync held the
+      // clamped 9999 while a later renderMain repainted 99999 from the override.
+      const v = Math.max(0, Math.min(9999, parseInt(this.value) || 0));
+      this.value = v || '';
       const k = this.dataset.key;
       const targetDate = getTargetDate(currentDay);
       const dateStr = formatDateStr(targetDate);
@@ -3404,9 +3496,14 @@ function collectRoundingChanges() {
     const shopVal = parseInt(shopInput.value) || 0;
     const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
     const total = shopVal + orderVal;
-    const rounded = roundToNearest(total, item.roundTo);
+    // FIX 2026-07-14: use roundWithOrderGuarantee (like pastry) instead of plain
+    // roundToNearest. The old path could round a non-zero total to 0 (shop=1,
+    // order=0, x3 → 0: product vanishes from production) or below the orders
+    // (shop=0, order=1, x3 → rounded 0 → shop = -1 written to the sheet).
+    // Guarantee: never round non-zero to 0, always cover orders, shop ≥ 0.
+    const rounded = roundWithOrderGuarantee(total, orderVal, item.roundTo);
     if (total !== rounded && total > 0) {
-      const newShop = rounded - orderVal;
+      const newShop = Math.max(0, rounded - orderVal);
       changes.push({ product: item.name, field: 'Shop', original: shopVal, rounded: newShop, total, roundedTotal: rounded, mult: item.label });
     }
   });
@@ -3458,6 +3555,12 @@ function updateSyncButtonState() {
     btn.disabled = true;
     btn.classList.add('loading');
     btn.title = 'Cargando estimaciones — espera unos segundos';
+  } else if (_isCurrentEstimatesFailed_()) {
+    // FIX 2026-07-14: block sync when the current day's estimates failed to
+    // load — otherwise an empty grid could be pushed to the production sheet.
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.title = 'Las estimaciones no se cargaron — usa Reintentar arriba';
   } else {
     btn.disabled = false;
     btn.classList.remove('loading');
@@ -3548,16 +3651,28 @@ function allocateFocaccias(flavorsPortions) {
 async function confirmSync() {
   closeSyncPreview();
 
+  // FIX 2026-07-14: disable the sync button IMMEDIATELY. It was previously
+  // only disabled after the (up to 5s) pending-edit flush below, leaving a
+  // window where a second click reopened the preview and double-POSTed the
+  // sync. Re-enabled in the finally/error paths further down.
+  const _syncBtnEarly = document.getElementById('syncBtn');
+  if (_syncBtnEarly) {
+    if (_syncBtnEarly.disabled) return;  // re-entrant call — already syncing
+    _syncBtnEarly.disabled = true;
+  }
+
   // Defensive — showSyncPreview already gates on this, but in case the
   // modal stayed open across a switchDay/switchStore that re-armed
   // forecastLoading, bail before pushing partial DOM state to the sheet.
   if (forecastLoading) {
+    if (_syncBtnEarly) _syncBtnEarly.disabled = false;
     alert('Las estimaciones aún se están cargando. Espera unos segundos antes de sincronizar.');
     return;
   }
 
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) {
+    if (_syncBtnEarly) _syncBtnEarly.disabled = false;
     alert('Conecta primero la API de estimaciones arriba.');
     return;
   }
@@ -3625,8 +3740,10 @@ async function confirmSync() {
     const shopVal = parseInt(shopInput.value) || 0;
     const orderVal = orderInput ? (parseInt(orderInput.value) || 0) : 0;
     const total = shopVal + orderVal;
-    const rounded = roundToNearest(total, item.roundTo);
-    applyRoundedShop_(shopInput, rounded - orderVal);
+    // FIX 2026-07-14: mirror of the preview fix in collectRoundingChanges —
+    // order-guaranteeing rounding + non-negative shop. Keep both paths identical.
+    const rounded = roundWithOrderGuarantee(total, orderVal, item.roundTo);
+    applyRoundedShop_(shopInput, Math.max(0, rounded - orderVal));
   });
 
   // 2. Apply pastry rounding (cascade + smart-skip + B3 threshold).
@@ -3737,7 +3854,17 @@ async function confirmSync() {
     });
     const allocation = allocateFocaccias(piecesMap);
     const totalFocaccias = Object.values(allocation).reduce((s, v) => s + v, 0);
-    const totalOrderFocaccias = totalOrderPieces > 0 ? Math.ceil(totalOrderPieces / 15) : 0;
+    // FIX 2026-07-14 (bug reported by Rafa: "no se sincronizan las focaccias
+    // de pedidos B2B"): B2B focaccia orders live in the BREAD row's Pedidos
+    // cell (bread-focaccia-order, WHOLE focaccias, pre-filled from last week's
+    // orders). The bread sync loop deliberately skips focaccia for Milà/Sant
+    // Pau (this section owns row 19), but this section only read the
+    // per-flavor Pedidos inputs (porciones) — so the bread-row B2B pedidos
+    // were silently dropped and J19 synced as 0. Now: J19 = whole focaccias
+    // from per-flavor order pieces (ceil/15) + bread-row B2B whole focaccias.
+    const breadFcOrderInput = document.querySelector('input[data-key="bread-focaccia-order"]');
+    const breadFcOrders = breadFcOrderInput ? (parseInt(breadFcOrderInput.value) || 0) : 0;
+    const totalOrderFocaccias = (totalOrderPieces > 0 ? Math.ceil(totalOrderPieces / 15) : 0) + breadFcOrders;
     fcNames.forEach((name, idx) => {
       if (idx >= FC_ROWS.length) return;
       const row = FC_ROWS[idx];
