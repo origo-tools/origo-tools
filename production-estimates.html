@@ -1006,16 +1006,20 @@ async function loadInitBundle() {
         Object.assign(_activeOverrides[fetchKey].shop, syncMap);
       }
       if (data.inputs.orders) {
+        // FIX 2026-07-16: SJ envío-2 staleness handled by shouldDropSjBreadOrder_
+        // (fails closed without an AI timestamp; heals polluted overrides).
+        const droppedSj = [];
         const filtered = Object.fromEntries(
           Object.entries(data.inputs.orders).filter(([k]) => {
             if (isSantJoanBreadKey(currentStore, k)) return false;
-            // Sant Joan envío 2 (bread-*-order) is algorithm-driven. When the
-            // BQ values predate today's AI run and the day isn't synced, drop
-            // them so today's algorithm baseline renders green instead of red.
-            if (skipShop && currentStore === 'santjoan' && /^bread-[^-]+-order$/.test(k)) return false;
+            if (shouldDropSjBreadOrder_(currentStore, k, data.inputs.updatedAt, fetchKey, dateStr)) {
+              droppedSj.push(k);
+              return false;
+            }
             return true;
           })
         );
+        purgeSjBreadOrderOverrides_(fetchKey, droppedSj);
         Object.assign(_activeOverrides[fetchKey].orders, filtered);
       }
     }
@@ -1143,16 +1147,21 @@ async function loadEstimatesForCurrentDay() {
         Object.assign(_activeOverrides[cacheKey].shop, syncMap);
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
+        // FIX 2026-07-16: SJ envío-2 staleness handled by shouldDropSjBreadOrder_
+        // (fails closed without an AI timestamp; heals polluted overrides —
+        // including keys applied moments earlier by the restoreInputState race).
+        const droppedSj = [];
         const filtered = Object.fromEntries(
           Object.entries(inputsResp.orders).filter(([k]) => {
             if (isSantJoanBreadKey(currentStore, k)) return false;
-            // Sant Joan envío 2 (bread-*-order) is algorithm-driven. When the
-            // BQ values predate today's AI run and the day isn't synced, drop
-            // them so today's algorithm baseline renders green instead of red.
-            if (skipShop && currentStore === 'santjoan' && /^bread-[^-]+-order$/.test(k)) return false;
+            if (shouldDropSjBreadOrder_(currentStore, k, inputsResp.updatedAt, cacheKey, dateStr)) {
+              droppedSj.push(k);
+              return false;
+            }
             return true;
           })
         );
+        purgeSjBreadOrderOverrides_(cacheKey, droppedSj);
         Object.assign(_activeOverrides[cacheKey].orders, filtered);
       }
     }
@@ -2232,6 +2241,39 @@ function isSantJoanBreadKey(store, key) {
   return false;
 }
 
+// ── Sant Joan envío-2 staleness guard (FIX 2026-07-16) ──────────────────────
+// SJ bread envío 2 lives in "bread-*-order" cells. The persistence layer
+// treats "-order" keys as WEEKLY-RECURRING (dow-keyed) — correct for Milà/
+// Sant Pau B2B pedidos, wrong for SJ where envío 2 is algorithm-driven and
+// changes every week. Bug reported by François (Jul 16): last week's synced
+// envío-2 values rendered red on NEXT week's tabs, and cell totals (stale
+// override) disagreed with the tooltip (fresh estimate).
+// Two holes made the old `skipShop`-based filters insufficient:
+//   1. restoreInputState runs BEFORE the estimates fetch lands, so
+//      forecastCache[fetchKey].generatedAt was missing → skipShop=false →
+//      stale rows applied. The old logic FAILED OPEN; this helper FAILS
+//      CLOSED (no AI timestamp → drop, fresh AI values win).
+//   2. Once applied, keys were never removed from _activeOverrides and were
+//      re-saved to localStorage WITHOUT savedAt (8-day expiry never fired) —
+//      self-perpetuating. Callers now delete dropped keys (self-heal).
+// Keep rules: day already synced (authoritative) OR the BQ row is NEWER than
+// the current AI run (a genuine edit made after today's regeneration).
+function shouldDropSjBreadOrder_(store, key, updatedAt, fetchKey, dateStr) {
+  if (store !== 'santjoan' || !/^bread-[^-]+-order$/.test(key)) return false;
+  if (hasSyncedShop(dateStr)) return false;   // synced values are authoritative
+  const gen = forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt;
+  if (!gen) return true;                       // AI time unknown → fail closed
+  const bqTime = Number(updatedAt || 0) * 1000;
+  return bqTime < new Date(gen).getTime();     // stale vs current AI run → drop
+}
+
+// Remove already-applied stale SJ envío-2 overrides (heals state polluted by
+// the pre-fix race; called wherever the guard drops keys).
+function purgeSjBreadOrderOverrides_(fetchKey, keys) {
+  if (!_activeOverrides[fetchKey] || !_activeOverrides[fetchKey].orders) return;
+  for (const k of keys) delete _activeOverrides[fetchKey].orders[k];
+}
+
 async function restoreInputState() {
   // Capture day+store at start — if the user switches during async BQ fetch,
   // we discard stale results to prevent cross-day/cross-store contamination.
@@ -2286,6 +2328,25 @@ async function restoreInputState() {
     }
   }
   applyInputValues(filteredShop, true);   // localStorage shop edits = genuine user edits
+  // FIX 2026-07-16: never restore Sant Joan envío-2 (bread-*-order) from
+  // localStorage — it's algorithm-driven and weekly-changing; localStorage
+  // copies are by definition from an earlier session/week. BQ (with the
+  // staleness/synced checks below) is the only authority for those cells.
+  // Also strips previously-poisoned entries and rewrites the cleaned map.
+  if (currentStore === 'santjoan') {
+    const cleaned = {};
+    let removedAny = false;
+    for (const [k, v] of Object.entries(localOrders)) {
+      if (/^bread-[^-]+-order$/.test(k)) { removedAny = true; continue; }
+      cleaned[k] = v;
+    }
+    if (removedAny) {
+      localOrders = cleaned;
+      try {
+        localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: cleaned, savedAt: Date.now() }));
+      } catch(e) {}
+    }
+  }
   applyInputValues(localOrders, false);   // restored orders — don't mark as user-edited
 
   // 2. Load from BigQuery — use pre-cached init bundle data if available,
@@ -2371,20 +2432,30 @@ async function restoreInputState() {
       applyInputValues(syncMap, false);
     }
     // Orders are always restored (weekly recurring, not tied to AI runs) —
-    // EXCEPT Sant Joan envío 2 (bread-*-order), which is algorithm-driven and
-    // gets the same staleness check as shop edits.
+    // EXCEPT Sant Joan envío 2 (bread-*-order): FIX 2026-07-16, now handled by
+    // shouldDropSjBreadOrder_ which fails CLOSED when the AI timestamp isn't
+    // loaded yet (the old skipShop check failed open in that race) and heals
+    // previously-polluted overrides.
     if (bqData.orders && Object.keys(bqData.orders).length > 0) {
+      const droppedSj = [];
       const filteredOrders = Object.fromEntries(
         Object.entries(bqData.orders).filter(([k]) => {
           if (isSantJoanBreadKey(snapshotStore, k)) return false;
-          if (skipShop && snapshotStore === 'santjoan' && /^bread-[^-]+-order$/.test(k)) return false;
+          if (shouldDropSjBreadOrder_(snapshotStore, k, bqData.updatedAt, fetchKey, dateStr)) {
+            droppedSj.push(k);
+            return false;
+          }
           return true;
         })
       );
+      purgeSjBreadOrderOverrides_(fetchKey, droppedSj);
       Object.assign(_activeOverrides[fetchKey].orders, filteredOrders);
       applyInputValues(filteredOrders, false); // Also apply to current DOM (applyInputValues has its own guard)
+      // FIX 2026-07-16: include savedAt — it was omitted here, so entries
+      // written by this merge never aged out via the 8-day expiry check.
       const merged = { ...localOrders, ...filteredOrders };
-      localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged }));
+      for (const k of droppedSj) delete merged[k];   // don't re-poison localStorage
+      localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged, savedAt: Date.now() }));
     }
   }
 }
