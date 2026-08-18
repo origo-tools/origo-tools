@@ -105,6 +105,12 @@
   .btn-acabado:active { background: #a93226; }
   .btn-descartado { background: #e8d5f0; color: #6c3483; font-size: 12px; }
   .btn-descartado:active { background: #d5b8e3; }
+  /* Sant Joan only: "ran out before the 2nd delivery" quick log (ADDED 2026-07-16) */
+  .btn-preenvio { background: #eef0f8; color: #457b9d; font-size: 12px;
+    padding: 10px 12px; border-radius: 10px; font-weight: 700; border: none;
+    cursor: pointer; white-space: nowrap; }
+  .btn-preenvio:active { background: #d8e0f0; }
+  .result-tag.preenvio { background: #eef0f8; color: #457b9d; }
 
   .product-result { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
   .result-tag { padding: 5px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; }
@@ -319,6 +325,20 @@
   .undo-progress-fill {
     height: 100%; background: white; border-radius: 2px;
     transition: width linear;
+  }
+
+  /* Confetti (ADDED 2026-07-17) — fired on complete / all-sold-out submissions */
+  .confetti-container {
+    position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 5;
+  }
+  .confetti-piece {
+    position: absolute; top: -20px; border-radius: 2px;
+    animation: confetti-fall linear forwards;
+  }
+  @keyframes confetti-fall {
+    0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+    85%  { opacity: 1; }
+    100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
   }
 
   /* Error toast */
@@ -851,6 +871,11 @@ function openSettings() {
 
 function startApp() {
   document.getElementById('storeName').textContent = STORES[currentStore].name;
+  // Seasonal header emoji (ADDED 2026-07-17) — Sant Jordi rose, Reyes crown,
+  // Sant Joan fireworks... falls back to the season. See getSeasonalEmoji().
+  try {
+    document.querySelector('.header-title').textContent = 'Registro de sobras ' + getSeasonalEmoji();
+  } catch(e) {}
   // Clear stale flavor caches before first render so old manually-saved names
   // don't override the updated defaults.
   clearStaleFlavorCaches();
@@ -939,8 +964,13 @@ function renderCard(product) {
   // ── BREAD / FOCACCIA / BOCADILLO (simple: sobras or single se acabó) ──
   const hasDiscard = data && data.discards !== null && data.discards !== undefined && data.discards > 0;
   const hasSobrasOrRanOut = data && (data.type === 'leftover' || data.type === 'ran_out');
+  // Sant Joan bread only (ADDED 2026-07-16): "ran out before the 2nd delivery"
+  // is a SEPARATE record from the end-of-day state — more bread arrives at
+  // ~14:30, so the day can continue with sobras or a second sell-out.
+  const isSjBread = currentStore === 'santjoan' && product.category === 'bread';
+  const hasPreEnvio2 = isSjBread && data && data.preEnvio2SoldOut;
 
-  if (data && (hasSobrasOrRanOut || hasDiscard)) {
+  if (data && (hasSobrasOrRanOut || hasDiscard || hasPreEnvio2)) {
     const isRanOut = data.type === 'ran_out';
     const isLeftover = data.type === 'leftover';
 
@@ -949,6 +979,7 @@ function renderCard(product) {
     if (isRanOut) cardClass = 'ran-out';
     else if (isLeftover && data.value === 0) cardClass = 'complete';
     else if (isLeftover) cardClass = 'leftover-positive';
+    else if (hasPreEnvio2) cardClass = 'has-batch-data';  // blue: partial info, day not closed
 
     let html = `<div class="product-card ${cardClass}" data-product-id="${product.id}">`;
     html += `<div class="card-top">`;
@@ -960,6 +991,9 @@ function renderCard(product) {
       html += `<button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>`;
       html += `<button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>`;
     }
+    if (isSjBread && !hasPreEnvio2) {
+      html += `<button class="btn-preenvio" onclick="openTimePickerPreEnvio2('${product.id}', '${escapedName}')">🚚 Antes 2º envío</button>`;
+    }
     if (!hasDiscard) {
       html += `<button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>`;
     }
@@ -968,6 +1002,9 @@ function renderCard(product) {
 
     // Show tags row with individual ✕ on each
     html += `<div class="batch-tags">`;
+    if (hasPreEnvio2) {
+      html += `<span class="result-tag preenvio" onclick="editTimePreEnvio2('${product.id}', '${escapedName}')">🚚 Sin pan ${data.preEnvio2SoldOut} (antes 2º envío) <button class="remove-batch" onclick="event.stopPropagation();undoPreEnvio2Only('${product.id}')">✕</button></span>`;
+    }
     if (hasSobrasOrRanOut) {
       const tagClass = isRanOut ? 'ran-out' : (data.value === 0 ? 'perfect' : 'leftover');
       const displayVal = (data.value % 1 === 0.5) ? `${Math.floor(data.value)}½` : data.value;
@@ -991,6 +1028,7 @@ function renderCard(product) {
         <div class="product-actions">
           <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>
           <button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>
+          ${isSjBread ? `<button class="btn-preenvio" onclick="openTimePickerPreEnvio2('${product.id}', '${escapedName}')">🚚 Antes 2º envío</button>` : ''}
           <button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>
         </div>
       </div>
@@ -1234,6 +1272,69 @@ function editTimeBread(id, name) {
   };
 }
 
+// ─── SIN PAN ANTES DEL 2º ENVÍO — Sant Joan bread only (ADDED 2026-07-16) ──
+// Separate from "Se acabó": the 2nd delivery arrives ~14:30, so running out
+// before it is a mid-day allocation problem, not the end-of-day state. The
+// field coexists with sobras / se acabó and flows to the forecasting engine
+// as `preEnvio2SoldOut`, which boosts envío 1's share for the next weeks.
+function openTimePickerPreEnvio2(id, name) {
+  timeModalProductId = id;
+  const now = new Date();
+  document.getElementById('timeHour').value = now.getHours().toString().padStart(2, '0');
+  document.getElementById('timeMin').value = now.getMinutes().toString().padStart(2, '0');
+  document.getElementById('time-modal-title').textContent = `🚚 Sin pan antes del 2º envío — ${name}`;
+  const hint = document.getElementById('batchHint');
+  hint.style.display = 'block';
+  hint.textContent = 'El 2º envío llega ~14:30. Marca a qué hora se acabó el pan. Registra las sobras del día al cierre como siempre.';
+  showTimeModal();
+
+  timeModalCallback = (h, m) => {
+    _savePreEnvio2(id, h, m);
+  };
+}
+
+function editTimePreEnvio2(id, name) {
+  timeModalProductId = id;
+  const existing = productData[id];
+  if (!existing || !existing.preEnvio2SoldOut) return;
+  const [h, m] = existing.preEnvio2SoldOut.split(':');
+  document.getElementById('timeHour').value = h;
+  document.getElementById('timeMin').value = m;
+  document.getElementById('time-modal-title').textContent = `🚚 Sin pan antes del 2º envío — ${name}`;
+  const hint = document.getElementById('batchHint');
+  hint.style.display = 'block';
+  hint.textContent = 'El 2º envío llega ~14:30.';
+  showTimeModal();
+
+  timeModalCallback = (newH, newM) => {
+    _savePreEnvio2(id, newH, newM);
+  };
+}
+
+function _savePreEnvio2(id, h, m) {
+  // Gentle sanity check: after 15:00 it can't have been "before the 2nd delivery"
+  if (parseInt(h) >= 15) {
+    showToast('⚠️ El 2º envío llega a las 14:30 — revisa la hora', 3500);
+  }
+  const prev = productData[id] || {};
+  productData[id] = { ...prev, preEnvio2SoldOut: `${h}:${m}` };
+  saveDailyData();
+  renderProducts();
+  scrollToProduct(id);
+}
+
+function undoPreEnvio2Only(id) {
+  const data = productData[id];
+  if (!data) return;
+  delete data.preEnvio2SoldOut;
+  // Clean up entirely if nothing else remains
+  if (!data.type && (!data.discards || data.discards <= 0)) {
+    delete productData[id];
+  }
+  saveDailyData();
+  renderProducts();
+}
+
 // ─── SE ACABÓ — pastry (per-batch) ─────────────────────────
 function openTimePickerBatch(id, name) {
   timeModalProductId = id;
@@ -1452,7 +1553,9 @@ function undoProduct(id) {
 }
 
 // ─── PROGRESS ──────────────────────────────────────────────
-function updateProgress() {
+// Shared filled/total counter (extracted 2026-07-17 — used by updateProgress,
+// submitForm, and the confetti trigger in _doSubmit).
+function getFilledCounts() {
   const variableProducts = getVariableProducts();
   const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
   const total = allProducts.length;
@@ -1463,8 +1566,15 @@ function updateProgress() {
     if (p.hasBatches) {
       return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
     }
-    return true;
+    // Simple products: a pre-envío-2 log ALONE doesn't complete the product —
+    // the end-of-day state (sobras / se acabó) is still owed. (2026-07-16)
+    return !!(d.type || (d.discards && d.discards > 0));
   }).length;
+  return { filled, total };
+}
+
+function updateProgress() {
+  const { filled, total } = getFilledCounts();
 
   document.getElementById('progress-count').textContent = filled;
   document.getElementById('progress-total').textContent = total;
@@ -1535,15 +1645,7 @@ const UNDO_SECONDS = 10;
 
 async function submitForm() {
   if (isSending) return;
-  const variableProducts = getVariableProducts();
-  const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
-  const total = allProducts.length;
-  const filled = allProducts.filter(p => {
-    const d = productData[p.id];
-    if (!d) return false;
-    if (p.hasBatches) return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
-    return true;
-  }).length;
+  const { filled, total } = getFilledCounts();
   if (filled === 0) return;
 
   const apiUrl = getApiUrl();
@@ -1627,9 +1729,10 @@ function _doSubmit(apiUrl) {
   _pendingSubmission = { data: submission, apiUrl, targetInfo: info };
   isSending = true;
   _successPending = true;
+  const fc = getFilledCounts();  // capture BEFORE any state reset (confetti trigger)
   updateProgress();
   // Show success screen immediately with countdown
-  _showSuccessScreen(_pendingSubmission.data, info);
+  _showSuccessScreen(_pendingSubmission.data, info, fc.filled === fc.total);
   _startCountdown();
 }
 
@@ -1686,6 +1789,10 @@ async function doActualSubmit() {
 
     if (response.ok || response.type === 'opaque') {
       markSubmittedForDate(submittedDate);
+      // Monthly recap marker (ADDED 2026-07-17): remember all-sold-out days
+      if (_isAllSoldOut(submission)) {
+        try { localStorage.setItem(`origo_allsold_${currentStore}_${submittedDate}`, '1'); } catch(e) {}
+      }
       _successConfirmed();
     } else {
       throw new Error(`Server error: ${response.status}`);
@@ -1699,6 +1806,9 @@ async function doActualSubmit() {
         mode: 'no-cors'
       });
       markSubmittedForDate(submittedDate);
+      if (_isAllSoldOut(submission)) {
+        try { localStorage.setItem(`origo_allsold_${currentStore}_${submittedDate}`, '1'); } catch(e) {}
+      }
       _successConfirmed();
       showToast('Enviado (sin confirmación del servidor)', 3000, 'info');
     } catch (err2) {
@@ -1741,12 +1851,127 @@ const QUOTES = [
   { text: "La alegría más grande es hacer feliz a otra persona.", author: "— Booker T. Washington" },
   { text: "Actúa con bondad, pero no esperes gratitud.", author: "— Confucio" },
   { text: "No heredamos la tierra de nuestros padres; la tomamos prestada de nuestros hijos.", author: "— Proverbio indígena" },
+  // ── Added 2026-07-16 ──
+  { text: "La originalidad consiste en volver al origen.", author: "— Antoni Gaudí" },
+  { text: "El buen pan es el más satisfactorio de todos los alimentos.", author: "— James Beard" },
+  { text: "Una fiesta sin pastel es solo una reunión.", author: "— Julia Child" },
+  { text: "La perfección se alcanza no cuando no hay nada más que añadir, sino cuando no hay nada más que quitar.", author: "— Antoine de Saint-Exupéry" },
+  { text: "Amb pa i vi es fa camí.", author: "— Proverbi català" },
+  { text: "De mica en mica s'omple la pica.", author: "— Proverbi català" },
+  { text: "A buen hambre no hay pan duro.", author: "— Proverbio" },
+  { text: "Barriga llena, corazón contento.", author: "— Proverbio" },
+  { text: "La excelencia no es un acto, sino un hábito.", author: "— Atribuido a Aristóteles" },
+  // ── Medio ambiente y comida (aprobadas 2026-07-17) ──
+  { text: "Comer es un acto agrícola.", author: "— Wendell Berry" },
+  { text: "La mayor amenaza para nuestro planeta es creer que otro lo salvará.", author: "— Robert Swan" },
+  { text: "Que tu alimento sea tu medicina.", author: "— Atribuido a Hipócrates" },
+  { text: "Cuando bebas agua, recuerda la fuente.", author: "— Proverbio chino" },
+  // ── Desarrollo personal (aprobadas 2026-07-17) ──
+  { text: "La gente olvidará lo que dijiste y lo que hiciste, pero nunca olvidará cómo la hiciste sentir.", author: "— Maya Angelou" },
+  { text: "No cuentes los días; haz que los días cuenten.", author: "— Muhammad Ali" },
+  { text: "El éxito es la suma de pequeños esfuerzos repetidos día tras día.", author: "— Robert Collier" },
+  { text: "Un viaje de mil millas comienza con un solo paso.", author: "— Lao Tse" },
+  { text: "A quien madruga, Dios le ayuda.", author: "— Proverbio" },
 ];
+
+// Daily quote (UPDATED 2026-07-17): the array stays grouped by category for
+// easy editing, but selection walks a SHUFFLED order so themes don't cluster
+// in blocks. The shuffle is seeded by the year — deterministic, so the whole
+// team sees the same quote on the same day, every quote appears exactly once
+// per cycle, and the order reshuffles itself each new year.
+function _mulberry32_(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 function getDailyQuote() {
   const now = new Date();
   const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
-  return QUOTES[dayOfYear % QUOTES.length];
+  // Fisher–Yates shuffle of indices, seeded by the year
+  const rand = _mulberry32_(now.getFullYear());
+  const order = QUOTES.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return QUOTES[order[dayOfYear % QUOTES.length]];
+}
+
+// Every recorded product either ran out or had batch sell-outs (extracted
+// 2026-07-17 — shared by getSuccessStat, the confetti trigger, and the
+// monthly "todo vendido" marker).
+function _isAllSoldOut(submission) {
+  const products = (submission && submission.products) || {};
+  if (Object.keys(products).length === 0) return false;
+  return Object.values(products).every(d =>
+    d.type === 'ran_out' || (d.batchSoldOuts && d.batchSoldOuts.length > 0)
+  );
+}
+
+// ─── FUN DETAILS (ADDED 2026-07-17, approved by François) ──────────
+// Seasonal header emoji — special Catalan dates first, then season by month.
+function getSeasonalEmoji() {
+  const now = new Date();
+  const mmdd = String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const SPECIAL = {
+    '01-05': '👑', '01-06': '👑',        // Reyes
+    '02-14': '💐',                        // Sant Valentí
+    '04-23': '🌹',                        // Sant Jordi
+    '06-23': '🎆', '06-24': '🎆',        // Sant Joan
+    '09-11': '🎗️',                        // Diada
+    '09-24': '🎉',                        // La Mercè
+    '12-24': '🎄', '12-25': '🎄', '12-26': '🎄',
+    '12-31': '🥂', '01-01': '🥂',
+  };
+  if (SPECIAL[mmdd]) return SPECIAL[mmdd];
+  const m = now.getMonth() + 1;
+  if (m === 12) return '🎄';
+  if (m <= 2) return '❄️';
+  if (m <= 5) return '🌸';
+  if (m <= 8) return '☀️';
+  return '🍂';
+}
+
+// Confetti burst on the success screen (complete or all-sold submissions).
+function launchConfetti() {
+  const screen = document.getElementById('success');
+  if (!screen) return;
+  const existing = screen.querySelector('.confetti-container');
+  if (existing) existing.remove();
+  const container = document.createElement('div');
+  container.className = 'confetti-container';
+  const colors = ['#f4a261', '#e9c46a', '#2a9d8f', '#e76f51', '#ffffff', '#a8dadc'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    const size = 6 + Math.random() * 7;
+    piece.style.cssText =
+      `left:${Math.random() * 100}%;` +
+      `width:${size}px;height:${size * (0.4 + Math.random() * 0.8)}px;` +
+      `background:${colors[Math.floor(Math.random() * colors.length)]};` +
+      `animation-duration:${2.5 + Math.random() * 1.8}s;` +
+      `animation-delay:${Math.random() * 0.8}s;`;
+    container.appendChild(piece);
+  }
+  screen.appendChild(container);
+  setTimeout(() => container.remove(), 5500);
+}
+
+// Count of this month's "todo vendido" days (markers written by doActualSubmit).
+function getMonthAllSoldCount(monthPrefix) {
+  let count = 0;
+  try {
+    const prefix = `origo_allsold_${currentStore}_${monthPrefix}`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix)) count++;
+    }
+  } catch(e) {}
+  return count;
 }
 
 function getSuccessStat(submission) {
@@ -1778,10 +2003,7 @@ function getSuccessStat(submission) {
   }
 
   // Priority 1: everything sold out
-  const allSoldOut = Object.values(products).every(d =>
-    d.type === 'ran_out' || (d.batchSoldOuts && d.batchSoldOuts.length > 0)
-  );
-  if (allSoldOut && Object.keys(products).length > 0) {
+  if (_isAllSoldOut(submission)) {
     return "¡Todo vendido hoy! 🔥";
   }
 
@@ -1803,7 +2025,24 @@ function getSuccessStat(submission) {
   return count === 1 ? "1 producto registrado" : `${count} productos registrados`;
 }
 
-function _showSuccessScreen(submission, info) {
+// Submission streak (ADDED 2026-07-16): consecutive days with a submitted
+// marker in localStorage, ending at the date being submitted now. Per-device
+// (localStorage), so it undercounts if the team rotates phones — treated as
+// a fun nudge, not an official metric.
+function getSubmissionStreak(endDateStr) {
+  let streak = 1;  // the submission happening right now
+  try {
+    const d = new Date(endDateStr + 'T12:00:00');
+    for (let i = 0; i < 365; i++) {
+      d.setDate(d.getDate() - 1);
+      if (localStorage.getItem(`origo_submitted_${currentStore}_${getLocalDateStr(d)}`)) streak++;
+      else break;
+    }
+  } catch(e) {}
+  return streak;
+}
+
+function _showSuccessScreen(submission, info, isComplete) {
   info = info || getTargetSubmissionInfo();
   const storeName = STORES[currentStore] ? STORES[currentStore].name : '';
   const d = new Date(info.dateStr + 'T12:00:00');
@@ -1812,7 +2051,33 @@ function _showSuccessScreen(submission, info) {
   else if (info.isPast) suffix = ' (ayer)';
   const dateLabel = `${storeName} — ${d.getDate()} ${months[d.getMonth()]}${suffix}`;
   document.getElementById('success-msg').textContent = dateLabel;
-  document.getElementById('success-stat').textContent = getSuccessStat(submission);
+  // Stat + streak (streak shown from 3 consecutive days; milestones get an extra cheer)
+  const statEl = document.getElementById('success-stat');
+  const streak = getSubmissionStreak(info.dateStr);
+  let streakHtml = '';
+  if (streak >= 3) {
+    const milestone = (streak === 7) ? ' ¡Una semana entera!'
+                    : (streak === 30) ? ' ¡Un mes! Leyenda. 🏆'
+                    : (streak % 50 === 0) ? ' 🏆' : '';
+    streakHtml = `<div style="font-size:13px;opacity:0.85;margin-top:5px;">🔥 ${streak} días seguidos registrando${milestone}</div>`;
+  }
+  // Monthly "todo vendido" recap (ADDED 2026-07-17): counts marker days this
+  // month, plus the submission on screen if it qualifies and isn't marked yet.
+  const allSold = _isAllSoldOut(submission);
+  let monthHtml = '';
+  try {
+    const monthPrefix = info.dateStr.slice(0, 7);  // YYYY-MM
+    let monthCount = getMonthAllSoldCount(monthPrefix + '-');
+    if (allSold && !localStorage.getItem(`origo_allsold_${currentStore}_${info.dateStr}`)) monthCount++;
+    if (monthCount >= 1) {
+      monthHtml = `<div style="font-size:13px;opacity:0.85;margin-top:4px;">🏅 Este mes: ${monthCount} día${monthCount !== 1 ? 's' : ''} de todo vendido</div>`;
+    }
+  } catch(e) {}
+  statEl.innerHTML = `${getSuccessStat(submission)}${streakHtml}${monthHtml}`;
+  // Confetti for a complete registration or an all-sold-out day (ADDED 2026-07-17)
+  if (isComplete || allSold) {
+    setTimeout(launchConfetti, 250);  // let the slide-in settle first
+  }
   const q = getDailyQuote();
   document.getElementById('success-quote').textContent = `"${q.text}"`;
   document.getElementById('success-author').textContent = q.author;
