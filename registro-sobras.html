@@ -105,11 +105,8 @@
   .btn-acabado:active { background: #a93226; }
   .btn-descartado { background: #e8d5f0; color: #6c3483; font-size: 12px; }
   .btn-descartado:active { background: #d5b8e3; }
-  /* Sant Joan only: "ran out before the 2nd delivery" quick log (ADDED 2026-07-16) */
-  .btn-preenvio { background: #eef0f8; color: #457b9d; font-size: 12px;
-    padding: 10px 12px; border-radius: 10px; font-weight: 700; border: none;
-    cursor: pointer; white-space: nowrap; }
-  .btn-preenvio:active { background: #d8e0f0; }
+  /* Sant Joan only: "ran out before the 2nd delivery" tag (v2 2026-07-17 —
+     created via "Se acabó" before 15:00, no dedicated button) */
   .result-tag.preenvio { background: #eef0f8; color: #457b9d; }
 
   .product-result { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
@@ -624,6 +621,7 @@ let numIsBread = false;
 let numModalCallback = null;
 let timeModalCallback = null;
 let timeModalProductId = null; // Track which product opened the time modal
+let timeModalMode = null;      // 'batch' (pastry) | 'sjbread' (SJ split bread) | null — drives the live hint
 let isSending = false;
 
 const days = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
@@ -991,9 +989,6 @@ function renderCard(product) {
       html += `<button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>`;
       html += `<button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>`;
     }
-    if (isSjBread && !hasPreEnvio2) {
-      html += `<button class="btn-preenvio" onclick="openTimePickerPreEnvio2('${product.id}', '${escapedName}')">🚚 Antes 2º envío</button>`;
-    }
     if (!hasDiscard) {
       html += `<button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>`;
     }
@@ -1028,7 +1023,6 @@ function renderCard(product) {
         <div class="product-actions">
           <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>
           <button class="btn-acabado" onclick="openTimePickerBread('${product.id}', '${escapedName}')">Se acabó</button>
-          ${isSjBread ? `<button class="btn-preenvio" onclick="openTimePickerPreEnvio2('${product.id}', '${escapedName}')">🚚 Antes 2º envío</button>` : ''}
           <button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>
         </div>
       </div>
@@ -1229,16 +1223,48 @@ function closeNumModal() {
 }
 
 // ─── SE ACABÓ — bread (simple, single time) ────────────────
+// Sant Joan (REDESIGNED 2026-07-17): one button, time decides the meaning.
+// Confirmed time BEFORE 15:00 on a bread with two deliveries → recorded as
+// "agotado antes del 2º envío" (preEnvio2SoldOut — the 2nd delivery arrives
+// ~14:30, so the day continues; sobras still recorded at close). At/after
+// 15:00 → normal end-of-day sell-out. Breads with only ONE delivery are
+// always final regardless of hour:
+//   Sègol (centeno) / Copenhague / Espelta → envío 1 only, no resupply.
+//   Baguette → travels only in envío 2.
+const SJ_SINGLE_ENVIO_BREAD_IDS = ['segol_integral', 'copenhague', 'espelta_petita', 'baguette'];
+const SJ_PRE_ENVIO2_CUTOFF_HOUR = 15;
+
+function isSjSplitBread(id) {
+  return currentStore === 'santjoan'
+    && BREAD.some(p => p.id === id)
+    && !SJ_SINGLE_ENVIO_BREAD_IDS.includes(id);
+}
+
 function openTimePickerBread(id, name) {
   timeModalProductId = id;
   const now = new Date();
   document.getElementById('timeHour').value = now.getHours().toString().padStart(2, '0');
   document.getElementById('timeMin').value = now.getMinutes().toString().padStart(2, '0');
   document.getElementById('time-modal-title').textContent = `Se acabó — ${name}`;
-  document.getElementById('batchHint').style.display = 'none';
+  // Dynamic hint for SJ split breads: tells the team how the time will be
+  // interpreted, updating live as they edit it (see updateBatchHint).
+  timeModalMode = isSjSplitBread(id) ? 'sjbread' : null;
+  if (timeModalMode === 'sjbread') {
+    const hint = document.getElementById('batchHint');
+    hint.style.display = 'block';
+    _updateSjBreadHint(now.getHours());
+  } else {
+    document.getElementById('batchHint').style.display = 'none';
+  }
   showTimeModal();
 
   timeModalCallback = (h, m) => {
+    // SJ split bread before the cutoff → pre-envío-2 record, day stays open
+    if (isSjSplitBread(id) && parseInt(h) < SJ_PRE_ENVIO2_CUTOFF_HOUR) {
+      _savePreEnvio2(id, h, m);
+      showToast('🚚 Registrado: sin pan antes del 2º envío. Registra las sobras al cierre como siempre.', 4000, 'info');
+      return;
+    }
     // Preserve existing fields (e.g. discards) when recording se acabó
     const prev = productData[id] || {};
     productData[id] = { ...prev, type: 'ran_out', time: `${h}:${m}` };
@@ -1248,6 +1274,13 @@ function openTimePickerBread(id, name) {
     renderProducts();
     scrollToProduct(id);
   };
+}
+
+function _updateSjBreadHint(hour) {
+  const hint = document.getElementById('batchHint');
+  hint.textContent = hour < SJ_PRE_ENVIO2_CUTOFF_HOUR
+    ? '🚚 Antes de las 15:00 → se registra como agotado ANTES del 2º envío (llega ~14:30). Las sobras del día se registran al cierre.'
+    : 'Se registra como agotado del día (después del 2º envío).';
 }
 
 function editTimeBread(id, name) {
@@ -1272,27 +1305,12 @@ function editTimeBread(id, name) {
   };
 }
 
-// ─── SIN PAN ANTES DEL 2º ENVÍO — Sant Joan bread only (ADDED 2026-07-16) ──
-// Separate from "Se acabó": the 2nd delivery arrives ~14:30, so running out
-// before it is a mid-day allocation problem, not the end-of-day state. The
-// field coexists with sobras / se acabó and flows to the forecasting engine
-// as `preEnvio2SoldOut`, which boosts envío 1's share for the next weeks.
-function openTimePickerPreEnvio2(id, name) {
-  timeModalProductId = id;
-  const now = new Date();
-  document.getElementById('timeHour').value = now.getHours().toString().padStart(2, '0');
-  document.getElementById('timeMin').value = now.getMinutes().toString().padStart(2, '0');
-  document.getElementById('time-modal-title').textContent = `🚚 Sin pan antes del 2º envío — ${name}`;
-  const hint = document.getElementById('batchHint');
-  hint.style.display = 'block';
-  hint.textContent = 'El 2º envío llega ~14:30. Marca a qué hora se acabó el pan. Registra las sobras del día al cierre como siempre.';
-  showTimeModal();
-
-  timeModalCallback = (h, m) => {
-    _savePreEnvio2(id, h, m);
-  };
-}
-
+// ─── SIN PAN ANTES DEL 2º ENVÍO — Sant Joan bread only ──────────────
+// REDESIGNED 2026-07-17: no dedicated button anymore — the record is created
+// by "Se acabó" when the confirmed time is before 15:00 on a split bread
+// (see openTimePickerBread). The blue tag remains editable/removable below.
+// The field coexists with sobras / se acabó and flows to the forecasting
+// engine as `preEnvio2SoldOut`, which boosts envío 1's share for next weeks.
 function editTimePreEnvio2(id, name) {
   timeModalProductId = id;
   const existing = productData[id];
@@ -1346,6 +1364,7 @@ function openTimePickerBatch(id, name) {
   document.getElementById('time-modal-title').textContent = `Se acabó — ${name}`;
 
   // Show batch hint
+  timeModalMode = 'batch';
   const batch = timeToBatch(`${h}:${m}`);
   const hint = document.getElementById('batchHint');
   hint.style.display = 'block';
@@ -1376,12 +1395,17 @@ function openTimePickerBatch(id, name) {
   };
 }
 
-// Update batch hint when user changes time
+// Update the modal hint live as the user edits the time (mode-aware 2026-07-17)
 function updateBatchHint() {
   const hint = document.getElementById('batchHint');
   if (hint.style.display === 'none') return;
   const h = document.getElementById('timeHour').value;
   const m = document.getElementById('timeMin').value;
+  if (timeModalMode === 'sjbread') {
+    if (h.length >= 1) _updateSjBreadHint(parseInt(h) || 0);
+    return;
+  }
+  if (timeModalMode !== 'batch') return;  // static hints (e.g. pre-envío tag edit) stay as-is
   if (h.length === 2 && m.length >= 1) {
     const batch = timeToBatch(`${h}:${m}`);
     hint.textContent = `Se asignará al ${batchLabel(batch)} (según la hora)`;
@@ -1404,6 +1428,7 @@ function closeTimeModal() {
   document.getElementById('batchHint').style.display = 'none';
   timeModalCallback = null;
   timeModalProductId = null;
+  timeModalMode = null;
   // Reset any viewport offset applied for keyboard
   const modal = document.querySelector('#timeModal .modal');
   if (modal) modal.style.transform = '';
