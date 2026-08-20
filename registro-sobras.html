@@ -531,12 +531,13 @@ const STORES = {
 // or when the fetch fails.  The forecasting API (action=getflavors) is the source of
 // truth; these defaults reflect the current flavors confirmed in BigQuery.
 const DEFAULT_FOCACCIA_NAMES  = ['Mortadella Stracciatella i festuc', 'Xoriço picant i fonoll', 'Panxeta, creme fraiche i cibulet', 'Alberginia escalivada', 'Olivada, tomates secos y alcaparras', 'Temporada'];
-const DEFAULT_BOCADILLO_NAMES = ['Mortadel·la i pesto de festuc', 'Pernil i formatge', 'albergínia escalivada i pesto vermell'];
+// Bocata plantxat variants (Square rename 2026-07 — was "Entrepà - Bocadillo")
+const DEFAULT_BOCADILLO_NAMES = ['Carabassó', 'Pastrami', 'Mortadella'];
 
 // Bump this string whenever the default flavor lists above change.
 // On startup, if the stored version doesn't match, all cached flavor names
 // (origo_varnames_*) are cleared so the new defaults (or fresh API data) take effect.
-const FLAVOR_CACHE_VERSION = 'v3-2026-03-23';
+const FLAVOR_CACHE_VERSION = 'v4-2026-07-20';
 
 /**
  * Clear any stale flavor-name caches whose version doesn't match FLAVOR_CACHE_VERSION.
@@ -918,7 +919,7 @@ function renderProducts() {
   if (!currentStore) return;
   const variableProducts = getVariableProducts();
   const type = STORES[currentStore].variableType;
-  const sectionLabel = type === 'bocadillo' ? 'Bocadillos' : 'Focaccias';
+  const sectionLabel = type === 'bocadillo' ? 'Bocata plantxat' : 'Focaccias';
 
   const container = document.getElementById('product-list');
   let html = '';
