@@ -482,12 +482,13 @@ const FOCACCIA_DISPLAY_MAP = {
   'Temporada':                           'Temporada',
 };
 const BOCADILLO_DISPLAY_MAP = {
-  // Legacy "Entrepà - Bocadillo" flavors (pre 2026-07 rename) — kept for
-  // historical views. Current "Bocata plantxat" variants (Carabassó,
-  // Pastrami, Mortadella) display as-is, no mapping needed.
-  'Mortadel·la i pesto de festuc':         'Mortadella pesto',
-  'Pernil i formatge':                     'Pernil i formatge',
-  'albergínia escalivada i pesto vermell': 'Berenjena pesto',
+  // TRANSITION MAP (2026-07-20): legacy "Entrepà - Bocadillo" flavor → its
+  // "Bocata plantxat" successor. Sobras rows are stored under BOTH slugs
+  // (see fetchSobras), so last week's data recorded under the old names
+  // shows up on the new variant rows during the rename transition.
+  'Mortadel·la i pesto de festuc':         'Mortadella',
+  'Pernil i formatge':                     'Pastrami',
+  'albergínia escalivada i pesto vermell': 'Carabassó',
 };
 
 // ===== FORECASTING API INTEGRATION =====
