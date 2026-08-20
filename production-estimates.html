@@ -392,7 +392,7 @@ const DAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Doming
 const STORES = {
   santpau: { name: 'Sant Pau',  fcType: 'focaccia',   fcNames: ['Mortadella Stracciatella i festuc','Xoriço picant i fonoll','Panxeta, creme fraiche i cibulet','Alberginia escalivada','Olivada, tomates secos y alcaparras','Temporada'] },
   mila:    { name: 'Milà',      fcType: 'focaccia',   fcNames: ['Mortadella Stracciatella i festuc','Xoriço picant i fonoll','Panxeta, creme fraiche i cibulet','Alberginia escalivada','Olivada, tomates secos y alcaparras','Temporada'] },
-  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo',  fcNames: ['Mortadel·la i pesto de festuc','Pernil i formatge','albergínia escalivada i pesto vermell'] }
+  santjoan:{ name: 'Sant Joan', fcType: 'bocadillo',  fcNames: ['Carabassó','Pastrami','Mortadella'] }  // Bocata plantxat variants (renamed 2026-07)
 };
 
 // ===== PRODUCT DEFINITIONS (updated to match Square / production sheet) =====
@@ -482,6 +482,9 @@ const FOCACCIA_DISPLAY_MAP = {
   'Temporada':                           'Temporada',
 };
 const BOCADILLO_DISPLAY_MAP = {
+  // Legacy "Entrepà - Bocadillo" flavors (pre 2026-07 rename) — kept for
+  // historical views. Current "Bocata plantxat" variants (Carabassó,
+  // Pastrami, Mortadella) display as-is, no mapping needed.
   'Mortadel·la i pesto de festuc':         'Mortadella pesto',
   'Pernil i formatge':                     'Pernil i formatge',
   'albergínia escalivada i pesto vermell': 'Berenjena pesto',
@@ -3241,7 +3244,7 @@ function renderMain() {
   // summary row below.
   // Sant Joan: per-flavor bocadillo inputs (unchanged flow).
   const isBocadillo = store.fcType === 'bocadillo';
-  const fcLabel = isBocadillo ? 'Bocadillos' : 'Focaccias';
+  const fcLabel = isBocadillo ? 'Bocata plantxat' : 'Focaccias';
   const fcIcon = isBocadillo ? '🥖' : '🫓';
   html += `<div class="section-header">${fcIcon} ${fcLabel}</div>`;
   html += `<table class="grid"><tr>
