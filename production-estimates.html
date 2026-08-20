@@ -3903,16 +3903,26 @@ async function confirmSync() {
   const FC_ROWS = [48, 49, 50, 51, 52, 53, 54, 55];
   const isBocadillo = STORES[currentStore].fcType === 'bocadillo';
   const fcNames = getFcNames();
+  const usedFcRows = new Set();
 
   if (isBocadillo) {
-    fcNames.forEach((name, idx) => {
-      if (idx >= FC_ROWS.length) return;
+    // FIXED ROWS per variant (Rafa, 2026-07-20): G50 Mortadella, G51 Pastrami,
+    // G52 Carabassó — instead of positional rows in sales order, so each
+    // bocata always lands in the same sheet cell. Future/unknown flavors
+    // fall back to the remaining free rows.
+    const BOCADILLO_SHEET_ROWS = { 'mortadella': 50, 'pastrami': 51, 'carabasso': 52 };
+    const fixedRows = Object.values(BOCADILLO_SHEET_ROWS);
+    const freeRows = FC_ROWS.filter(r => !fixedRows.includes(r));
+    let freeIdx = 0;
+    fcNames.forEach((name) => {
       const slug = fcSlug(name);
-      const row = FC_ROWS[idx];
+      const row = BOCADILLO_SHEET_ROWS[slug] || freeRows[freeIdx++];
+      if (!row) return;  // more flavors than rows — shouldn't happen
       const shopInput = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
       const shopCount = shopInput ? (parseInt(shopInput.value) || 0) : 0;
       estimates.push({ cell: 'B' + row, value: name });
       estimates.push({ cell: 'G' + row, value: shopCount });
+      usedFcRows.add(row);
     });
   } else {
     // Focaccia: read per-flavor shop pieces and allocate whole focaccias by
@@ -3945,14 +3955,16 @@ async function confirmSync() {
       const row = FC_ROWS[idx];
       estimates.push({ cell: 'B' + row, value: name });
       estimates.push({ cell: 'G' + row, value: allocation[name] || 0 });
+      usedFcRows.add(row);
     });
     estimates.push({ cell: 'G19', value: totalFocaccias });
     estimates.push({ cell: 'J19', value: totalOrderFocaccias });
   }
 
   // Clear unused rows so stale flavors from prior weeks don't linger.
-  for (let i = fcNames.length; i < FC_ROWS.length; i++) {
-    const row = FC_ROWS[i];
+  // (Set-based since 2026-07-20 — bocadillos now use fixed, non-contiguous rows.)
+  for (const row of FC_ROWS) {
+    if (usedFcRows.has(row)) continue;
     estimates.push({ cell: 'B' + row, value: '' });
     estimates.push({ cell: 'G' + row, value: '' });
   }
