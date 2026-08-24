@@ -3906,13 +3906,19 @@ async function confirmSync() {
   const usedFcRows = new Set();
 
   if (isBocadillo) {
-    // FIXED ROWS per variant (Rafa, 2026-07-20): G50 Mortadella, G51 Pastrami,
-    // G52 Carabassó — instead of positional rows in sales order, so each
-    // bocata always lands in the same sheet cell. Future/unknown flavors
-    // fall back to the remaining free rows.
-    const BOCADILLO_SHEET_ROWS = { 'mortadella': 50, 'pastrami': 51, 'carabasso': 52 };
+    // FIXED LAYOUT (per Rafa 2026-07-21):
+    //   B48       → section title "ENTREPÀ - BOCADILLO" (row 48 is NOT a
+    //               flavor row — earlier sync versions overwrote/cleared it,
+    //               which is why her quantity-to-fill-in stopped lining up)
+    //   B49/G49   → Mortadella
+    //   B50/G50   → Pastrami
+    //   B51/G51   → Carabassó
+    // Future/unknown flavors fall back to the remaining free rows (52–55).
+    estimates.push({ cell: 'B48', value: 'ENTREPÀ - BOCADILLO' });
+    usedFcRows.add(48);  // protect the title row from the clear loop (G48 untouched)
+    const BOCADILLO_SHEET_ROWS = { 'mortadella': 49, 'pastrami': 50, 'carabasso': 51 };
     const fixedRows = Object.values(BOCADILLO_SHEET_ROWS);
-    const freeRows = FC_ROWS.filter(r => !fixedRows.includes(r));
+    const freeRows = FC_ROWS.filter(r => r !== 48 && !fixedRows.includes(r));
     let freeIdx = 0;
     fcNames.forEach((name) => {
       const slug = fcSlug(name);
