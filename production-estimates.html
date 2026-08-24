@@ -3916,8 +3916,22 @@ async function confirmSync() {
     // Future/unknown flavors fall back to the remaining free rows (52–55).
     estimates.push({ cell: 'B48', value: 'ENTREPÀ - BOCADILLO' });
     usedFcRows.add(48);  // protect the title row from the clear loop (G48 untouched)
-    const BOCADILLO_SHEET_ROWS = { 'mortadella': 49, 'pastrami': 50, 'carabasso': 51 };
-    const fixedRows = Object.values(BOCADILLO_SHEET_ROWS);
+    // FIX 2026-07-22 ("once and for all"): the map must recognize EVERY name
+    // era, because the flavor names in a day's stored estimates depend on
+    // when that day was generated. On 2026-07-22 Rafa synced a day generated
+    // before the Bocata plantxat engine deploy — its flavors carried the
+    // LEGACY names, none matched the 3 new-name keys, and all fell through
+    // to the free-row fallback (rows 52–54). Keys are fcSlug() of: current
+    // Square names, legacy Square suffixes, and legacy short display names.
+    const BOCADILLO_SHEET_ROWS = {
+      'mortadella': 49, 'mortadel-la-i-pesto-de-festuc': 49, 'mortadella-pesto': 49,
+      'pastrami': 50, 'pernil-i-formatge': 50,
+      'carabasso': 51, 'alberginia-escalivada-i-pesto-vermell': 51, 'berenjena-pesto': 51,
+    };
+    // Always write the CURRENT name in column B, even when the estimate still
+    // carries a legacy one — Rafa asked for the new names, less manual work.
+    const BOCADILLO_CANONICAL_NAME = { 49: 'Mortadella', 50: 'Pastrami', 51: 'Carabassó' };
+    const fixedRows = [...new Set(Object.values(BOCADILLO_SHEET_ROWS))];
     const freeRows = FC_ROWS.filter(r => r !== 48 && !fixedRows.includes(r));
     let freeIdx = 0;
     fcNames.forEach((name) => {
@@ -3926,7 +3940,7 @@ async function confirmSync() {
       if (!row) return;  // more flavors than rows — shouldn't happen
       const shopInput = document.querySelector(`input[data-key="fc-${slug}-shop"]`);
       const shopCount = shopInput ? (parseInt(shopInput.value) || 0) : 0;
-      estimates.push({ cell: 'B' + row, value: name });
+      estimates.push({ cell: 'B' + row, value: BOCADILLO_CANONICAL_NAME[row] || name });
       estimates.push({ cell: 'G' + row, value: shopCount });
       usedFcRows.add(row);
     });
