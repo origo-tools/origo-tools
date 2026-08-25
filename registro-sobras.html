@@ -67,15 +67,23 @@
     cursor: pointer; opacity: 0.7; padding: 6px; flex-shrink: 0;
   }
 
-  /* Section headers */
+  /* Section headers — sticky below the app header (2026-08-25) so PAN /
+     DULCES stay visible while scrolling their section */
   .section-header {
     display: flex; align-items: center; padding: 14px 16px 6px; gap: 8px;
+    position: sticky; top: 78px; z-index: 50; background: #f5f0eb;
   }
   .section-header h2 {
     font-size: 16px; font-weight: 800;
     text-transform: uppercase; letter-spacing: 1px; color: #1a3a2a;
   }
   .section-header .line { flex: 1; height: 2px; background: #1a3a2a; opacity: 0.15; }
+  .section-count { font-size: 12px; font-weight: 700; color: #999; white-space: nowrap; }
+
+  /* Answered products fade back (2026-08-25) — the eye lands on what's
+     still pending. "Answered" = the day's shelf question has its final
+     answer (sobras recorded, or final/all-batches sell-out). */
+  .product-card.answered { opacity: 0.55; }
 
   /* Product cards */
   .products { padding: 0 10px; display: flex; flex-direction: column; gap: 5px; }
@@ -92,11 +100,16 @@
   .product-card.has-batch-data { border-left: 4px solid #457b9d; }
   .product-card.complete { border-left: 4px solid #2e7d32; }
 
-  .product-name { flex: 1; font-size: 15px; font-weight: 600; line-height: 1.25; }
+  /* Narrow-screen fix (2026-08-25): the name column wraps INTERNALLY
+     (min-width: 0) while the actions block is indivisible (nowrap +
+     flex-shrink: 0) — controls can never orphan-wrap onto extra lines,
+     so every card renders identically from iPhone mini to tablet. */
+  .product-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.25; overflow-wrap: break-word; }
 
-  .product-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .product-actions { display: flex; gap: 5px; align-items: center; flex-wrap: nowrap; flex-shrink: 0; }
   .btn-sobras, .btn-acabado, .btn-descartado {
-    padding: 10px 14px; border-radius: 10px; font-size: 13px;
+    display: inline-flex; align-items: center; height: 42px;
+    padding: 0 11px; border-radius: 10px; font-size: 12px;
     font-weight: 700; border: none; cursor: pointer; white-space: nowrap;
   }
   .btn-sobras { background: #f0ebe5; color: #2c2c2c; }
@@ -110,9 +123,9 @@
     display: inline-flex; border-radius: 10px; overflow: hidden; flex-shrink: 0;
   }
   .batch-seg {
-    min-width: 44px; min-height: 44px; padding: 0 8px;
+    min-width: 40px; height: 42px; padding: 0 8px;
     background: #c0392b; color: white; border: none; cursor: pointer;
-    font-size: 13px; font-weight: 600; font-family: inherit;
+    font-size: 12px; font-weight: 600; font-family: inherit; white-space: nowrap;
   }
   .batch-seg + .batch-seg { border-left: 1px solid rgba(255,255,255,0.35); }
   .batch-seg:active { background: #8e2820; }
@@ -216,11 +229,13 @@
   /* Submit bar (progress only — button moved to bottom of page) */
   .submit-bar {
     position: fixed; bottom: 0; left: 0; right: 0;
-    padding: 10px 14px;
+    padding: 8px 14px 10px;
     padding-bottom: max(10px, env(safe-area-inset-bottom));
     background: white; border-top: 1px solid #e0d8d0; z-index: 100;
-    display: flex; gap: 10px; align-items: center; justify-content: center;
+    display: flex; flex-direction: column; gap: 5px; align-items: center; justify-content: center;
   }
+  .progress-track { width: 100%; max-width: 480px; height: 4px; background: #eee6de; border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; background: #1a3a2a; border-radius: 2px; transition: width 0.3s ease; }
   /* Inline submit button at bottom of content */
   .submit-section {
     padding: 16px 16px 8px;
@@ -412,6 +427,7 @@
 </div>
 
 <div class="submit-bar">
+  <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
   <div class="progress-text"><strong id="progress-count">0</strong> / <span id="progress-total">0</span> productos registrados</div>
 </div>
 
@@ -939,21 +955,21 @@ function renderProducts() {
   let html = '';
 
   // Bread
-  html += `<div class="section-header"><h2>Pan</h2><div class="line"></div></div>`;
+  html += `<div class="section-header"><h2>Pan</h2><span class="section-count">${_sectionCount_(BREAD)}</span><div class="line"></div></div>`;
   html += `<div class="products">`;
   BREAD.forEach(p => html += renderCard(p));
   html += `</div>`;
 
   // Focaccia / Bocadillo
   html += `<div class="sub-section"><div class="sub-section-header">`;
-  html += `<div class="sub-section-title">${sectionLabel}</div>`;
+  html += `<div class="sub-section-title">${sectionLabel} <span class="section-count">${_sectionCount_(variableProducts)}</span></div>`;
   html += `</div></div>`;
   html += `<div class="products">`;
   variableProducts.forEach(p => html += renderCard(p));
   html += `</div>`;
 
   // Pastry
-  html += `<div class="section-header"><h2>Dulces</h2><div class="line"></div></div>`;
+  html += `<div class="section-header"><h2>Dulces</h2><span class="section-count">${_sectionCount_(PASTRY)}</span><div class="line"></div></div>`;
   html += `<div class="products">`;
   PASTRY.forEach(p => {
     if (p === null) html += `<div style="height:3px"></div>`;
@@ -965,9 +981,19 @@ function renderProducts() {
   updateProgress();
 }
 
+// Display-only sentence casing (2026-08-25, François): Square mixes
+// ALL-CAPS bread names with mixed-case pastry names — normalize the LOOK
+// without touching the data (submissions, matching and keys keep the
+// original names). "ORIGO INTEGRAL" → "Origo integral".
+function _displayName_(name) {
+  const n = String(name || '');
+  return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase();
+}
+
 function renderCard(product) {
   const data = productData[product.id];
-  const escapedName = product.name.replace(/'/g, "\\'");
+  const shownName = _displayName_(product.name);
+  const escapedName = shownName.replace(/'/g, "\\'");
 
   // ── PASTRY with batch tracking ──
   if (product.hasBatches) {
@@ -993,10 +1019,13 @@ function renderCard(product) {
     else if (isLeftover && data.value === 0) cardClass = 'complete';
     else if (isLeftover) cardClass = 'leftover-positive';
     else if (hasPreEnvio2) cardClass = 'has-batch-data';  // blue: partial info, day not closed
+    // Answered = final shelf state exists → fade back (2026-08-25).
+    // A pre-envío-only record stays bright: more bread is coming.
+    if (hasSobrasOrRanOut) cardClass += ' answered';
 
     let html = `<div class="product-card ${cardClass}" data-product-id="${product.id}">`;
     html += `<div class="card-top">`;
-    html += `<div class="product-name">${product.name}</div>`;
+    html += `<div class="product-name">${shownName}</div>`;
     html += `<div class="product-actions">`;
 
     // Show action buttons for missing data (sobras not yet recorded)
@@ -1034,7 +1063,7 @@ function renderCard(product) {
   return `
     <div class="product-card" data-product-id="${product.id}">
       <div class="card-top">
-        <div class="product-name">${product.name}</div>
+        <div class="product-name">${shownName}</div>
         <div class="product-actions">
           <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>
           ${_breadSoldOutControls_(product, false)}
@@ -1046,6 +1075,7 @@ function renderCard(product) {
 
 // ── Render a pastry card with per-batch sold-out support ──
 function renderBatchCard(product, data, escapedName) {
+  const shownName = _displayName_(product.name);
   const hasBatchData = data && data.batchSoldOuts && data.batchSoldOuts.length > 0;
   const hasSobras = data && data.sobras !== null && data.sobras !== undefined;
   const isComplete = hasSobras || (hasBatchData && data.batchSoldOuts.length >= 3);
@@ -1054,10 +1084,13 @@ function renderBatchCard(product, data, escapedName) {
   if (isComplete && hasSobras && data.sobras === 0) cardClass = 'complete';
   else if (hasSobras) cardClass = 'leftover-positive';
   else if (hasBatchData) cardClass = 'has-batch-data';
+  // Answered = sobras recorded or all 3 batches sold out → fade back
+  // (2026-08-25). Partial batch sell-outs stay bright: day not closed.
+  if (isComplete) cardClass += ' answered';
 
   let html = `<div class="product-card ${cardClass}" data-product-id="${product.id}">`;
   html += `<div class="card-top">`;
-  html += `<div class="product-name">${product.name}</div>`;
+  html += `<div class="product-name">${shownName}</div>`;
 
   // Actions: always show available actions on the right
   const hasDiscardBatch = data && data.discards !== null && data.discards !== undefined && data.discards > 0;
@@ -1284,9 +1317,9 @@ function _breadSoldOutControls_(product, hasPreEnvio2) {
     const nowEnvio = new Date().getHours() + new Date().getMinutes() / 60 < 14.5 ? 1 : 2;
     let out = `<span class="batch-seg-group">`;
     if (!hasPreEnvio2) {
-      out += `<button class="batch-seg${nowEnvio === 1 ? ' now' : ''}" onclick="recordEnvio1SoldOutNow('${product.id}')">1er envío</button>`;
+      out += `<button class="batch-seg${nowEnvio === 1 ? ' now' : ''}" onclick="recordEnvio1SoldOutNow('${product.id}')">1º env</button>`;
     }
-    out += `<button class="batch-seg${nowEnvio === 2 ? ' now' : ''}" onclick="recordBreadSoldOutNow('${product.id}')">2º envío</button>`;
+    out += `<button class="batch-seg${nowEnvio === 2 ? ' now' : ''}" onclick="recordBreadSoldOutNow('${product.id}')">2º env</button>`;
     out += `</span>`;
     return out;
   }
@@ -1610,22 +1643,30 @@ function undoProduct(id) {
 // ─── PROGRESS ──────────────────────────────────────────────
 // Shared filled/total counter (extracted 2026-07-17 — used by updateProgress,
 // submitForm, and the confetti trigger in _doSubmit).
+// Per-product "registrado" predicate (extracted 2026-08-25 — shared by the
+// global counter, the section counters, and the fill bar).
+function _isProductFilled_(p) {
+  const d = productData[p.id];
+  if (!d) return false;
+  // Batch products: has at least one action (sold-out, sobras, or discards)
+  if (p.hasBatches) {
+    return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
+  }
+  // Simple products: a pre-envío-2 log ALONE doesn't complete the product —
+  // the end-of-day state (sobras / se acabó) is still owed. (2026-07-16)
+  return !!(d.type || (d.discards && d.discards > 0));
+}
+
+// Section counter "6/10" for the sticky headers (2026-08-25)
+function _sectionCount_(list) {
+  const items = list.filter(p => p !== null && p !== undefined);
+  return items.filter(_isProductFilled_).length + '/' + items.length;
+}
+
 function getFilledCounts() {
   const variableProducts = getVariableProducts();
   const allProducts = [...BREAD, ...variableProducts, ...PASTRY.filter(p => p !== null)];
-  const total = allProducts.length;
-  const filled = allProducts.filter(p => {
-    const d = productData[p.id];
-    if (!d) return false;
-    // Batch products: has at least one action (sold-out, sobras, or discards)
-    if (p.hasBatches) {
-      return (d.batchSoldOuts && d.batchSoldOuts.length > 0) || d.sobras !== null || (d.discards && d.discards > 0);
-    }
-    // Simple products: a pre-envío-2 log ALONE doesn't complete the product —
-    // the end-of-day state (sobras / se acabó) is still owed. (2026-07-16)
-    return !!(d.type || (d.discards && d.discards > 0));
-  }).length;
-  return { filled, total };
+  return { filled: allProducts.filter(_isProductFilled_).length, total: allProducts.length };
 }
 
 function updateProgress() {
@@ -1633,6 +1674,9 @@ function updateProgress() {
 
   document.getElementById('progress-count').textContent = filled;
   document.getElementById('progress-total').textContent = total;
+  // Fill bar (2026-08-25)
+  const fillEl = document.getElementById('progressFill');
+  if (fillEl) fillEl.style.width = (total > 0 ? Math.round(filled / total * 100) : 0) + '%';
 
   const btn = document.getElementById('submitBtnInline');
   if (btn) {
