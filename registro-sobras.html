@@ -116,20 +116,16 @@
   .btn-sobras:active { background: #e0d8d0; }
   .btn-acabado { background: #c0392b; color: white; min-height: 44px; }
   .btn-acabado:active { background: #a93226; }
-  /* Phase 2 (2026-08-29): per-batch tap segments replacing the pastry time
-     picker. 44px minimum touch targets; the batch whose window covers "now"
-     is darker + bold as a placement hint. */
-  .batch-seg-group {
-    display: inline-flex; border-radius: 10px; overflow: hidden; flex-shrink: 0;
+  /* One-time tip banner (v3, 2026-08-25) — teaches when to press Se acabó */
+  .tip-banner {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: #fdf6e3; border-bottom: 1px solid #f0e6c8;
+    padding: 12px 14px; font-size: 13px; color: #6b5d2e; line-height: 1.45;
   }
-  .batch-seg {
-    min-width: 40px; height: 42px; padding: 0 8px;
-    background: #c0392b; color: white; border: none; cursor: pointer;
-    font-size: 12px; font-weight: 600; font-family: inherit; white-space: nowrap;
+  .tip-banner .tip-close {
+    background: none; border: none; font-size: 16px; color: #b3a469;
+    cursor: pointer; padding: 2px 6px; flex-shrink: 0;
   }
-  .batch-seg + .batch-seg { border-left: 1px solid rgba(255,255,255,0.35); }
-  .batch-seg:active { background: #8e2820; }
-  .batch-seg.now { background: #a93226; font-weight: 800; }
   .btn-descartado { background: #e8d5f0; color: #6c3483; font-size: 12px; }
   .btn-descartado:active { background: #d5b8e3; }
   /* Sant Joan only: "ran out before the 2nd delivery" tag (v2 2026-07-17 —
@@ -404,6 +400,11 @@
   <div class="day-circles" id="daycircles"></div>
   <div class="day-name" id="dayname"></div>
   <div id="datetext"></div>
+</div>
+
+<div class="tip-banner" id="tipBanner" style="display:none;">
+  <span>⚡ <strong>Se acabó</strong> = no queda nada del producto en la tienda. No hace falta avisar cuando se termina una bandeja o un lote — solo cuando el cliente ya no puede comprarlo. La app apunta el lote y la hora sola.</span>
+  <button class="tip-close" onclick="dismissTip()" aria-label="Cerrar aviso">✕</button>
 </div>
 
 <div id="product-list"></div>
@@ -898,8 +899,22 @@ function openSettings() {
   document.getElementById('settingsModal').classList.add('active');
 }
 
+// One-time tip (v3): shown until dismissed, then never again on this device
+function dismissTip() {
+  try { localStorage.setItem('origo_tip_seacabo_v1', '1'); } catch(e) {}
+  document.getElementById('tipBanner').style.display = 'none';
+}
+function maybeShowTip_() {
+  try {
+    if (!localStorage.getItem('origo_tip_seacabo_v1')) {
+      document.getElementById('tipBanner').style.display = 'flex';
+    }
+  } catch(e) {}
+}
+
 function startApp() {
   document.getElementById('storeName').textContent = STORES[currentStore].name;
+  maybeShowTip_();
   // Seasonal header emoji (ADDED 2026-07-17) — Sant Jordi rose, Reyes crown,
   // Sant Joan fireworks... falls back to the season. See getSeasonalEmoji().
   try {
@@ -1031,7 +1046,7 @@ function renderCard(product) {
     // Show action buttons for missing data (sobras not yet recorded)
     if (!hasSobrasOrRanOut) {
       html += `<button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>`;
-      html += _breadSoldOutControls_(product, !!hasPreEnvio2);
+      html += `<button class="btn-acabado" onclick="recordSoldOutTap('${product.id}')">⚡ Se acabó</button>`;
     }
     if (!hasDiscard) {
       html += `<button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>`;
@@ -1066,7 +1081,7 @@ function renderCard(product) {
         <div class="product-name">${shownName}</div>
         <div class="product-actions">
           <button class="btn-sobras" onclick="openSobras('${product.id}', '${escapedName}', false, true)">Sobras</button>
-          ${_breadSoldOutControls_(product, false)}
+          <button class="btn-acabado" onclick="recordSoldOutTap('${product.id}')">⚡ Se acabó</button>
           <button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', false)">🗑</button>
         </div>
       </div>
@@ -1078,7 +1093,11 @@ function renderBatchCard(product, data, escapedName) {
   const shownName = _displayName_(product.name);
   const hasBatchData = data && data.batchSoldOuts && data.batchSoldOuts.length > 0;
   const hasSobras = data && data.sobras !== null && data.sobras !== undefined;
-  const isComplete = hasSobras || (hasBatchData && data.batchSoldOuts.length >= 3);
+  // v3 (2026-08-25): the day is over for a pastry when the FINAL slot (3er
+  // lote) sold out — not only when all three did. Batches that never ran
+  // out simply have no record.
+  const finalDone = hasBatchData && data.batchSoldOuts.some(bs => bs.batch === 3);
+  const isComplete = hasSobras || finalDone;
 
   let cardClass = '';
   if (isComplete && hasSobras && data.sobras === 0) cardClass = 'complete';
@@ -1098,20 +1117,12 @@ function renderBatchCard(product, data, escapedName) {
   if (!hasSobras) {
     html += `<button class="btn-sobras" onclick="openSobrasBatch('${product.id}', '${escapedName}')">Sobras</button>`;
   }
-  // Phase 2 (2026-08-29): one tap per remaining batch — no time picker.
-  // The tap time is stored as fallback; Square's last sale resolves the
-  // exact hour at forecast time. Current-window batch is darker (hint).
-  const batchCount = hasBatchData ? data.batchSoldOuts.length : 0;
-  if (batchCount < 3 && !isComplete) {
-    const marked = new Set((data && data.batchSoldOuts || []).map(bs => bs.batch));
-    const now = new Date();
-    const nowBatch = timeToBatch(now.getHours() + ':' + now.getMinutes());
-    html += `<span class="batch-seg-group">`;
-    for (const b of [1, 2, 3]) {
-      if (marked.has(b)) continue;
-      html += `<button class="batch-seg${b === nowBatch ? ' now' : ''}" onclick="recordBatchSoldOutNow('${product.id}', ${b})">${b === 1 ? '1er' : b === 2 ? '2do' : '3er'}</button>`;
-    }
-    html += `</span>`;
+  // v3 (2026-08-25, François): ONE button, no batch choice. Staff press it
+  // whenever there's no product left in the store; the app assigns the
+  // batch from the hour (with a grace window). Pressable once per batch —
+  // it disappears after the final slot (3er lote) or once sobras exist.
+  if (!isComplete) {
+    html += `<button class="btn-acabado" onclick="recordSoldOutTap('${product.id}')">⚡ Se acabó</button>`;
   }
   if (!hasDiscardBatch) {
     html += `<button class="btn-descartado" onclick="openDiscards('${product.id}', '${escapedName}', true)">🗑</button>`;
@@ -1123,10 +1134,10 @@ function renderBatchCard(product, data, escapedName) {
   if (hasBatchData || hasSobras || hasDiscardBatch) {
     html += `<div class="batch-tags">`;
     if (hasBatchData) {
-      // Phase 2: tag is tappable to correct the time (batch number stays
-      // fixed — it was an explicit choice, not derived from the hour).
+      // v3: tag is tappable to correct the time; the batch RE-DERIVES from
+      // the corrected hour (assignment is always a function of the time).
       data.batchSoldOuts.forEach((bs, i) => {
-        html += `<span class="batch-tag" style="cursor:pointer;" onclick="editBatchSoldOutTime('${product.id}', ${i}, '${escapedName}')">⏱ ${batchLabel(bs.batch)} ${bs.time}`;
+        html += `<span class="batch-tag" style="cursor:pointer;" onclick="editBatchSoldOutTime('${product.id}', ${i}, '${escapedName}')">⚡ ${batchLabel(bs.batch)} · ${bs.time}`;
         html += ` <button class="remove-batch" onclick="event.stopPropagation();removeBatchSoldOut('${product.id}', ${i})">✕</button>`;
         html += `</span>`;
       });
@@ -1283,9 +1294,9 @@ function closeNumModal() {
 }
 
 // ─── SE ACABÓ — bread (simple products) ────────────────────
-// Sant Joan breads shipped in BOTH envíos get an explicit two-segment
-// control (see _breadSoldOutControls_). Breads with only ONE delivery keep
-// the single button — their sell-outs are always final:
+// v3: every product has the same single button (see recordSoldOutTap).
+// SJ breads shipped in BOTH envíos get automatic before/after-envío-2
+// routing; breads with only ONE delivery are always final on first press:
 //   Sègol (centeno) / Copenhague / Espelta → envío 1 only, no resupply.
 //   Baguette → travels only in envío 2.
 const SJ_SINGLE_ENVIO_BREAD_IDS = ['segol_integral', 'copenhague', 'espelta_petita', 'baguette'];
@@ -1305,25 +1316,76 @@ function _nowHM() {
   return [now.getHours().toString().padStart(2, '0'), now.getMinutes().toString().padStart(2, '0')];
 }
 
-// Builds the sell-out control(s) for a simple product (bread/focaccia/bocata).
-// SJ breads shipped in BOTH envíos get an explicit two-segment control
-// (UPGRADED 2026-08-29, François): tapping "1er envío" = ran out before the
-// 2nd delivery (day stays open); "2º envío" = final sell-out. This replaces
-// the old before/after-15:00 routing — the choice is now explicit, so a late
-// tap can't misclassify the event. The segment for the envío currently on
-// the shelf (before/after the ~14:30 arrival) is highlighted.
-function _breadSoldOutControls_(product, hasPreEnvio2) {
-  if (isSjSplitBread(product.id)) {
-    const nowEnvio = new Date().getHours() + new Date().getMinutes() / 60 < 14.5 ? 1 : 2;
-    let out = `<span class="batch-seg-group">`;
-    if (!hasPreEnvio2) {
-      out += `<button class="batch-seg${nowEnvio === 1 ? ' now' : ''}" onclick="recordEnvio1SoldOutNow('${product.id}')">1º env</button>`;
+// ── v3 (2026-08-25, François): SINGLE "⚡ Se acabó" button, auto-assignment ──
+// The team was confused about batches/envíos — they only know one fact:
+// "there's no product in the store right now". So the button captures that
+// fact, and the app derives the slot from the tap hour:
+//   • Pastry: batch = timeToBatch(hour − 10 min grace). The grace window
+//     means a tap shortly after a boundary (e.g. 11:05) is filed under the
+//     PREVIOUS batch — the new batch can't plausibly have sold out yet.
+//     If the derived batch is already recorded: a tap within 5 min is a
+//     duplicate (updates the time); later taps advance to the next batch.
+//   • SJ dual-envío bread: before 14:45 (14:30 arrival + 15 min grace) and
+//     no pre-envío record yet → "sin pan antes del 2º envío"; otherwise
+//     final sell-out. A second press after the pre-envío record is always
+//     final — it can only mean the 2º envío ran out too.
+//   • Everything else: one press = final sell-out (single delivery).
+// Badges show the assignment; tapping a badge edits the time and
+// RE-DERIVES the slot, so boundary mistakes are fixed by fixing the hour.
+const SOLDOUT_BATCH_GRACE_MIN = 10;
+const SOLDOUT_ENVIO_GRACE_MIN = 15;
+
+function _findProductById_(id) {
+  return BREAD.find(p => p && p.id === id)
+    || PASTRY.find(p => p && p.id === id)
+    || getVariableProducts().find(p => p && p.id === id)
+    || null;
+}
+
+function _deriveBatchFromTime_(h, m) {
+  const total = h * 60 + m - SOLDOUT_BATCH_GRACE_MIN;
+  const gh = Math.max(0, Math.floor(total / 60));
+  return timeToBatch(gh + ':' + Math.max(0, total % 60));
+}
+
+function recordSoldOutTap(id) {
+  const product = _findProductById_(id);
+  if (!product) return;
+  const now = new Date();
+  const h = now.getHours(), m = now.getMinutes();
+
+  if (product.hasBatches) {
+    let batch = _deriveBatchFromTime_(h, m);
+    const data = productData[id];
+    const rec = b => data && data.batchSoldOuts && data.batchSoldOuts.find(x => x.batch === b);
+    const existing = rec(batch);
+    if (existing) {
+      const parts = existing.time.split(':').map(Number);
+      const ageMin = (h * 60 + m) - (parts[0] * 60 + parts[1]);
+      if (ageMin >= 0 && ageMin <= 5) {
+        // double-tap in the same window → update the time, no duplicate
+      } else {
+        while (batch < 3 && rec(batch)) batch++;
+        if (rec(batch)) { showToast('Ya estaba todo marcado como agotado hoy', 2500, 'info'); return; }
+      }
     }
-    out += `<button class="batch-seg${nowEnvio === 2 ? ' now' : ''}" onclick="recordBreadSoldOutNow('${product.id}')">2º env</button>`;
-    out += `</span>`;
-    return out;
+    recordBatchSoldOutNow(id, batch);
+    return;
   }
-  return `<button class="btn-acabado" onclick="recordBreadSoldOutNow('${product.id}')">Se acabó</button>`;
+
+  if (isSjSplitBread(id)) {
+    const data = productData[id];
+    const hasPre = data && data.preEnvio2SoldOut;
+    const hourDec = h + m / 60;
+    if (!hasPre && hourDec < 14.5 + SOLDOUT_ENVIO_GRACE_MIN / 60) {
+      recordEnvio1SoldOutNow(id);
+    } else {
+      recordBreadSoldOutNow(id);
+    }
+    return;
+  }
+
+  recordBreadSoldOutNow(id);
 }
 
 // "1er envío" tap: bread ran out before the 2nd delivery (~14:30). Records
@@ -1331,7 +1393,9 @@ function _breadSoldOutControls_(product, hasPreEnvio2) {
 function recordEnvio1SoldOutNow(id) {
   const [h, m] = _nowHM();
   _savePreEnvio2(id, h, m);
-  showToast('🚚 Sin pan antes del 2º envío (' + h + ':' + m + '). Registra las sobras al cierre como siempre.', 4000, 'info');
+  const prod = _findProductById_(id);
+  const pname = prod ? _displayName_(prod.name) : 'el pan';
+  showToast('🚚 No queda ' + pname + ' (' + h + ':' + m + ') — apuntado como antes del 2º envío. Cuando llegue y se acabe otra vez, púlsalo de nuevo.', 4500, 'info');
 }
 
 function recordBreadSoldOutNow(id) {
@@ -1344,7 +1408,9 @@ function recordBreadSoldOutNow(id) {
   saveDailyData();
   renderProducts();
   scrollToProduct(id);
-  showToast('⚡ Agotado marcado (' + h + ':' + m + ') — la hora exacta la ajusta Square', 3000, 'info');
+  const prod = _findProductById_(id);
+  const pname = prod ? _displayName_(prod.name) : 'el producto';
+  showToast('⚡ No queda ' + pname + ' en tienda (' + h + ':' + m + ') — apuntado como agotado del día.', 3500, 'info');
 }
 
 function editTimeBread(id, name) {
@@ -1435,10 +1501,17 @@ function recordBatchSoldOutNow(id, batch) {
   saveDailyData();
   renderProducts();
   scrollToProduct(id);
-  showToast('⚡ ' + batchLabel(batch) + ' marcado (' + timeStr + ') — la hora exacta la ajusta Square', 3000, 'info');
+  const prod = _findProductById_(id);
+  const pname = prod ? _displayName_(prod.name) : 'el producto';
+  showToast(batch < 3
+    ? '⚡ No queda ' + pname + ' (' + timeStr + ') — apuntado al ' + batchLabel(batch) + '. Si llega más y se acaba otra vez, púlsalo de nuevo.'
+    : '⚡ No queda ' + pname + ' (' + timeStr + ') — apuntado al 3er lote, el último del día.', 4500, 'info');
 }
 
-// Tag tap → correct the time manually (escape hatch). Batch number is fixed.
+// Tag tap → correct the time. v3: the batch RE-DERIVES from the corrected
+// hour (with the same grace window), so a boundary mistake is fixed by
+// fixing the hour — assignment is always a function of the time. If the
+// re-derived batch already has its own record, the two entries merge.
 function editBatchSoldOutTime(id, index, name) {
   const data = productData[id];
   if (!data || !data.batchSoldOuts || !data.batchSoldOuts[index]) return;
@@ -1451,11 +1524,21 @@ function editBatchSoldOutTime(id, index, name) {
   document.getElementById('time-modal-title').textContent = `Corregir hora — ${name}`;
   const hint = document.getElementById('batchHint');
   hint.style.display = 'block';
-  hint.textContent = 'Hora del ' + batchLabel(bs.batch) + '. Normalmente Square la ajusta sola — corrígela solo si hace falta.';
+  hint.textContent = 'El lote se ajusta solo según la hora. Normalmente Square la corrige sola — cámbiala solo si hace falta.';
   showTimeModal();
 
   timeModalCallback = (newH, newM) => {
-    bs.time = `${newH}:${newM}`;
+    const newBatch = _deriveBatchFromTime_(parseInt(newH), parseInt(newM));
+    const clash = data.batchSoldOuts.find((x, j) => j !== index && x.batch === newBatch);
+    if (clash) {
+      // merge: keep the other entry, take the corrected time, drop this one
+      clash.time = `${newH}:${newM}`;
+      data.batchSoldOuts.splice(index, 1);
+    } else {
+      bs.batch = newBatch;
+      bs.time = `${newH}:${newM}`;
+      data.batchSoldOuts.sort((a, b) => a.batch - b.batch);
+    }
     saveDailyData();
     renderProducts();
     scrollToProduct(id);
