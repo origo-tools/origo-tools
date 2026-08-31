@@ -88,20 +88,20 @@
   <div class="cards" id="cards"></div>
 
   <div class="panel">
-    <h2>Coste del error de previsión (€/día)</h2>
-    <div class="desc">€ tirados (sobras × precio) + € perdidos (estimación de ventas no hechas durante horas sin stock). El objetivo es minimizar el total.</div>
+    <h2>Coste del error de previsión</h2>
+    <div class="desc">Cada barra = media diaria de esa semana. € tirados (sobras × precio) + € perdidos (estimación de ventas no hechas durante horas sin stock). El objetivo es minimizar el total.</div>
     <div class="chart-wrap"><canvas id="costChart"></canvas></div>
   </div>
 
   <div class="panel">
     <h2>Métricas físicas</h2>
-    <div class="desc">% merma = sobras / unidades producidas · Horas sin stock = suma por producto de horas entre agotarse y el cierre (incluye huecos pre-envío 2 en Sant Joan).</div>
+    <div class="desc">% sobra = sobras / producción de tienda (ventas + sobras + merma) · Horas sin stock = suma por producto de horas entre agotarse y el cierre (incluye huecos pre-envío 2 en Sant Joan). Medias semanales.</div>
     <div class="chart-wrap"><canvas id="physChart"></canvas></div>
   </div>
 
   <div class="panel">
-    <h2>Calidad</h2>
-    <div class="desc">% perfectos = productos-día con ≤2 sobras o agotados en la última hora · % registro = cobertura del registro de sobras (si baja, las demás métricas pierden fiabilidad).</div>
+    <h2>% días perfectos</h2>
+    <div class="desc">Un producto acaba «perfecto» si al cierre quedan ≤2 unidades o se agota en la última hora (sin hueco de pan a mediodía en Sant Joan). % sobre productos registrados — el ideal «agotado justo al cierre» convertido en puntuación.</div>
     <div class="chart-wrap"><canvas id="qualChart"></canvas></div>
   </div>
 
@@ -198,15 +198,16 @@ function renderCards(s) {
   const last4 = complete.slice(-4), prev4 = complete.slice(-8, -4);
   const defs = [
     { label: 'Coste error €/día', key: 'costeDia', fmt: v => v == null ? '—' : Math.round(v) + ' €', lower: true },
-    { label: '% merma producción', key: 'wastePct', fmt: v => v == null ? '—' : v.toFixed(1) + ' %', lower: true },
+    { label: '% sobra', key: 'wastePct', fmt: v => v == null ? '—' : v.toFixed(1) + ' %', lower: true },
     { label: 'Horas sin stock/día', key: 'emptyDia', fmt: v => v == null ? '—' : v.toFixed(1) + ' h', lower: true },
     { label: '% días perfectos', key: 'perfectPct', fmt: v => v == null ? '—' : Math.round(v) + ' %', lower: false },
+    { label: '% registro app', key: 'coveragePct', fmt: v => v == null ? '—' : Math.round(v) + ' %', lower: false, note: 'fiabilidad del dato' },
   ];
   document.getElementById('cards').innerHTML = defs.map(d => {
     const cur = avg(last4, d.key), prev = avg(prev4, d.key);
     return '<div class="card"><div class="label">' + d.label + '</div>' +
       '<div class="value">' + d.fmt(cur) + '</div>' +
-      deltaHtml(cur, prev, d.lower) + '<div class="note">media últimas 4 semanas</div></div>';
+      deltaHtml(cur, prev, d.lower) + '<div class="note">' + (d.note || 'media últimas 4 semanas') + '</div></div>';
   }).join('');
 }
 
@@ -234,7 +235,19 @@ function render() {
         { label: '€ perdidos/día (est.)', data: s.map(x => x.perdidosDia), backgroundColor: dim.map(o => 'rgba(129,108,153,' + 0.85 * o + ')'), stack: 'c' },
       ],
     },
-    options: { ...common, scales: { ...common.scales, y: { stacked: true, beginAtZero: true, ticks: { callback: v => v + ' €' } }, x: { ...common.scales.x, stacked: true } } },
+    options: {
+      ...common,
+      plugins: {
+        ...common.plugins,
+        tooltip: {
+          callbacks: {
+            title: items => 'Semana del ' + items[0].label + ' · media diaria',
+            footer: items => 'Total: ' + Math.round(items.reduce((a, i) => a + i.parsed.y, 0)) + ' €/día',
+          },
+        },
+      },
+      scales: { ...common.scales, y: { stacked: true, beginAtZero: true, ticks: { callback: v => v + ' €' } }, x: { ...common.scales.x, stacked: true } },
+    },
   });
 
   destroy('phys');
@@ -243,7 +256,7 @@ function render() {
     data: {
       labels,
       datasets: [
-        { label: '% merma', data: s.map(x => x.wastePct), borderColor: '#e07a5f', backgroundColor: '#e07a5f', yAxisID: 'y', tension: 0.3, spanGaps: true, pointRadius: 3 },
+        { label: '% sobra', data: s.map(x => x.wastePct), borderColor: '#e07a5f', backgroundColor: '#e07a5f', yAxisID: 'y', tension: 0.3, spanGaps: true, pointRadius: 3 },
         { label: 'Horas sin stock/día', data: s.map(x => x.emptyDia), borderColor: '#3d5a80', backgroundColor: '#3d5a80', yAxisID: 'y2', tension: 0.3, pointRadius: 3 },
       ],
     },
@@ -264,7 +277,6 @@ function render() {
       labels,
       datasets: [
         { label: '% días perfectos', data: s.map(x => x.perfectPct), borderColor: '#2d6a4f', backgroundColor: '#2d6a4f', tension: 0.3, spanGaps: true, pointRadius: 3 },
-        { label: '% registro', data: s.map(x => x.coveragePct), borderColor: '#b7791f', backgroundColor: '#b7791f', borderDash: [5, 4], tension: 0.3, spanGaps: true, pointRadius: 2 },
       ],
     },
     options: { ...common, scales: { ...common.scales, y: { beginAtZero: true, max: 100, ticks: { callback: v => v + ' %' } } } },
