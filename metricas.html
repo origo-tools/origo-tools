@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Origo · Métricas de previsión</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #f5f0eb; color: #2c2c2c; min-height: 100vh;
+  }
+  .header {
+    background: #1a3a2a; color: white; padding: 14px 24px;
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .sub { font-size: 12px; opacity: 0.75; }
+  .controls {
+    display: flex; gap: 8px; padding: 14px 20px 0; flex-wrap: wrap; align-items: center;
+  }
+  .chip {
+    border: 1px solid #cbbfae; background: white; color: #4a4a4a;
+    padding: 7px 16px; border-radius: 20px; font-size: 13px; cursor: pointer;
+    transition: all .15s;
+  }
+  .chip.active { background: #1a3a2a; color: white; border-color: #1a3a2a; }
+  .chip-group { display: flex; gap: 6px; }
+  .spacer { flex: 1; }
+  .cards {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px; padding: 16px 20px 4px;
+  }
+  .card {
+    background: white; border-radius: 12px; padding: 14px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.07);
+  }
+  .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #8a8a8a; }
+  .card .value { font-size: 26px; font-weight: 700; margin: 4px 0 2px; }
+  .card .delta { font-size: 12px; font-weight: 600; }
+  .delta.good { color: #2e7d32; }
+  .delta.bad { color: #c0392b; }
+  .delta.flat { color: #8a8a8a; }
+  .card .note { font-size: 11px; color: #a0a0a0; margin-top: 2px; }
+  .panel {
+    background: white; border-radius: 12px; margin: 14px 20px;
+    padding: 16px 18px 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.07);
+  }
+  .panel h2 { font-size: 14px; font-weight: 600; color: #1a3a2a; margin-bottom: 2px; }
+  .panel .desc { font-size: 12px; color: #8a8a8a; margin-bottom: 10px; }
+  .chart-wrap { position: relative; height: 260px; }
+  .footnote {
+    font-size: 11.5px; color: #8a8a8a; padding: 4px 24px 28px; line-height: 1.5; max-width: 860px;
+  }
+  #status { padding: 40px; text-align: center; color: #8a8a8a; font-size: 14px; }
+  #content { display: none; }
+  @media (max-width: 640px) {
+    .chart-wrap { height: 220px; }
+    .card .value { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📊 Métricas de previsión</h1>
+  <span class="sub" id="updatedAt"></span>
+</div>
+
+<div id="status">Cargando métricas…</div>
+
+<div id="content">
+  <div class="controls">
+    <div class="chip-group" id="storeChips">
+      <button class="chip active" data-store="ALL">Todas</button>
+      <button class="chip" data-store="Sant Pau">Sant Pau</button>
+      <button class="chip" data-store="Milà">Milà</button>
+      <button class="chip" data-store="Sant Joan">Sant Joan</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="chip-group" id="rangeChips">
+      <button class="chip" data-weeks="12">12 sem</button>
+      <button class="chip active" data-weeks="26">26 sem</button>
+    </div>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="panel">
+    <h2>Coste del error de previsión (€/día)</h2>
+    <div class="desc">€ tirados (sobras × precio) + € perdidos (estimación de ventas no hechas durante horas sin stock). El objetivo es minimizar el total.</div>
+    <div class="chart-wrap"><canvas id="costChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <h2>Métricas físicas</h2>
+    <div class="desc">% merma = sobras / unidades producidas · Horas sin stock = suma por producto de horas entre agotarse y el cierre (incluye huecos pre-envío 2 en Sant Joan).</div>
+    <div class="chart-wrap"><canvas id="physChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <h2>Calidad</h2>
+    <div class="desc">% perfectos = productos-día con ≤2 sobras o agotados en la última hora · % registro = cobertura del registro de sobras (si baja, las demás métricas pierden fiabilidad).</div>
+    <div class="chart-wrap"><canvas id="qualChart"></canvas></div>
+  </div>
+
+  <div class="footnote">
+    <strong>Notas.</strong> Los € perdidos son una <em>estimación</em>: horas sin stock × ritmo medio de venta del producto (€/hora de apertura, últimos 60 días) — consistente para ver tendencia, no contable. Los precios son medias por unidad de Square. La semana en curso aparece atenuada y se excluye de las tarjetas de resumen. Fuente: registro de sobras + Square + hojas de producción sincronizadas.
+  </div>
+</div>
+
+<script>
+const API = 'https://script.google.com/macros/s/AKfycbwFWN1OIzAmisOOTJ6OxorrIExpMNu1FtN-8WdAq5CVYOWzEV3_d_e1Lxp2p4NnYf8x/exec';
+
+let RAW = [];          // rows from the API
+let store = 'ALL';
+let weeksToShow = 26;
+let charts = {};
+
+async function load() {
+  try {
+    const resp = await fetch(API + '?action=metrics');
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    RAW = data.rows || [];
+    document.getElementById('updatedAt').textContent =
+      'Actualizado ' + new Date(data.generatedAt).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    document.getElementById('status').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+    render();
+  } catch (e) {
+    document.getElementById('status').textContent = 'No se pudieron cargar las métricas: ' + e.message;
+  }
+}
+
+// Combine per-store weekly rows into one series for the selected filter.
+function series() {
+  const byWeek = {};
+  for (const r of RAW) {
+    if (store !== 'ALL' && r.store !== store) continue;
+    if (!byWeek[r.week]) byWeek[r.week] = { week: r.week, days: 0, sobrasEur: 0, lostEur: 0, sobrasUnits: 0, produced: 0, emptyHours: 0, registered: 0, perfect: 0, covNum: 0, covDen: 0 };
+    const w = byWeek[r.week];
+    w.days += r.days;
+    w.sobrasEur += r.sobrasEur;
+    w.lostEur += r.lostEur;
+    w.sobrasUnits += r.sobrasUnits;
+    w.produced += r.producedUnits || 0;
+    w.emptyHours += r.emptyHours;
+    w.registered += r.registered;
+    w.perfect += r.perfect;
+    if (r.coveragePct != null) { w.covNum += r.coveragePct * r.days; w.covDen += r.days; }
+  }
+  let arr = Object.values(byWeek).sort((a, b) => a.week.localeCompare(b.week));
+  arr = arr.slice(-weeksToShow);
+  return arr.map(w => ({
+    week: w.week,
+    days: w.days,
+    tiradosDia: w.days ? w.sobrasEur / w.days : 0,
+    perdidosDia: w.days ? w.lostEur / w.days : 0,
+    costeDia: w.days ? (w.sobrasEur + w.lostEur) / w.days : 0,
+    wastePct: w.produced > 0 ? w.sobrasUnits / w.produced * 100 : null,
+    emptyDia: w.days ? w.emptyHours / w.days : 0,
+    perfectPct: w.registered ? w.perfect / w.registered * 100 : null,
+    coveragePct: w.covDen ? w.covNum / w.covDen : null,
+  }));
+}
+
+function fmtWeek(w) {
+  const d = new Date(w + 'T12:00:00');
+  return d.getDate() + ' ' + d.toLocaleString('es-ES', { month: 'short' });
+}
+
+function isCurrentWeek(w) {
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  return w === monday.toISOString().slice(0, 10);
+}
+
+function avg(arr, key) {
+  const v = arr.map(x => x[key]).filter(x => x != null);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
+function deltaHtml(cur, prev, lowerIsBetter, unit) {
+  if (cur == null || prev == null || prev === 0) return '<span class="delta flat">—</span>';
+  const pct = (cur - prev) / Math.abs(prev) * 100;
+  if (Math.abs(pct) < 2) return '<span class="delta flat">≈ igual</span>';
+  const improving = lowerIsBetter ? pct < 0 : pct > 0;
+  const arrow = pct < 0 ? '▼' : '▲';
+  return '<span class="delta ' + (improving ? 'good' : 'bad') + '">' + arrow + ' ' +
+    Math.abs(pct).toFixed(0) + '%</span> <span class="note">vs 4 sem. previas</span>';
+}
+
+function renderCards(s) {
+  const complete = s.filter(x => !isCurrentWeek(x.week) && x.days >= 4);
+  const last4 = complete.slice(-4), prev4 = complete.slice(-8, -4);
+  const defs = [
+    { label: 'Coste error €/día', key: 'costeDia', fmt: v => v == null ? '—' : Math.round(v) + ' €', lower: true },
+    { label: '% merma producción', key: 'wastePct', fmt: v => v == null ? '—' : v.toFixed(1) + ' %', lower: true },
+    { label: 'Horas sin stock/día', key: 'emptyDia', fmt: v => v == null ? '—' : v.toFixed(1) + ' h', lower: true },
+    { label: '% días perfectos', key: 'perfectPct', fmt: v => v == null ? '—' : Math.round(v) + ' %', lower: false },
+  ];
+  document.getElementById('cards').innerHTML = defs.map(d => {
+    const cur = avg(last4, d.key), prev = avg(prev4, d.key);
+    return '<div class="card"><div class="label">' + d.label + '</div>' +
+      '<div class="value">' + d.fmt(cur) + '</div>' +
+      deltaHtml(cur, prev, d.lower) + '<div class="note">media últimas 4 semanas</div></div>';
+  }).join('');
+}
+
+function destroy(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
+
+function render() {
+  const s = series();
+  renderCards(s);
+  const labels = s.map(x => fmtWeek(x.week));
+  const dim = s.map(x => isCurrentWeek(x.week) ? 0.35 : 1);
+  const common = {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+    scales: { x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 45 } } },
+  };
+
+  destroy('cost');
+  charts.cost = new Chart(document.getElementById('costChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: '€ tirados/día', data: s.map(x => x.tiradosDia), backgroundColor: dim.map(o => 'rgba(224,122,95,' + 0.85 * o + ')'), stack: 'c' },
+        { label: '€ perdidos/día (est.)', data: s.map(x => x.perdidosDia), backgroundColor: dim.map(o => 'rgba(129,108,153,' + 0.85 * o + ')'), stack: 'c' },
+      ],
+    },
+    options: { ...common, scales: { ...common.scales, y: { stacked: true, beginAtZero: true, ticks: { callback: v => v + ' €' } }, x: { ...common.scales.x, stacked: true } } },
+  });
+
+  destroy('phys');
+  charts.phys = new Chart(document.getElementById('physChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: '% merma', data: s.map(x => x.wastePct), borderColor: '#e07a5f', backgroundColor: '#e07a5f', yAxisID: 'y', tension: 0.3, spanGaps: true, pointRadius: 3 },
+        { label: 'Horas sin stock/día', data: s.map(x => x.emptyDia), borderColor: '#3d5a80', backgroundColor: '#3d5a80', yAxisID: 'y2', tension: 0.3, pointRadius: 3 },
+      ],
+    },
+    options: {
+      ...common,
+      scales: {
+        ...common.scales,
+        y: { position: 'left', beginAtZero: true, ticks: { callback: v => v + ' %' } },
+        y2: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { callback: v => v + ' h' } },
+      },
+    },
+  });
+
+  destroy('qual');
+  charts.qual = new Chart(document.getElementById('qualChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: '% días perfectos', data: s.map(x => x.perfectPct), borderColor: '#2d6a4f', backgroundColor: '#2d6a4f', tension: 0.3, spanGaps: true, pointRadius: 3 },
+        { label: '% registro', data: s.map(x => x.coveragePct), borderColor: '#b7791f', backgroundColor: '#b7791f', borderDash: [5, 4], tension: 0.3, spanGaps: true, pointRadius: 2 },
+      ],
+    },
+    options: { ...common, scales: { ...common.scales, y: { beginAtZero: true, max: 100, ticks: { callback: v => v + ' %' } } } },
+  });
+}
+
+document.getElementById('storeChips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  document.querySelectorAll('#storeChips .chip').forEach(c => c.classList.remove('active'));
+  b.classList.add('active');
+  store = b.dataset.store;
+  render();
+});
+document.getElementById('rangeChips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  document.querySelectorAll('#rangeChips .chip').forEach(c => c.classList.remove('active'));
+  b.classList.add('active');
+  weeksToShow = parseInt(b.dataset.weeks);
+  render();
+});
+
+load();
+</script>
+</body>
+</html>
