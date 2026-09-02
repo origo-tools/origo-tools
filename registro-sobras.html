@@ -630,11 +630,20 @@ const PASTRY = [
 
 // Batch time boundaries
 // Batch 1: before 11:00 | Batch 2: 11:00–12:59 | Batch 3: 13:00+
+// Batch boundaries per store, in minutes from midnight. Must mirror the
+// engine's CONFIG.BATCH_HOURS: Sant Pau's second bake comes out at 09:30
+// (B2B coffee-shop orders fill the first), everyone else at 11:00.
+const BATCH_BOUNDS = {
+  default: { b1End: 11 * 60, b2End: 13 * 60 },
+  santpau: { b1End: 9 * 60 + 30, b2End: 13 * 60 },
+};
 function timeToBatch(timeStr) {
   if (!timeStr) return null;
-  const [h] = timeStr.split(':').map(Number);
-  if (h < 11) return 1;
-  if (h < 13) return 2;
+  const [h, m] = timeStr.split(':').map(Number);
+  const mins = h * 60 + (m || 0);
+  const b = BATCH_BOUNDS[currentStore] || BATCH_BOUNDS.default;
+  if (mins < b.b1End) return 1;
+  if (mins < b.b2End) return 2;
   return 3;
 }
 function batchLabel(b) {
