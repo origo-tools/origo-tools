@@ -1008,6 +1008,7 @@ async function loadInitBundle() {
           syncMap[k] = (v === 0 || v === '0') ? '' : v;
         }
         Object.assign(_activeOverrides[fetchKey].shop, syncMap);
+        if (Object.keys(syncMap).length > 0) _activeOverrides[fetchKey]._syncedLoaded = true;
       }
       if (data.inputs.orders) {
         // FIX 2026-07-16: SJ envío-2 staleness handled by shouldDropSjBreadOrder_
@@ -1149,6 +1150,7 @@ async function loadEstimatesForCurrentDay() {
           syncMap[k] = (v === 0 || v === '0') ? '' : v;
         }
         Object.assign(_activeOverrides[cacheKey].shop, syncMap);
+        if (Object.keys(syncMap).length > 0) _activeOverrides[cacheKey]._syncedLoaded = true;
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
         // FIX 2026-07-16: SJ envío-2 staleness handled by shouldDropSjBreadOrder_
@@ -1433,6 +1435,7 @@ async function prefetchNextDayForFocaccia() {
                 syncMap[k] = (v === 0 || v === '0') ? '' : v;
               }
               Object.assign(_activeOverrides[nextKey].shop, syncMap);
+              if (Object.keys(syncMap).length > 0) _activeOverrides[nextKey]._syncedLoaded = true;
             }
             if (data.orders) Object.assign(_activeOverrides[nextKey].orders, data.orders);
           }
@@ -1809,7 +1812,41 @@ async function fetchSobrasForCurrentDay() {
 function getSobras() {
   const date = getLastWeekDate(currentDay);
   const cacheKey = `${currentStore}-${date}`;
-  return sobrasCache[cacheKey] || { bread: {}, pastry: {}, focaccia: {}, comments: '', tgtg: 0 };
+  const base = sobrasCache[cacheKey] || { bread: {}, pastry: {}, focaccia: {}, comments: '', tgtg: 0 };
+  return overlayPosResolvedTimes(base);
+}
+
+// ADDED 2026-09-03 (Rafa's Sant Joan report): the "Sem. pasada" sold-out
+// times shown in the grid should be WHEN THE LAST UNIT SOLD (Square's last
+// sale, resolved by the engine), not when staff logged the tap — staff often
+// log while closing up (e.g. 21:09 for a real 19:27 sell-out). The engine
+// ships its resolved W1 times as est.w1SoldOuts; overlay them onto the raw
+// sobras record before rendering. Staff time remains the silent fallback
+// when Square had no data (engine leaves the original value in that case).
+function overlayPosResolvedTimes(sobras) {
+  try {
+    const targetDate = getTargetDate(currentDay);
+    const cached = forecastCache[`${currentStore}-${formatDateStr(targetDate)}`];
+    if (!cached || !cached.estimates) return sobras;
+    const out = JSON.parse(JSON.stringify(sobras));
+    for (const est of cached.estimates) {
+      const w1 = est.w1SoldOuts;
+      if (!w1) continue;
+      const key = PRODUCT_NAME_TO_KEY[est.product];
+      if (!key) continue;
+      const rec = (out.bread && out.bread[key]) || (out.pastry && out.pastry[key]);
+      if (!rec || typeof rec !== 'object') continue;
+      // Adopt the engine's view wholesale: it may have RE-BUCKETED a time to a
+      // different batch (Sant Pau 09:30 boundary) as well as corrected the hour,
+      // so per-field merging would show a badge on the wrong batch.
+      for (const f of ['b1SoldOut', 'b2SoldOut', 'b3SoldOut', 'preEnvio2SoldOut']) {
+        rec[f] = w1[f] || null;
+      }
+    }
+    return out;
+  } catch (e) {
+    return sobras;  // display fallback — never break rendering over this
+  }
 }
 
 // ============ STATE ============
@@ -1964,9 +2001,59 @@ function persistSyncedSnapshot_(dateStr) {
     }
   });
   if (inputs.length === 0) return;
+
+  // ADDED 2026-09-03 (Rafa: "el sistema agregó 10 en el 3er batch"): ALSO keep
+  // a device-local copy of the synced shop values. If the BQ overrides ever
+  // fail to load on a later visit, the app used to silently fall back to the
+  // raw AI proposal — batch values Rafa had cleared "reappeared out of
+  // nowhere". This local snapshot is the same-device safety net; the BQ row
+  // remains the cross-device source of truth.
+  try {
+    const localShop = {};
+    for (const i of inputs) {
+      if (i.type === 'syncShop') localShop[i.key] = i.value;
+    }
+    localStorage.setItem('origo-syncsnap-' + store + '-' + dateStr, JSON.stringify(localShop));
+    const ck = store + '-' + dateStr;
+    if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
+    _activeOverrides[ck]._syncedLoaded = true;  // this device just synced — it has the truth
+  } catch (e) { /* quota/private mode — non-fatal */ }
+
   // Fire-and-forget. syncInputsToBigQuery handles retry via _bqRetryQueue
   // on transient failures, so this can't silently drop the snapshot.
   syncInputsToBigQuery(inputs, store);
+}
+
+// ADDED 2026-09-03: guarantee a SYNCED day never silently renders the raw AI
+// proposal. Called at the top of renderMain. If the day is marked synced but
+// no synced overrides made it into _activeOverrides (BQ fetch failed, race,
+// stale tab), restore them from the device-local snapshot; if that's missing
+// too, return 'warn' so renderMain shows a loud banner instead of quietly
+// displaying numbers that differ from the production sheet.
+function reconcileSyncedOverrides_() {
+  const dateStr = formatDateStr(getTargetDate(currentDay));
+  if (!hasSyncedShop(dateStr)) return 'ok';
+  const ck = `${currentStore}-${dateStr}`;
+  if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
+  const ov = _activeOverrides[ck];
+  if (ov._syncedLoaded) return 'ok';
+  // BQ overrides may exist from plain 'shop' edits without the sync snapshot —
+  // the marker only gets set when syncShop rows (or the local snapshot) load.
+  try {
+    const raw = localStorage.getItem('origo-syncsnap-' + currentStore + '-' + dateStr);
+    if (raw) {
+      const snap = JSON.parse(raw);
+      for (const [k, v] of Object.entries(snap)) {
+        if (isSantJoanBreadKey(currentStore, k)) continue;
+        // Only fill gaps — never overwrite fresher BQ-loaded values.
+        if (ov.shop[k] === undefined) ov.shop[k] = (v === 0 || v === '0') ? '' : v;
+      }
+      ov._syncedLoaded = true;
+      console.log('[Origo] Synced values restored from local snapshot for', ck);
+      return 'restored';
+    }
+  } catch (e) { /* ignore */ }
+  return 'warn';
 }
 
 // Returns true on success, false on failure (and re-queues the batch for next
@@ -3056,11 +3143,25 @@ function renderMain() {
       }
     }
   }
+  // ADDED 2026-09-03: a synced day must never silently render the raw AI
+  // proposal (see reconcileSyncedOverrides_). Runs BEFORE getShopSuggestions
+  // so restored overrides are already in place when cells render.
+  const _syncState = reconcileSyncedOverrides_();
+
   const store = STORES[currentStore];
   const shop = getShopSuggestions();
   const orders = getLastWeekOrders();
   const sobras = getSobras();
   let html = '';
+
+  if (_syncState === 'warn' && !forecastLoading) {
+    html += `<div style="background:#fdecea;border:1px solid #e07a5f;border-radius:10px;padding:12px 16px;margin-bottom:12px;color:#a13c28;font-size:13px;line-height:1.45;">
+      ⚠️ <strong>Este día ya se sincronizó, pero no se pudieron cargar los valores sincronizados.</strong>
+      Los números mostrados son la propuesta del algoritmo y pueden NO coincidir con la hoja de producción.
+      Recarga la página antes de editar o volver a sincronizar.
+      <button onclick="location.reload()" style="margin-left:8px;padding:4px 12px;border:1px solid #a13c28;background:white;color:#a13c28;border-radius:6px;cursor:pointer;font-size:12px;">Recargar</button>
+    </div>`;
+  }
 
   if (forecastLoading) {
     html += `<div style="text-align:center;padding:24px;color:#1a3a2a;">
