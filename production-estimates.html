@@ -4270,4 +4270,166 @@ async function confirmSync() {
       // Manual_Inputs so the next page load is guaranteed to display what
       // she synced, even if (a) her individual edits never made it through
       // the 2s debounce, or (b) the AI later regenerates with different
-      /
+      // numbers. hasSyncedShop() + the timestamp-skip logic in
+      // restoreInputState already treat synced values as authoritative, so
+      // these overrides survive subsequent algorithm runs. Fire-and-forget;
+      // uses the same retry queue as edits.
+      try {
+        persistSyncedSnapshot_(targetDateStr);
+      } catch (snapErr) {
+        console.warn('persistSyncedSnapshot_ failed (non-fatal):', snapErr);
+      }
+
+      setTimeout(() => {
+        btn.classList.remove('synced');
+        btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
+        updateSyncButtonState();  // respects forecastLoading if a switchDay re-armed it mid-sync
+      }, 3000);
+    } else {
+      throw new Error(data.error || 'Error desconocido');
+    }
+  } catch(e) {
+    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
+    updateSyncButtonState();
+    status.innerHTML = `<span style="color:#c0392b;">✗ Error: ${e.message}</span>`;
+    console.error('Sync failed:', e);
+  }
+}
+
+function switchDay(day) {
+  // Flush any pending BQ save with the PREVIOUS store/day context before
+  // resetting state — otherwise the debounced save would fire with the new
+  // currentStore/currentDay and corrupt data across days.
+  flushPendingBqSync();
+  flushPendingDayNote();
+  currentDay = day;
+  editedCells = {};
+  _inputsFetched.clear();
+  renderAll();
+  refreshSyncStatusDisplay();
+  loadEstimatesForCurrentDay();
+  fetchSobrasForCurrentDay();
+}
+function switchStore(store) {
+  flushPendingBqSync();
+  flushPendingDayNote();
+  currentStore = store;
+  localStorage.setItem('origo-current-store', store);
+  editedCells = {};
+  _inputsFetched.clear();
+  _noteDays = new Set();  // reset until the per-store fetch lands
+  renderAll();
+  refreshSyncStatusDisplay();
+  // Refresh sync map for the new store so we pick up other browsers' syncs,
+  // and restart the poll so it tracks the currently viewed store.
+  fetchSyncStatusMap(STORE_API_NAMES[store]);
+  startSyncStatusPolling();
+  loadEstimatesForCurrentDay();
+  fetchSobrasForCurrentDay();
+  fetchNoteDays(store);
+}
+function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
+
+// Init
+(async function() {
+  loadPdmHistory();
+
+  // Restore store selector to match persisted value
+  document.getElementById('storeSelect').value = currentStore;
+
+  // Reflect the initial forecastLoading=true on the sync button so the user
+  // can't click it before the init bundle (which applies BQ-recurring order
+  // overrides to the DOM) has had a chance to land.
+  updateSyncButtonState();
+
+  // Migration v4.1: clear stale localStorage shop data that was saved before
+  // the fix that only saves user-edited cells. Old saves included AI values and
+  // broken 0s, which would overwrite fresh AI suggestions on load.
+  if (!localStorage.getItem('origo-input-fix-v41')) {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('origo-shop-')) keysToRemove.push(k);
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('origo-input-fix-v41', '1');
+  }
+
+  // 1. Try to load generatedDates from localStorage cache (instant)
+  const hadCachedDates = loadGeneratedDatesFromCache();
+
+  // 2. Pick default day based on cached data (or Lunes if no cache)
+  let defaultDay = 'Lunes';
+  for (let i = DAYS.length - 1; i >= 0; i--) {
+    if (isDayGenerated(DAYS[i])) {
+      defaultDay = DAYS[i];
+      break;
+    }
+  }
+  currentDay = defaultDay;
+
+  // 3. Render immediately with cached data (instant — no waiting for API)
+  renderAll();
+
+  // Delegated click handler for note icons. Single document-level listener
+  // covers every product/flavor row + future re-renders without per-row
+  // wiring. The handler reads the note key from data attributes set by
+  // productNameCell() / the flavor-row renderer.
+  document.addEventListener('click', function(e) {
+    const btn = e.target && e.target.closest && e.target.closest('.note-icon');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openNoteModal(btn.dataset.noteKey, btn.dataset.noteLabel || '');
+  });
+  // Escape closes the modal
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && document.getElementById('noteModal').classList.contains('show')) {
+      closeNoteModal();
+    }
+  });
+
+  // Per-store note-days set drives the day-tab dot indicator
+  fetchNoteDays(currentStore);
+
+  // 4. Fire all API calls in parallel (non-blocking)
+  // Sobras comes from a different server, so it runs concurrently
+  async function loadData() {
+    const initOk = await loadInitBundle();
+
+    // If init bundle failed (e.g. old backend version), fall back to separate calls
+    if (!initOk) {
+      if (!hadCachedDates) await loadGeneratedDates();
+      await loadEstimatesForCurrentDay();
+      fetchSyncStatusMap(STORE_API_NAMES[currentStore]);
+    }
+    startSyncStatusPolling();
+  }
+
+  // Run data loading and sobras fetch in parallel
+  Promise.all([loadData(), fetchSobrasForCurrentDay()]).then(() => {
+    const targetDate = getTargetDate(currentDay);
+    const dateStr = formatDateStr(targetDate);
+    const cacheKey = `${currentStore}-${dateStr}`;
+    const sobrasDate = getLastWeekDate(currentDay);
+    const sobrasCacheKey = `${currentStore}-${sobrasDate}`;
+
+    // Auto-retry after 3s for anything that failed on first attempt
+    // (handles Apps Script cold start where first call times out)
+    const needsEstimateRetry = !forecastCache[cacheKey];
+    const needsSobrasRetry = !sobrasCache[sobrasCacheKey] || !sobrasCache[sobrasCacheKey]._hasData;
+
+    if (needsEstimateRetry || needsSobrasRetry) {
+      setTimeout(async () => {
+        if (needsEstimateRetry) {
+          const retryOk = await loadInitBundle();
+          if (!retryOk) await loadEstimatesForCurrentDay();
+        }
+        if (needsSobrasRetry) await fetchSobrasForCurrentDay();
+      }, 3000);
+    }
+  });
+})();
+</script>
+</body>
+</html>
