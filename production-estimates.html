@@ -992,23 +992,10 @@ async function loadInitBundle() {
       }
       // Synced values always win over the timestamp staleness check.
       if (skipShop && hasSyncedShop(dateStr)) skipShop = false;
-      if (!skipShop && data.inputs.shop) {
-        const filtered = Object.fromEntries(
-          Object.entries(data.inputs.shop).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
-        );
-        Object.assign(_activeOverrides[fetchKey].shop, filtered);
-      }
-      if (!skipShop && data.inputs.syncShop) {
-        // 0 → '' so the cell renders empty AND the override is treated as real
-        // (see eCell — 0/'0' overrides are skipped, '' is not). See
-        // restoreInputState for the long-form explanation.
-        const syncMap = {};
-        for (const [k, v] of Object.entries(data.inputs.syncShop)) {
-          if (isSantJoanBreadKey(currentStore, k)) continue;
-          syncMap[k] = (v === 0 || v === '0') ? '' : v;
-        }
-        Object.assign(_activeOverrides[fetchKey].shop, syncMap);
-        if (Object.keys(syncMap).length > 0) _activeOverrides[fetchKey]._syncedLoaded = true;
+      if (!skipShop) {
+        // MULTI-TAB FIX 2026-09-16: per-key newest-wins ingest (see _ingestShopMap_)
+        _ingestShopMap_(fetchKey, data.inputs.shop, data.inputs.shopTimes, false);
+        _ingestShopMap_(fetchKey, data.inputs.syncShop, data.inputs.syncShopTimes, true);
       }
       if (data.inputs.orders) {
         // FIX 2026-07-16: SJ envío-2 staleness handled by shouldDropSjBreadOrder_
@@ -1135,22 +1122,10 @@ async function loadEstimatesForCurrentDay() {
         skipShop = false;
         console.log('[Origo] Keeping BQ shop inputs — day already synced, synced values win');
       }
-      if (!skipShop && inputsResp.shop && Object.keys(inputsResp.shop).length > 0) {
-        const filtered = Object.fromEntries(
-          Object.entries(inputsResp.shop).filter(([k]) => !isSantJoanBreadKey(currentStore, k))
-        );
-        Object.assign(_activeOverrides[cacheKey].shop, filtered);
-      }
-      if (!skipShop && inputsResp.syncShop && Object.keys(inputsResp.syncShop).length > 0) {
-        // 0 → '' so empty cells render correctly and bypass skip-zero guards.
-        // See restoreInputState for the rationale.
-        const syncMap = {};
-        for (const [k, v] of Object.entries(inputsResp.syncShop)) {
-          if (isSantJoanBreadKey(currentStore, k)) continue;
-          syncMap[k] = (v === 0 || v === '0') ? '' : v;
-        }
-        Object.assign(_activeOverrides[cacheKey].shop, syncMap);
-        if (Object.keys(syncMap).length > 0) _activeOverrides[cacheKey]._syncedLoaded = true;
+      if (!skipShop) {
+        // MULTI-TAB FIX 2026-09-16: per-key newest-wins ingest (see _ingestShopMap_)
+        _ingestShopMap_(cacheKey, inputsResp.shop, inputsResp.shopTimes, false);
+        _ingestShopMap_(cacheKey, inputsResp.syncShop, inputsResp.syncShopTimes, true);
       }
       if (inputsResp.orders && Object.keys(inputsResp.orders).length > 0) {
         // FIX 2026-07-16: SJ envío-2 staleness handled by shouldDropSjBreadOrder_
@@ -1185,6 +1160,25 @@ async function loadEstimatesForCurrentDay() {
     prefetchNextDayForFocaccia();
   }
 }
+
+// MULTI-TAB FIX 2026-09-16: a tab left open for hours renders stale state and
+// is the raw material of every drift incident. When it regains focus after
+// >5 minutes without a data fetch, silently refresh the current day (inputs +
+// estimates + sync status) before Rafa can act on stale numbers.
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  try {
+    const dateStr = formatDateStr(getTargetDate(currentDay));
+    const ck = `${currentStore}-${dateStr}`;
+    if (Date.now() - (_lastInputsFetch[ck] || 0) > 5 * 60 * 1000) {
+      console.log('[Origo] Tab refocused after idle — refreshing', ck);
+      _inputsFetched.delete(ck);
+      delete forecastCache[ck];
+      fetchSyncStatusMap(STORE_API_NAMES[currentStore]);
+      loadEstimatesForCurrentDay();
+    }
+  } catch (e) { /* non-fatal */ }
+});
 
 // Fetch the sync-status map for a store so switching to a store we haven't
 // seen in this session shows everyone's last sync. Fire-and-forget; a miss
@@ -1427,16 +1421,9 @@ async function prefetchNextDayForFocaccia() {
           if (data && data.success) {
             _cachedBqInputs[nextKey] = data;
             if (!_activeOverrides[nextKey]) _activeOverrides[nextKey] = { shop: {}, orders: {} };
-            if (data.shop) Object.assign(_activeOverrides[nextKey].shop, data.shop);
-            if (data.syncShop) {
-              // 0 → '' so the cell renders empty and bypasses skip-zero guards.
-              const syncMap = {};
-              for (const [k, v] of Object.entries(data.syncShop)) {
-                syncMap[k] = (v === 0 || v === '0') ? '' : v;
-              }
-              Object.assign(_activeOverrides[nextKey].shop, syncMap);
-              if (Object.keys(syncMap).length > 0) _activeOverrides[nextKey]._syncedLoaded = true;
-            }
+            // MULTI-TAB FIX 2026-09-16: per-key newest-wins ingest
+            _ingestShopMap_(nextKey, data.shop, data.shopTimes, false);
+            _ingestShopMap_(nextKey, data.syncShop, data.syncShopTimes, true);
             if (data.orders) Object.assign(_activeOverrides[nextKey].orders, data.orders);
           }
         })
@@ -1904,12 +1891,15 @@ function saveInputState() {
     const saveVal = val === '' ? '0' : val;
 
     const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+    // MULTI-TAB FIX 2026-09-16: carry the edit's timestamp so the engine's
+    // MERGE can refuse to let older state overwrite it.
+    const vTime = _vt(`${currentStore}-${dateStr}`)[key] || Date.now();
     if (isOrder) {
       orderData[key] = saveVal;
-      changedInputs.push({ key, type: 'order', dateKey: dow, value: saveVal });
+      changedInputs.push({ key, type: 'order', dateKey: dow, value: saveVal, valueTime: vTime });
     } else {
       shopData[key] = saveVal;
-      changedInputs.push({ key, type: 'shop', dateKey: dateStr, value: saveVal });
+      changedInputs.push({ key, type: 'shop', dateKey: dateStr, value: saveVal, valueTime: vTime });
     }
   });
 
@@ -1977,6 +1967,18 @@ function persistSyncedSnapshot_(dateStr) {
   if (!store || !dateStr) return;
 
   const inputs = [];
+  // MULTI-TAB FIX 2026-09-16: every snapshot value carries the time it was
+  // last genuinely changed — the user's edit time when we have one, else the
+  // payload's generatedAt (an untouched AI cell is only as fresh as its
+  // generation). The engine MERGE refuses to overwrite newer rows, so a
+  // stale tab syncing old state loses per-cell instead of steamrolling.
+  const ck = store + '-' + dateStr;
+  const vtMap = _vt(ck);
+  let genMs = Date.now();
+  try {
+    const cached = forecastCache[ck];
+    if (cached && cached.generatedAt) genMs = new Date(cached.generatedAt).getTime();
+  } catch (e) { /* fall back to now */ }
   document.querySelectorAll('.editable input').forEach(input => {
     const key = input.dataset.key;
     if (!key) return;
@@ -1987,9 +1989,10 @@ function persistSyncedSnapshot_(dateStr) {
     if (isSantJoanBreadKey(store, key)) return;
     const val = input.value;
     const saveVal = val === '' ? '0' : val;
+    const vTime = vtMap[key] || genMs;
     const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
     if (isOrder) {
-      inputs.push({ key, type: 'order', dateKey: dow, value: saveVal });
+      inputs.push({ key, type: 'order', dateKey: dow, value: saveVal, valueTime: vTime });
     } else {
       // Use 'syncShop' (not 'shop') so the value is treated as authoritative
       // on restore — even when rounded to 0. Plain 'shop' rows from user
@@ -1997,7 +2000,7 @@ function persistSyncedSnapshot_(dateStr) {
       // rows skip that guard. Multi-user safety: every device that restores
       // sees the rounded value Rafa just pushed to the spreadsheet, so a
       // re-sync from another browser doesn't re-introduce dropped batches.
-      inputs.push({ key, type: 'syncShop', dateKey: dateStr, value: saveVal });
+      inputs.push({ key, type: 'syncShop', dateKey: dateStr, value: saveVal, valueTime: vTime });
     }
   });
   if (inputs.length === 0) return;
@@ -2010,11 +2013,17 @@ function persistSyncedSnapshot_(dateStr) {
   // remains the cross-device source of truth.
   try {
     const localShop = {};
+    const localTimes = {};
     for (const i of inputs) {
-      if (i.type === 'syncShop') localShop[i.key] = i.value;
+      if (i.type === 'syncShop') {
+        localShop[i.key] = i.value;
+        localTimes[i.key] = i.valueTime;
+      }
     }
-    localStorage.setItem('origo-syncsnap-' + store + '-' + dateStr, JSON.stringify(localShop));
-    const ck = store + '-' + dateStr;
+    // v2 snapshot format: { v: values, t: per-key times, at: snapshot time }.
+    // reconcileSyncedOverrides_ and the drift guard accept both formats.
+    localStorage.setItem('origo-syncsnap-' + store + '-' + dateStr,
+      JSON.stringify({ v: localShop, t: localTimes, at: Date.now() }));
     if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
     _activeOverrides[ck]._syncedLoaded = true;  // this device just synced — it has the truth
   } catch (e) { /* quota/private mode — non-fatal */ }
@@ -2036,24 +2045,41 @@ function reconcileSyncedOverrides_() {
   const ck = `${currentStore}-${dateStr}`;
   if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
   const ov = _activeOverrides[ck];
-  if (ov._syncedLoaded) return 'ok';
-  // BQ overrides may exist from plain 'shop' edits without the sync snapshot —
-  // the marker only gets set when syncShop rows (or the local snapshot) load.
+  // HARDENED 2026-09-16 (Rafa's drift report): the failure isn't always
+  // all-or-nothing — PARTIAL override loss mixes synced cells with raw AI
+  // cells on the same screen ("agregó 12 unidades post sincronización").
+  // So the gap-fill from the local snapshot now runs EVERY render of a
+  // synced day, even when _syncedLoaded is set, repairing any key that
+  // went missing. BQ-loaded values are never overwritten — only absent
+  // keys are filled.
+  let snapExists = false;
   try {
     const raw = localStorage.getItem('origo-syncsnap-' + currentStore + '-' + dateStr);
     if (raw) {
-      const snap = JSON.parse(raw);
-      for (const [k, v] of Object.entries(snap)) {
+      snapExists = true;
+      const parsed = JSON.parse(raw);
+      // v2 format {v, t, at}; v1 was a plain values map.
+      const values = parsed.v || parsed;
+      const times = parsed.t || {};
+      const snapAt = parsed.at || 0;
+      const vt = _vt(ck);
+      let filled = 0;
+      for (const [k, v] of Object.entries(values)) {
         if (isSantJoanBreadKey(currentStore, k)) continue;
-        // Only fill gaps — never overwrite fresher BQ-loaded values.
-        if (ov.shop[k] === undefined) ov.shop[k] = (v === 0 || v === '0') ? '' : v;
+        if (ov.shop[k] === undefined) {
+          ov.shop[k] = (v === 0 || v === '0') ? '' : v;
+          if (!vt[k]) vt[k] = times[k] || snapAt || 0;
+          filled++;
+        }
       }
+      if (filled > 0) console.log('[Origo] Repaired ' + filled + ' missing synced value(s) from local snapshot for', ck);
+      const hadLoaded = ov._syncedLoaded;
       ov._syncedLoaded = true;
-      console.log('[Origo] Synced values restored from local snapshot for', ck);
-      return 'restored';
+      return hadLoaded && filled === 0 ? 'ok' : 'restored';
     }
   } catch (e) { /* ignore */ }
-  return 'warn';
+  if (ov._syncedLoaded) return 'ok';
+  return snapExists ? 'ok' : 'warn';
 }
 
 // Returns true on success, false on failure (and re-queues the batch for next
@@ -2086,6 +2112,37 @@ const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
 // Populated by restoreInputState once, then used by renderMain on every DOM rebuild.
 // This eliminates race conditions: values are baked into the HTML, not patched async.
 const _activeOverrides = {};
+
+// MULTI-TAB FIX 2026-09-16 (François + Melisa can have the app open at once):
+// per-cell provenance timestamps. `${store}-${date}` → { key: epochMs when
+// this tab last knew that value changed } — set on user edits, and to the
+// server row's updated_at when ingesting BQ values. Rule enforced everywhere
+// (here and in the engine's MERGE): a value may only be replaced by one with
+// an equal-or-newer timestamp. A manual edit can never lose to state that
+// was generated before it.
+const _valueTimes = {};
+function _vt(ck) { if (!_valueTimes[ck]) _valueTimes[ck] = {}; return _valueTimes[ck]; }
+const _lastInputsFetch = {};  // ck → ms of last successful BQ ingest
+
+// Shared BQ→overrides ingest with per-key newest-wins. `times` comes from the
+// engine's shopTimes/syncShopTimes; when absent (older engine), server rows
+// are treated as time-0 so local knowledge always wins ties conservatively.
+function _ingestShopMap_(ck, map, times, isSync) {
+  if (!map) return;
+  if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
+  const ov = _activeOverrides[ck];
+  const vt = _vt(ck);
+  for (const [k, v0] of Object.entries(map)) {
+    if (isSantJoanBreadKey(currentStore, k)) continue;
+    const srvT = (times && times[k]) || 0;
+    const locT = vt[k] || 0;
+    if (locT > srvT) continue;  // this tab knows a newer value — keep it
+    ov.shop[k] = isSync ? ((v0 === 0 || v0 === '0') ? '' : v0) : v0;
+    if (srvT) vt[k] = srvT;
+  }
+  if (isSync && Object.keys(map).length > 0) ov._syncedLoaded = true;
+  _lastInputsFetch[ck] = Date.now();
+}
 
 // ===== NOTES STATE =====
 // Notes are scoped per (store, date). Keyed by `${storeId}-${dateStr}`,
@@ -3491,6 +3548,7 @@ function renderMain() {
       }
 
       editedCells[k] = true;
+      _vt(overKey)[k] = Date.now();  // multi-tab: this edit outranks anything older
       this.closest('td').className = 'editable edited';
       _activeOverrides[overKey][isOrd ? 'orders' : 'shop'][k] = v || '';
       saveInputState();
@@ -3853,6 +3911,50 @@ async function confirmSync() {
     return;
   }
 
+  // GUARD 2026-09-16 (Rafa's urgent drift report): never push a screen that
+  // silently diverged from the last synced state. If this day was already
+  // synced, compare every on-screen shop value against the local snapshot of
+  // that sync; any difference NOT typed by the user this session (not in
+  // editedCells) means values drifted (partial override load, stale tab) —
+  // syncing would bake the drift into the production sheet AND into the next
+  // snapshot, compounding. Ask before proceeding; recommend reloading.
+  try {
+    const _gDate = formatDateStr(getTargetDate(currentDay));
+    if (hasSyncedShop(_gDate)) {
+      const _gRaw = localStorage.getItem('origo-syncsnap-' + currentStore + '-' + _gDate);
+      if (_gRaw) {
+        const _gParsed = JSON.parse(_gRaw);
+        const _gSnap = _gParsed.v || _gParsed;          // v2 {v,t,at} or v1 plain map
+        const _gTimes = _gParsed.t || {};
+        const _gAt = _gParsed.at || 0;
+        const _gVt = _vt(`${currentStore}-${_gDate}`);
+        const _gDiffs = [];
+        for (const [k, v] of Object.entries(_gSnap)) {
+          if (editedCells[k]) continue;  // deliberately edited this session
+          // MULTI-TAB: a value legitimately newer than the snapshot (another
+          // tab's edit, ingested with a newer timestamp) is not drift.
+          if ((_gVt[k] || 0) > (_gTimes[k] || _gAt)) continue;
+          const inp = document.querySelector('input[data-key="' + k + '"]');
+          if (!inp) continue;
+          const cur = inp.value === '' ? '0' : String(inp.value);
+          const want = (v === '' || v === null) ? '0' : String(v);
+          if (cur !== want) _gDiffs.push(k.replace(/^(bread|pastry)-/, '').replace(/-(shop|b[123]s)$/, ' $1') + ': sincronizado ' + want + ' → pantalla ' + cur);
+        }
+        if (_gDiffs.length > 0) {
+          const ok = confirm('⚠️ ATENCIÓN: ' + _gDiffs.length + ' valor(es) en pantalla NO coinciden con lo último sincronizado y NO los has editado tú en esta sesión (posible fallo de carga):\n\n' +
+            _gDiffs.slice(0, 8).join('\n') + (_gDiffs.length > 8 ? '\n…' : '') +
+            '\n\n¿Sincronizar igualmente?\n\nRecomendado: Cancelar, recargar la página (Cmd+Shift+R) y revisar.');
+          if (!ok) {
+            if (_syncBtnEarly) _syncBtnEarly.disabled = false;
+            return;
+          }
+        }
+      }
+    }
+  } catch (eGuard) {
+    console.warn('pre-sync drift guard failed (continuing):', eGuard);
+  }
+
   // Drain any in-flight edit POSTs (2s debounce in saveInputState) BEFORE
   // touching the sheet. Without this, a user who edits then immediately
   // syncs then closes the tab can lose the edit from Manual_Inputs even
@@ -3872,6 +3974,29 @@ async function confirmSync() {
     ]);
   } catch (e) {
     console.warn('flushPendingBqSync before sync failed (continuing):', e);
+  }
+
+  // MULTI-TAB GUARD 2026-09-16: after flushing OUR edits, pull the latest
+  // saved inputs so a tab that sat open doesn't push stale state over another
+  // tab's newer edits. Per-key newest-wins (_ingestShopMap_): our own edits
+  // carry fresher timestamps and survive; anything genuinely newer from
+  // elsewhere lands on screen BEFORE rounding reads the DOM. Capped at 6s so
+  // sync never hangs on a slow network.
+  try {
+    const _rDate = formatDateStr(getTargetDate(currentDay));
+    const _rDow = DAYS_TO_DOW[currentDay] || '1';
+    const _rResp = await Promise.race([
+      fetchJson(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${_rDate}&dayOfWeek=${_rDow}`),
+      new Promise(function (res) { setTimeout(function () { res(null); }, 6000); }),
+    ]);
+    if (_rResp && _rResp.success) {
+      const _rCk = `${currentStore}-${_rDate}`;
+      _ingestShopMap_(_rCk, _rResp.shop, _rResp.shopTimes, false);
+      _ingestShopMap_(_rCk, _rResp.syncShop, _rResp.syncShopTimes, true);
+      renderMain();
+    }
+  } catch (eR) {
+    console.warn('pre-sync input refresh failed (continuing):', eR);
   }
 
   // Helper — applies a rounded value to a shop input AND records it in
@@ -4145,166 +4270,4 @@ async function confirmSync() {
       // Manual_Inputs so the next page load is guaranteed to display what
       // she synced, even if (a) her individual edits never made it through
       // the 2s debounce, or (b) the AI later regenerates with different
-      // numbers. hasSyncedShop() + the timestamp-skip logic in
-      // restoreInputState already treat synced values as authoritative, so
-      // these overrides survive subsequent algorithm runs. Fire-and-forget;
-      // uses the same retry queue as edits.
-      try {
-        persistSyncedSnapshot_(targetDateStr);
-      } catch (snapErr) {
-        console.warn('persistSyncedSnapshot_ failed (non-fatal):', snapErr);
-      }
-
-      setTimeout(() => {
-        btn.classList.remove('synced');
-        btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
-        updateSyncButtonState();  // respects forecastLoading if a switchDay re-armed it mid-sync
-      }, 3000);
-    } else {
-      throw new Error(data.error || 'Error desconocido');
-    }
-  } catch(e) {
-    btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Sincronizar con Hoja de Producción`;
-    updateSyncButtonState();
-    status.innerHTML = `<span style="color:#c0392b;">✗ Error: ${e.message}</span>`;
-    console.error('Sync failed:', e);
-  }
-}
-
-function switchDay(day) {
-  // Flush any pending BQ save with the PREVIOUS store/day context before
-  // resetting state — otherwise the debounced save would fire with the new
-  // currentStore/currentDay and corrupt data across days.
-  flushPendingBqSync();
-  flushPendingDayNote();
-  currentDay = day;
-  editedCells = {};
-  _inputsFetched.clear();
-  renderAll();
-  refreshSyncStatusDisplay();
-  loadEstimatesForCurrentDay();
-  fetchSobrasForCurrentDay();
-}
-function switchStore(store) {
-  flushPendingBqSync();
-  flushPendingDayNote();
-  currentStore = store;
-  localStorage.setItem('origo-current-store', store);
-  editedCells = {};
-  _inputsFetched.clear();
-  _noteDays = new Set();  // reset until the per-store fetch lands
-  renderAll();
-  refreshSyncStatusDisplay();
-  // Refresh sync map for the new store so we pick up other browsers' syncs,
-  // and restart the poll so it tracks the currently viewed store.
-  fetchSyncStatusMap(STORE_API_NAMES[store]);
-  startSyncStatusPolling();
-  loadEstimatesForCurrentDay();
-  fetchSobrasForCurrentDay();
-  fetchNoteDays(store);
-}
-function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
-
-// Init
-(async function() {
-  loadPdmHistory();
-
-  // Restore store selector to match persisted value
-  document.getElementById('storeSelect').value = currentStore;
-
-  // Reflect the initial forecastLoading=true on the sync button so the user
-  // can't click it before the init bundle (which applies BQ-recurring order
-  // overrides to the DOM) has had a chance to land.
-  updateSyncButtonState();
-
-  // Migration v4.1: clear stale localStorage shop data that was saved before
-  // the fix that only saves user-edited cells. Old saves included AI values and
-  // broken 0s, which would overwrite fresh AI suggestions on load.
-  if (!localStorage.getItem('origo-input-fix-v41')) {
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith('origo-shop-')) keysToRemove.push(k);
-    }
-    keysToRemove.forEach(k => localStorage.removeItem(k));
-    localStorage.setItem('origo-input-fix-v41', '1');
-  }
-
-  // 1. Try to load generatedDates from localStorage cache (instant)
-  const hadCachedDates = loadGeneratedDatesFromCache();
-
-  // 2. Pick default day based on cached data (or Lunes if no cache)
-  let defaultDay = 'Lunes';
-  for (let i = DAYS.length - 1; i >= 0; i--) {
-    if (isDayGenerated(DAYS[i])) {
-      defaultDay = DAYS[i];
-      break;
-    }
-  }
-  currentDay = defaultDay;
-
-  // 3. Render immediately with cached data (instant — no waiting for API)
-  renderAll();
-
-  // Delegated click handler for note icons. Single document-level listener
-  // covers every product/flavor row + future re-renders without per-row
-  // wiring. The handler reads the note key from data attributes set by
-  // productNameCell() / the flavor-row renderer.
-  document.addEventListener('click', function(e) {
-    const btn = e.target && e.target.closest && e.target.closest('.note-icon');
-    if (!btn) return;
-    e.preventDefault();
-    e.stopPropagation();
-    openNoteModal(btn.dataset.noteKey, btn.dataset.noteLabel || '');
-  });
-  // Escape closes the modal
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && document.getElementById('noteModal').classList.contains('show')) {
-      closeNoteModal();
-    }
-  });
-
-  // Per-store note-days set drives the day-tab dot indicator
-  fetchNoteDays(currentStore);
-
-  // 4. Fire all API calls in parallel (non-blocking)
-  // Sobras comes from a different server, so it runs concurrently
-  async function loadData() {
-    const initOk = await loadInitBundle();
-
-    // If init bundle failed (e.g. old backend version), fall back to separate calls
-    if (!initOk) {
-      if (!hadCachedDates) await loadGeneratedDates();
-      await loadEstimatesForCurrentDay();
-      fetchSyncStatusMap(STORE_API_NAMES[currentStore]);
-    }
-    startSyncStatusPolling();
-  }
-
-  // Run data loading and sobras fetch in parallel
-  Promise.all([loadData(), fetchSobrasForCurrentDay()]).then(() => {
-    const targetDate = getTargetDate(currentDay);
-    const dateStr = formatDateStr(targetDate);
-    const cacheKey = `${currentStore}-${dateStr}`;
-    const sobrasDate = getLastWeekDate(currentDay);
-    const sobrasCacheKey = `${currentStore}-${sobrasDate}`;
-
-    // Auto-retry after 3s for anything that failed on first attempt
-    // (handles Apps Script cold start where first call times out)
-    const needsEstimateRetry = !forecastCache[cacheKey];
-    const needsSobrasRetry = !sobrasCache[sobrasCacheKey] || !sobrasCache[sobrasCacheKey]._hasData;
-
-    if (needsEstimateRetry || needsSobrasRetry) {
-      setTimeout(async () => {
-        if (needsEstimateRetry) {
-          const retryOk = await loadInitBundle();
-          if (!retryOk) await loadEstimatesForCurrentDay();
-        }
-        if (needsSobrasRetry) await fetchSobrasForCurrentDay();
-      }, 3000);
-    }
-  });
-})();
-</script>
-</body>
-</html>
+      /
