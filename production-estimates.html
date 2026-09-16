@@ -572,8 +572,14 @@ function hasSyncedShop(dateStr) {
   const entry = syncStatusCache[syncStatusKey(storeApiName, dateStr)];
   return !!(entry && entry.syncedAt);
 }
+// QA FIX 2026-09-16: track which stores have a LOADED sync-status map —
+// clearEditsIfNewAIRun must not treat "status not fetched yet" as "day was
+// never synced" (that race wiped synced days' edits at startup / on idle
+// refresh when the status fetch lost the race).
+const _syncStatusLoaded = {};
 function applySyncStatusMap(storeApiName, map) {
   if (!storeApiName || !map) return;
+  _syncStatusLoaded[storeApiName] = true;
   for (const dateStr of Object.keys(map)) {
     syncStatusCache[syncStatusKey(storeApiName, dateStr)] = map[dateStr];
   }
@@ -1012,7 +1018,7 @@ async function loadInitBundle() {
           })
         );
         purgeSjBreadOrderOverrides_(fetchKey, droppedSj);
-        Object.assign(_activeOverrides[fetchKey].orders, filtered);
+        _ingestOrdersMap_(fetchKey, filtered, data.inputs.orderTimes);
       }
     }
 
@@ -1143,7 +1149,7 @@ async function loadEstimatesForCurrentDay() {
           })
         );
         purgeSjBreadOrderOverrides_(cacheKey, droppedSj);
-        Object.assign(_activeOverrides[cacheKey].orders, filtered);
+        _ingestOrdersMap_(cacheKey, filtered, inputsResp.orderTimes);
       }
     }
   } catch(e) {
@@ -1240,6 +1246,10 @@ function clearEditsIfNewAIRun(dateStr) {
   const storeDateKey = `${currentStore}-${dateStr}`;
   const cached = forecastCache[storeDateKey];
   if (!cached || !cached.generatedAt) return;
+  // QA FIX 2026-09-16: without a loaded sync-status map we can't distinguish
+  // "never synced" from "status not fetched yet" — clearing on the latter
+  // wiped synced days' state in a startup/idle-refresh race. Defer instead.
+  if (!_syncStatusLoaded[STORE_API_NAMES[currentStore]]) return;
 
   const genKey = `origo-ai-gen-${currentStore}-${dateStr}`;
   const lastKnown = localStorage.getItem(genKey);
@@ -1329,9 +1339,14 @@ function getFocacciaDynamicCalc() {
       const slug = fcSlug(est.flavorName);
       const k = `fc-${slug}-shop`;
       const ov = overrides[k];
-      const v = (ov !== undefined && ov !== '' && ov !== null)
-        ? (parseInt(ov) || 0)
-        : (parseInt(est.estimate) || 0);
+      // QA FIX 2026-09-16: '' is a REAL override meaning zero (the system-wide
+      // convention) — this was the one consumer treating '' as "no override"
+      // and substituting the AI estimate back, silently inflating the SJ
+      // focaccia count whenever a bocadillo flavor was synced to zero.
+      const v = (ov === '' ) ? 0
+        : (ov !== undefined && ov !== null)
+          ? (parseInt(ov) || 0)
+          : (parseInt(est.estimate) || 0);
       total += Math.max(0, v);
     }
     const remainder = total % perFocaccia;
@@ -1384,10 +1399,14 @@ async function prefetchNextDayForFocaccia() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return;
 
+  // QA FIX 2026-09-16: capture store at entry (the one fetcher missing the
+  // request-guard pattern) — post-await logic must not run against a
+  // different store's live globals.
+  const prefetchStore = currentStore;
   const nextDay = getNextDayOfWeek(currentDay);
   const nextDate = getTargetDate(nextDay);
   const nextDateStr = formatDateStr(nextDate);
-  const nextKey = `${currentStore}-${nextDateStr}`;
+  const nextKey = `${prefetchStore}-${nextDateStr}`;
 
   // Skip the very last generated day (no next-day estimates exist yet)
   if (!generatedDatesSet.has(nextDateStr)) return;
@@ -1398,7 +1417,7 @@ async function prefetchNextDayForFocaccia() {
   if (_nextDayPrefetched.has(nextKey)) return;
   _nextDayPrefetched.add(nextKey);
 
-  const storeApiName = STORE_API_NAMES[currentStore];
+  const storeApiName = STORE_API_NAMES[prefetchStore];
   const dow = String(nextDate.getDay());  // 0=Sun … 6=Sat
   const tasks = [];
   if (needEstimates) {
@@ -1416,7 +1435,7 @@ async function prefetchNextDayForFocaccia() {
   if (needInputs) {
     _inputsFetched.add(nextKey);
     tasks.push(
-      fetchJson(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${nextDateStr}&dayOfWeek=${dow}`)
+      fetchJson(`${apiUrl}?action=loadInputs&store=${prefetchStore}&date=${nextDateStr}&dayOfWeek=${dow}`)
         .then(data => {
           if (data && data.success) {
             _cachedBqInputs[nextKey] = data;
@@ -1424,7 +1443,7 @@ async function prefetchNextDayForFocaccia() {
             // MULTI-TAB FIX 2026-09-16: per-key newest-wins ingest
             _ingestShopMap_(nextKey, data.shop, data.shopTimes, false);
             _ingestShopMap_(nextKey, data.syncShop, data.syncShopTimes, true);
-            if (data.orders) Object.assign(_activeOverrides[nextKey].orders, data.orders);
+            _ingestOrdersMap_(nextKey, data.orders, data.orderTimes);
           }
         })
         .catch(() => { _inputsFetched.delete(nextKey); })
@@ -1438,17 +1457,18 @@ async function prefetchNextDayForFocaccia() {
   // settle because the AI timestamp is only available once the estimates fetch
   // completes. Without this, the prefetched next-day overrides keep stale BQ
   // values that make envío 2 cells render red on the next page.
-  if (currentStore === 'santjoan' && _activeOverrides[nextKey] && _activeOverrides[nextKey].orders) {
+  // QA FIX 2026-09-16: run the staleness filter for the CAPTURED store even
+  // if the user switched away mid-flight (the old `currentStore` check
+  // silently skipped the purge, leaving polluted overrides behind forever).
+  if (prefetchStore === 'santjoan' && _activeOverrides[nextKey] && _activeOverrides[nextKey].orders) {
     const cachedInputs = _cachedBqInputs[nextKey];
     const aiData = forecastCache[nextKey];
     if (cachedInputs && cachedInputs.updatedAt && aiData && aiData.generatedAt) {
       const bqTime = Number(cachedInputs.updatedAt) * 1000;
       const aiTime = new Date(aiData.generatedAt).getTime();
       const stale = bqTime < aiTime;
-      // hasSyncedShop reads syncStatusCache for currentStore — safe here because
-      // the prefetch only runs for currentStore === 'santjoan'.
       const synced = (function() {
-        const entry = syncStatusCache[syncStatusKey(STORE_API_NAMES[currentStore], nextDateStr)];
+        const entry = syncStatusCache[syncStatusKey(STORE_API_NAMES[prefetchStore], nextDateStr)];
         return !!(entry && entry.syncedAt);
       })();
       if (stale && !synced) {
@@ -1461,8 +1481,9 @@ async function prefetchNextDayForFocaccia() {
     }
   }
 
-  // Re-render so the focaccia row picks up the fresh next-day numbers
-  if (currentStore === 'santjoan') renderMain();
+  // Re-render so the focaccia row picks up the fresh next-day numbers —
+  // only if the user is still on the store this prefetch belongs to.
+  if (currentStore === prefetchStore && currentStore === 'santjoan') renderMain();
 }
 
 // Aggregate FOCACCIA proposal from the backend — per-flavor proposed pieces
@@ -1961,11 +1982,12 @@ async function flushPendingBqSync() {
 // or whether the user closed the tab immediately after sync. The store and
 // dateStr are captured at call time so a switchDay/switchStore mid-flight
 // can't misroute the writes.
-function persistSyncedSnapshot_(dateStr) {
-  const store = currentStore;
-  const dow = DAYS_TO_DOW[currentDay] || '1';
-  if (!store || !dateStr) return;
-
+// QA FIX 2026-09-16: DOM capture split out so confirmSync can snapshot at
+// payload-build time (same DOM moment as the sheet payload) — a day/store
+// switch during the sync POST can no longer make the snapshot capture the
+// WRONG day's screen.
+function _collectSnapshotInputs_(store, dateStr) {
+  const dow = String(new Date(dateStr + 'T12:00:00').getDay());
   const inputs = [];
   // MULTI-TAB FIX 2026-09-16: every snapshot value carries the time it was
   // last genuinely changed — the user's edit time when we have one, else the
@@ -2003,6 +2025,14 @@ function persistSyncedSnapshot_(dateStr) {
       inputs.push({ key, type: 'syncShop', dateKey: dateStr, value: saveVal, valueTime: vTime });
     }
   });
+  return inputs;
+}
+
+function persistSyncedSnapshot_(dateStr, storeArg, precollected) {
+  const store = storeArg || currentStore;
+  if (!store || !dateStr) return;
+  const ck = store + '-' + dateStr;
+  const inputs = precollected || _collectSnapshotInputs_(store, dateStr);
   if (inputs.length === 0) return;
 
   // ADDED 2026-09-03 (Rafa: "el sistema agregó 10 en el 3er batch"): ALSO keep
@@ -2090,16 +2120,25 @@ async function syncInputsToBigQuery(inputs, store) {
   if (!apiUrl || !inputs || inputs.length === 0 || !store) return true;
 
   try {
-    await fetchJson(apiUrl, {
+    const resp = await fetchJson(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'saveInputs', store: store, inputs: inputs })
+      body: JSON.stringify({ action: 'saveInputs', store: store, inputs: inputs, clientNow: Date.now() })
     });
+    // QA FIX 2026-09-16 (audit: invisible save failures): Apps Script returns
+    // HTTP 200 even when the save FAILED ({error:...} body) — the retry queue
+    // and every caller believed those writes succeeded. Now the body decides.
+    if (!resp || resp.error || resp.success === false) {
+      throw new Error((resp && resp.error) || 'saveInputs returned no success');
+    }
     return true;
   } catch (e) {
     console.warn('BigQuery sync failed, queued for retry:', e.message);
     _bqRetryQueue.push({ inputs: inputs, store: store });
-    if (_bqRetryQueue.length > 20) _bqRetryQueue.shift();
+    // QA 2026-09-16: cap raised 20 → 60 — with application-level failures now
+    // detected (not just transport), more batches can legitimately queue
+    // during an outage; dropping the oldest silently loses edits.
+    if (_bqRetryQueue.length > 60) _bqRetryQueue.shift();
     return false;
   }
 }
@@ -2128,6 +2167,7 @@ const _lastInputsFetch = {};  // ck → ms of last successful BQ ingest
 // engine's shopTimes/syncShopTimes; when absent (older engine), server rows
 // are treated as time-0 so local knowledge always wins ties conservatively.
 function _ingestShopMap_(ck, map, times, isSync) {
+  _lastInputsFetch[ck] = Date.now();
   if (!map) return;
   if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
   const ov = _activeOverrides[ck];
@@ -2136,12 +2176,39 @@ function _ingestShopMap_(ck, map, times, isSync) {
     if (isSantJoanBreadKey(currentStore, k)) continue;
     const srvT = (times && times[k]) || 0;
     const locT = vt[k] || 0;
-    if (locT > srvT) continue;  // this tab knows a newer value — keep it
+    // QA FIX 2026-09-16: ties go to LOCAL (>=). A round-trip of our own edit
+    // comes back with the exact same ms timestamp; applying it re-converted a
+    // deliberate zero-clear ('' locally) into the raw BQ 0 — which eCell
+    // treats as "no override" → the AI value reappeared and could be synced
+    // (audit finding: the deterministic zero-clear regression). A tab with no
+    // knowledge (locT 0) still accepts everything.
+    if (locT > 0 && locT >= srvT) continue;
     ov.shop[k] = isSync ? ((v0 === 0 || v0 === '0') ? '' : v0) : v0;
     if (srvT) vt[k] = srvT;
   }
   if (isSync && Object.keys(map).length > 0) ov._syncedLoaded = true;
-  _lastInputsFetch[ck] = Date.now();
+}
+
+// Orders twin (QA FIX 2026-09-16): B2B pedidos were ingested via blanket
+// Object.assign with no per-key timestamps at all — the same multi-tab drift
+// the shop cells had, but in Melisa's domain. Pass a pre-filtered map (SJ
+// guards applied by the caller); returns the map of keys actually accepted
+// so callers can apply exactly those to the DOM.
+function _ingestOrdersMap_(ck, map, times) {
+  const accepted = {};
+  if (!map) return accepted;
+  if (!_activeOverrides[ck]) _activeOverrides[ck] = { shop: {}, orders: {} };
+  const ov = _activeOverrides[ck];
+  const vt = _vt(ck);
+  for (const [k, v0] of Object.entries(map)) {
+    const srvT = (times && times[k]) || 0;
+    const locT = vt[k] || 0;
+    if (locT > 0 && locT >= srvT) continue;
+    ov.orders[k] = v0;
+    if (srvT) vt[k] = srvT;
+    accepted[k] = v0;
+  }
+  return accepted;
 }
 
 // ===== NOTES STATE =====
@@ -2446,9 +2513,24 @@ async function restoreInputState() {
         ? new Date(forecastCache[cacheKey].generatedAt).getTime() : 0;
       const shopSavedAt = parsed.savedAt || 0;
       let isStaleEdit = aiGenAt && (!shopSavedAt || shopSavedAt < aiGenAt);
+      // QA FIX 2026-09-16 (audit: "immortal localStorage edits"): the old rule
+      // "synced day → never stale" made pre-sync local edits immortal — they
+      // re-applied on every render forever, re-flagged themselves as
+      // editedCells (making them invisible to the pre-sync drift guard), and
+      // could overwrite another device's NEWER synced values. New rule: on a
+      // synced day, local edits are only honored when saved AFTER that sync
+      // (a post-sync tweak not yet re-synced); anything older is superseded
+      // by the sync and discarded.
       if (isStaleEdit && hasSyncedShop(dateStr)) isStaleEdit = false;
+      if (!isStaleEdit && hasSyncedShop(dateStr)) {
+        const entry = syncStatusCache[syncStatusKey(STORE_API_NAMES[currentStore], dateStr)];
+        const syncedAtMs = entry && entry.syncedAt ? new Date(entry.syncedAt).getTime() : 0;
+        if (syncedAtMs && shopSavedAt <= syncedAtMs) {
+          isStaleEdit = true;  // superseded by the sync — let synced values govern
+        }
+      }
       if (isStaleEdit) {
-        // Edits predate the AI run (or have no timestamp) — discard them
+        // Edits predate the AI run / the sync (or have no timestamp) — discard
         localStorage.removeItem(getShopStorageKey());
       } else {
         if (parsed.inputs) localShop = parsed.inputs;
@@ -2554,30 +2636,26 @@ async function restoreInputState() {
       console.log('[Origo] Keeping BQ shop inputs — day already synced, synced values win');
     }
     // Store BQ overrides so renderMain can bake them into the HTML on every rebuild.
-    // This eliminates race conditions where async restoreInputState loses to a DOM rebuild.
+    // QA FIX 2026-09-16 (audit finding #1 — THE root of the drift incidents):
+    // this function runs at the tail of EVERY renderMain and used to blanket
+    // Object.assign the static _cachedBqInputs snapshot over _activeOverrides
+    // and the DOM, with no timestamp check — stomping any edit made after the
+    // cache was fetched (sobras fetch landing seconds later reverted fresh
+    // edits; the pre-sync refetch was undone by its own renderMain). Now both
+    // maps go through _ingestShopMap_ (per-key newest-wins), and the DOM gets
+    // the POST-GUARD override state, never the raw cached values.
     if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
-    if (!skipShop && bqData.shop && Object.keys(bqData.shop).length > 0) {
-      const filteredShop = Object.fromEntries(
-        Object.entries(bqData.shop).filter(([k]) => !isSantJoanBreadKey(snapshotStore, k))
-      );
-      Object.assign(_activeOverrides[fetchKey].shop, filteredShop);
-      applyInputValues(bqData.shop, false);   // Also apply to current DOM (applyInputValues has its own guard)
-    }
-    // syncShop overrides: values pushed to the spreadsheet by confirmSync's
-    // rounding step. Treated as authoritative even when 0 — the backend's
-    // latest-wins merge already ensures a key appears in EITHER shop OR
-    // syncShop (whichever row has the newer updated_at), so applying both
-    // maps is safe: they're disjoint. Encoding: 0 → '' so the cell renders
-    // empty AND _activeOverrides recognises the entry as a real override
-    // (the existing skip-zero guards skip 0/'0' but treat '' as authoritative).
-    if (!skipShop && bqData.syncShop && Object.keys(bqData.syncShop).length > 0) {
-      const syncMap = {};
-      for (const [k, v] of Object.entries(bqData.syncShop)) {
-        if (isSantJoanBreadKey(snapshotStore, k)) continue;
-        syncMap[k] = (v === 0 || v === '0') ? '' : v;
+    if (!skipShop) {
+      _ingestShopMap_(fetchKey, bqData.shop, bqData.shopTimes, false);
+      _ingestShopMap_(fetchKey, bqData.syncShop, bqData.syncShopTimes, true);
+      const accepted = {};
+      for (const src of [bqData.shop, bqData.syncShop]) {
+        if (!src) continue;
+        for (const k of Object.keys(src)) {
+          if (_activeOverrides[fetchKey].shop[k] !== undefined) accepted[k] = _activeOverrides[fetchKey].shop[k];
+        }
       }
-      Object.assign(_activeOverrides[fetchKey].shop, syncMap);
-      applyInputValues(syncMap, false);
+      if (Object.keys(accepted).length > 0) applyInputValues(accepted, false);
     }
     // Orders are always restored (weekly recurring, not tied to AI runs) —
     // EXCEPT Sant Joan envío 2 (bread-*-order): FIX 2026-07-16, now handled by
@@ -2597,11 +2675,13 @@ async function restoreInputState() {
         })
       );
       purgeSjBreadOrderOverrides_(fetchKey, droppedSj);
-      Object.assign(_activeOverrides[fetchKey].orders, filteredOrders);
-      applyInputValues(filteredOrders, false); // Also apply to current DOM (applyInputValues has its own guard)
+      // QA FIX 2026-09-16: per-key newest-wins for orders too; only the
+      // accepted (not-locally-newer) keys touch the DOM and localStorage.
+      const acceptedOrders = _ingestOrdersMap_(fetchKey, filteredOrders, bqData.orderTimes);
+      applyInputValues(acceptedOrders, false);
       // FIX 2026-07-16: include savedAt — it was omitted here, so entries
       // written by this merge never aged out via the 8-day expiry check.
-      const merged = { ...localOrders, ...filteredOrders };
+      const merged = { ...localOrders, ...acceptedOrders };
       for (const k of droppedSj) delete merged[k];   // don't re-poison localStorage
       localStorage.setItem(getOrderStorageKey(), JSON.stringify({ inputs: merged, savedAt: Date.now() }));
     }
@@ -3139,9 +3219,19 @@ async function regenerateEstimates() {
     }
     // Wipe per-day localStorage shop edits + active overrides for this date
     // across all stores (matches what clearShopEditsForDate_ did server-side).
+    // QA FIX 2026-09-16 (audit: regeneration resurrection): ALSO wipe the
+    // cached BQ inputs, value-times, local sync snapshot and fetch flags —
+    // the stale _cachedBqInputs snapshot was re-applied by restoreInputState
+    // when switching to the other stores, resurrecting pre-regeneration
+    // values the regeneration had just replaced.
     for (const sk of Object.keys(STORES)) {
+      const rk = `${sk}-${snapshotDate}`;
       try { localStorage.removeItem(`origo-shop-${sk}-${snapshotDate}`); } catch(e) {}
-      delete _activeOverrides[`${sk}-${snapshotDate}`];
+      try { localStorage.removeItem(`origo-syncsnap-${sk}-${snapshotDate}`); } catch(e) {}
+      delete _activeOverrides[rk];
+      delete _cachedBqInputs[rk];
+      delete _valueTimes[rk];
+      _inputsFetched.delete(rk);
     }
 
     // Only touch editedCells / re-render if Rafa is still looking at the
@@ -3802,12 +3892,14 @@ function updateSyncButtonState() {
   }
 }
 
+let _previewChangesJson = null;  // QA 2026-09-16: what Rafa approved in the modal
 function showSyncPreview() {
   if (forecastLoading) {
     alert('Las estimaciones aún se están cargando. Espera unos segundos antes de sincronizar.');
     return;
   }
   const changes = collectRoundingChanges();
+  _previewChangesJson = JSON.stringify(changes);
   const content = document.getElementById('syncPreviewContent');
 
   if (changes.length === 0) {
@@ -3884,6 +3976,18 @@ function allocateFocaccias(flavorsPortions) {
 
 async function confirmSync() {
   closeSyncPreview();
+
+  // QA FIX 2026-09-16 (audit: no capture-and-recheck in confirmSync): pin the
+  // day/store this sync was approved for. Every await below re-checks; if the
+  // user switched mid-flight, the sync aborts instead of silently syncing the
+  // WRONG DAY with unreviewed numbers (the one async fn missing the pattern).
+  const syncDay = currentDay;
+  const syncStore = currentStore;
+  const _syncCtxChanged_ = () => (currentDay !== syncDay || currentStore !== syncStore);
+
+  // Commit any in-flight keystroke: blur fires the change handler so the
+  // value lands in editedCells/_activeOverrides before we read the DOM.
+  try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
 
   // FIX 2026-07-14: disable the sync button IMMEDIATELY. It was previously
   // only disabled after the (up to 5s) pending-edit flush below, leaving a
@@ -3976,6 +4080,12 @@ async function confirmSync() {
     console.warn('flushPendingBqSync before sync failed (continuing):', e);
   }
 
+  if (_syncCtxChanged_()) {
+    if (_syncBtnEarly) _syncBtnEarly.disabled = false;
+    alert('Sincronización cancelada: cambiaste de día/tienda mientras se preparaba. Vuelve a ' + syncDay + ' y sincroniza de nuevo.');
+    return;
+  }
+
   // MULTI-TAB GUARD 2026-09-16: after flushing OUR edits, pull the latest
   // saved inputs so a tab that sat open doesn't push stale state over another
   // tab's newer edits. Per-key newest-wins (_ingestShopMap_): our own edits
@@ -3997,6 +4107,28 @@ async function confirmSync() {
     }
   } catch (eR) {
     console.warn('pre-sync input refresh failed (continuing):', eR);
+  }
+
+  if (_syncCtxChanged_()) {
+    if (_syncBtnEarly) _syncBtnEarly.disabled = false;
+    alert('Sincronización cancelada: cambiaste de día/tienda mientras se preparaba. Vuelve a ' + syncDay + ' y sincroniza de nuevo.');
+    return;
+  }
+
+  // QA FIX 2026-09-16 (audit: stale preview modal): if the pre-sync refresh
+  // changed any number, what Rafa APPROVED in the preview no longer matches
+  // what would be synced. Abort and re-open the preview for re-review
+  // instead of silently syncing different values than she saw.
+  try {
+    const nowChanges = JSON.stringify(collectRoundingChanges());
+    if (_previewChangesJson !== null && nowChanges !== _previewChangesJson) {
+      if (_syncBtnEarly) _syncBtnEarly.disabled = false;
+      alert('Los datos se actualizaron mientras se preparaba la sincronización (cambios desde otra pestaña o dispositivo). Revisa el resumen actualizado y confirma de nuevo.');
+      showSyncPreview();
+      return;
+    }
+  } catch (eP) {
+    console.warn('preview re-check failed (continuing):', eP);
   }
 
   // Helper — applies a rounded value to a shop input AND records it in
@@ -4222,11 +4354,22 @@ async function confirmSync() {
   btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg> Sincronizando...`;
 
   // 5. POST to Apps Script sync endpoint
+  if (_syncCtxChanged_()) {
+    if (_syncBtnEarly) _syncBtnEarly.disabled = false;
+    alert('Sincronización cancelada: cambiaste de día/tienda durante la preparación. Vuelve a ' + syncDay + ' y sincroniza de nuevo.');
+    return;
+  }
   try {
-    const storeName = STORE_API_NAMES[currentStore];
-    const targetDateStr = formatDateStr(getTargetDate(currentDay));
-    const cacheKey = `${currentStore}-${targetDateStr}`;
+    // QA FIX 2026-09-16: use the CAPTURED day/store (approved at click time),
+    // never the live globals — the payload above was built from their DOM.
+    const storeName = STORE_API_NAMES[syncStore];
+    const targetDateStr = formatDateStr(getTargetDate(syncDay));
+    const cacheKey = `${syncStore}-${targetDateStr}`;
     const generatedAt = (forecastCache[cacheKey] && forecastCache[cacheKey].generatedAt) || null;
+    // QA FIX 2026-09-16: capture the snapshot NOW, from the same DOM moment
+    // as the sheet payload — not after the POST, when the user may have
+    // switched day/store and the DOM shows something else entirely.
+    const _snapInputs = _collectSnapshotInputs_(syncStore, targetDateStr);
     const data = await fetchJson(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' }, // Apps Script needs text/plain for CORS
@@ -4275,7 +4418,7 @@ async function confirmSync() {
       // these overrides survive subsequent algorithm runs. Fire-and-forget;
       // uses the same retry queue as edits.
       try {
-        persistSyncedSnapshot_(targetDateStr);
+        persistSyncedSnapshot_(targetDateStr, syncStore, _snapInputs);
       } catch (snapErr) {
         console.warn('persistSyncedSnapshot_ failed (non-fatal):', snapErr);
       }
