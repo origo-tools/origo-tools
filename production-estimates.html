@@ -89,6 +89,8 @@
   }
 
   table.grid td.sobras-cell { background: #fffcf5; font-size: 12px; min-width: 70px; }
+  /* W1 sales line (Rafa 2026-09-18): sold units last same weekday, Square+Shopify */
+  .w1-sales { font-weight: 700; color: #40916c; font-size: 12px; white-space: nowrap; }
   table.grid td.sobras-cell.ran-out { background: #fef0f0; color: #c0392b; font-weight: 600; }
   table.grid td.sobras-cell.leftover { color: #b7791f; font-weight: 600; }
   table.grid td.sobras-cell.perfect { background: #f0faf0; color: #2e7d32; font-weight: 600; }
@@ -1592,6 +1594,12 @@ function getShopSuggestions() {
       const total = est.estimate;
       const split = est.batchSplit || { b1Pct: 0.33, b2Pct: 0.33, b3Pct: 0.34 };
 
+      // Coverage-allocated products (laminated, 2026-09-18): B3 carries real
+      // afternoon demand by design — sync rounding must protect it (no
+      // cascade-steal, no drop-to-zero). Flag consumed by computePastryRounding.
+      window._coverageRounding = window._coverageRounding || {};
+      window._coverageRounding[key] = !!(est.batchSplit && est.batchSplit.coverage);
+
       // Show raw numbers to Rafa — rounding to lata multiples happens only at sync time
       // Special baking rules per product:
       // - Pastís llimona i ametlla: only baked once in B1
@@ -2765,22 +2773,50 @@ function formatSoldOutTime(raw) {
   return m ? m[1] : str;
 }
 
+// ── W1 sales display (Rafa 2026-09-18) ──────────────────────────────
+// Real units sold last same weekday (Square + Shopify, halves ×0.5),
+// straight from the generation payload — saves Rafa summing both
+// platforms by hand when judging whether an estimate lags the trend.
+function _fmtW1_(v) {
+  const n = Math.round(Number(v) * 10) / 10;
+  return String(n).replace('.', ',');
+}
+function w1SalesHtml(w1) {
+  if (w1 == null || w1 === '') return '';
+  return `<div class="w1-sales" title="Vendido sem. pasada (Square + Shopify)">${_fmtW1_(w1)} vend.</div>`;
+}
+function getW1SalesForKey(estKey) {
+  const dateStr = formatDateStr(getTargetDate(currentDay));
+  const cached = forecastCache[`${currentStore}-${dateStr}`];
+  if (!cached || !cached.estimates) return null;
+  const est = cached.estimates.find(e => CELL_TO_KEY[e.cell] === estKey);
+  return (est && est.w1RawSales != null) ? est.w1RawSales : null;
+}
+function getW1SalesForFlavor(flavorName) {
+  const dateStr = formatDateStr(getTargetDate(currentDay));
+  const cached = forecastCache[`${currentStore}-${dateStr}`];
+  if (!cached || !cached.estimates) return null;
+  const est = cached.estimates.find(e => e.flavorName === flavorName);
+  return (est && est.w1RawSales != null) ? est.w1RawSales : null;
+}
+
 // Bread sobras cell — simple: sobras count or sold-out indicator (no batches for bread)
-function sobrasCell(data) {
-  if (!data) return `<td class="sobras-cell">—</td>`;
+function sobrasCell(data, w1Sales) {
+  const sales = w1SalesHtml(w1Sales);
+  if (!data) return `<td class="sobras-cell">${sales}—</td>`;
   const hasSobras = data.sobras !== null && data.sobras !== undefined && data.sobras !== '';
 
   // For bread, any sold-out field just means it sold out (no batch distinction)
   const soldOut = data.b1SoldOut || data.b2SoldOut || data.b3SoldOut;
 
   if (soldOut && !hasSobras) {
-    return `<td class="sobras-cell ran-out">⚡ Agotado ${formatSoldOutTime(soldOut)}</td>`;
+    return `<td class="sobras-cell ran-out">${sales}⚡ Agotado ${formatSoldOutTime(soldOut)}</td>`;
   }
   if (hasSobras) {
-    if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">✓ 0</td>`;
-    return `<td class="sobras-cell leftover">${data.sobras}</td>`;
+    if (data.sobras === 0 || data.sobras === '0') return `<td class="sobras-cell perfect">${sales}✓ 0</td>`;
+    return `<td class="sobras-cell leftover">${sales}${data.sobras}</td>`;
   }
-  return `<td class="sobras-cell">—</td>`;
+  return `<td class="sobras-cell">${sales}—</td>`;
 }
 
 // Pastry sobras — show per-batch sold-out badges AND sobras count
@@ -2795,8 +2831,8 @@ function pastryBatchSobras(data, batchNum) {
   return '';
 }
 
-function pastryTotalSobras(data) {
-  if (!data) return `<td class="sobras-cell">—</td>`;
+function pastryTotalSobras(data, w1Sales) {
+  if (!data) return `<td class="sobras-cell">${w1SalesHtml(w1Sales)}—</td>`;
 
   let html = '';
   const hasSoldOuts = data.b1SoldOut || data.b2SoldOut || data.b3SoldOut;
@@ -2818,13 +2854,13 @@ function pastryTotalSobras(data) {
     if (data.b3SoldOut) html += `<span class="batch-alert b3">3er ⚡${formatSoldOutTime(data.b3SoldOut)}</span> `;
   }
 
-  if (!hasSobras && !hasSoldOuts) return `<td class="sobras-cell">—</td>`;
+  if (!hasSobras && !hasSoldOuts) return `<td class="sobras-cell">${w1SalesHtml(w1Sales)}—</td>`;
 
   // FIX 2026-07-14: also treat string '0' as perfect — the content check above
   // already does; without this a '0' from the API rendered a green "✓ 0"
   // inside an amber leftover-styled cell.
   const cls = (!hasSobras && hasSoldOuts) ? 'ran-out' : ((data.sobras === 0 || data.sobras === '0') ? 'perfect' : 'leftover');
-  return `<td class="sobras-cell ${cls}">${html}</td>`;
+  return `<td class="sobras-cell ${cls}">${w1SalesHtml(w1Sales)}${html}</td>`;
 }
 
 // Discards cell — shows discard count (production waste) for any product type
@@ -2854,7 +2890,9 @@ function getProductFactorTooltip(estKey) {
   // ADDED 2026-07-14: show the full chain — where the number comes FROM
   // (4-week weighted base) and where it lands (final estimate). This is what
   // lets Rafa judge whether to trust or override the suggestion.
-  if (f.base != null) parts.push(`📊 Base (media 4 semanas): ${f.base}`);
+  let infoLines = 0;
+  if (f.base != null) { parts.push(`📊 Base (media 4 semanas): ${f.base}`); infoLines++; }
+  if (est.w1RawSales != null) { parts.push(`🧾 Vendido sem. pasada: ${_fmtW1_(est.w1RawSales)} (Square + Shopify)`); infoLines++; }
   if (f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
   if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
   else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
@@ -2875,6 +2913,12 @@ function getProductFactorTooltip(estKey) {
   if (f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}`);
   if (f.soldOutFloorApplied) parts.push(`🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
+  if (est.batchSplit && est.batchSplit.coverage) {
+    let covLine = `↰ Lotes por curva de demanda horaria (nuevo): el 3er lote cubre la demanda de tarde real`;
+    const sw = est.batchSplit.soldOutWeeks;
+    if (sw && (sw.b1 >= 2 || sw.b2 >= 2)) covLine += ` · buffer ampliado por agotados recientes`;
+    parts.push(covLine);
+  }
   if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
   if (est.productOutliers && est.productOutliers.length > 0) {
@@ -2884,7 +2928,7 @@ function getProductFactorTooltip(estKey) {
     }
   }
   if (est.activeVariety) parts.push(`🔄 Variedad: ${est.activeVariety}`);
-  if (parts.length === 0 || (parts.length === 1 && f.base != null)) parts.push('Sin ajustes especiales');
+  if (parts.length === 0 || parts.length === infoLines) parts.push('Sin ajustes especiales');
   // Close the chain with the final number (ADDED 2026-07-14)
   if (f.base != null && est.estimate != null) parts.push(`→ Estimación: ${est.estimate}`);
   return parts.join('\n');
@@ -3415,7 +3459,7 @@ function renderMain() {
 
     html += `<tr>
       ${productNameCell(displayName, item.label, item.key, `bread-${item.key}`)}
-      ${sobrasCell(sobrasData)}
+      ${sobrasCell(sobrasData, getW1SalesForKey(item.key))}
       ${discardsCell(sobrasData)}
       <td class="sep"></td>
       ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
@@ -3467,7 +3511,7 @@ function renderMain() {
 
       html += `<tr>
         ${productNameCell(p.name, p.label, p.key, `pastry-${p.key}`)}
-        ${pastryTotalSobras(sd)}
+        ${pastryTotalSobras(sd, getW1SalesForKey(p.key))}
         ${discardsCell(sd)}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
@@ -3523,7 +3567,7 @@ function renderMain() {
     const fcIconHtml = ` <button type="button" class="note-icon${fcHasNote ? ' has-note' : ''}" data-note-key="${fcNoteKey}" data-note-label="${fcLabelAttr}" title="${fcNoteTip}" aria-label="${fcHasNote ? 'Editar nota' : 'Añadir nota'}">📝</button>`;
     html += `<tr>
       <td class="product-name">${escapeHtml(name)}${fcIconHtml}</td>
-      ${sobrasCell(fcSobras)}
+      ${sobrasCell(fcSobras, getW1SalesForFlavor(name))}
       ${discardsCell(fcSobras)}
       <td class="sep"></td>
       ${eCell(`fc-${slug}-shop`, shopVal, 'ai')}
@@ -3709,6 +3753,49 @@ function computePastryRounding(p) {
     const order = orderInput ? (parseInt(orderInput.value) || 0) : 0;
     vals[b] = { shopInput, orderInput, shop, order, total: shop + order, originalShop: shop, originalTotal: shop + order };
   });
+
+  // ── Coverage-allocated products (laminated, 2026-09-18) ──────────────
+  // The engine sized B3 from measured afternoon demand; the legacy cascade
+  // + drop-to-zero rules would systematically destroy it (that's exactly
+  // how laminated B3 sat at 0 for months). Protective rounding instead:
+  //   B3: nearest tray, floored at one full tray when it carries ≥ half a
+  //       tray; dropped only when genuinely small (< half tray, no orders).
+  //       Never a cascade donor.
+  //   B1: rounds UP when its remainder exceeds lata/3 — the handover
+  //       buffer must survive rounding (the next bake can arrive late).
+  //   B2: residual against the tray-rounded grand total, so the day's
+  //       total is conserved like the cascade conserved it.
+  if (window._coverageRounding && window._coverageRounding[p.key]) {
+    const HALF_TRAY = Math.ceil(lata / 2);
+    const mk = (v, finalTotal, action) => ({
+      shopInput: v.shopInput, orderInput: v.orderInput,
+      originalShop: v.originalShop, originalTotal: v.originalTotal,
+      currentTotal: v.total, finalTotal,
+      finalShop: Math.max(0, finalTotal - v.order),
+      orderVal: v.order, action, transferred: false,
+    });
+    // B3 first (protected)
+    let b3Final, b3Action = 'round';
+    if (vals.b3.total === 0) b3Final = 0;
+    else if (vals.b3.order === 0 && vals.b3.total < HALF_TRAY) { b3Final = 0; b3Action = 'drop'; }
+    else b3Final = Math.max(lata, roundWithOrderGuarantee(vals.b3.total, vals.b3.order, lata));
+    // B1: round up when the remainder exceeds lata/3
+    let b1Final;
+    const b1Rem = vals.b1.total % lata;
+    if (vals.b1.total === 0) b1Final = 0;
+    else if (b1Rem > SMALL_LEFTOVER) b1Final = (Math.floor(vals.b1.total / lata) + 1) * lata;
+    else b1Final = roundWithOrderGuarantee(vals.b1.total, vals.b1.order, lata);
+    // B2: residual so the grand total still lands on its nearest tray multiple
+    const grand = vals.b1.total + vals.b2.total + vals.b3.total;
+    const orders = vals.b1.order + vals.b2.order + vals.b3.order;
+    const grandTarget = grand > 0 ? roundWithOrderGuarantee(grand, orders, lata) : 0;
+    let b2Final = Math.max(0, grandTarget - b1Final - b3Final);
+    if (b2Final < vals.b2.order) b2Final = Math.ceil(vals.b2.order / lata) * lata;
+    return {
+      batches: { b1: mk(vals.b1, b1Final, 'round'), b2: mk(vals.b2, b2Final, 'round'), b3: mk(vals.b3, b3Final, b3Action) },
+      transfers: [],
+    };
+  }
 
   // Decide smart-skip flags BEFORE cascading. The risk we're guarding against:
   // skipping the cascade can strand small unabsorbed shop amounts in donors,
