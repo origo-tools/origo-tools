@@ -579,11 +579,38 @@ function hasSyncedShop(dateStr) {
 // never synced" (that race wiped synced days' edits at startup / on idle
 // refresh when the status fetch lost the race).
 const _syncStatusLoaded = {};
+// FIX 2026-09-22 (QA #3): the server map is the source of truth for a store —
+// entries that are NOT in it any more (registry cleared by a manual
+// regenerate, on this or another device) must be dropped, not kept forever.
+// The old add-only merge left hasSyncedShop() true after a regenerate, which
+// produced the false red "no se pudieron cargar los valores sincronizados"
+// banner until a full reload. Exception: an entry this tab set itself within
+// the last 2 minutes (confirmSync) — a poll that was already in flight when
+// the sync landed may not include it yet.
+const _localSyncSetAt = {};   // key → epoch ms when confirmSync set it locally
 function applySyncStatusMap(storeApiName, map) {
   if (!storeApiName || !map) return;
   _syncStatusLoaded[storeApiName] = true;
+  const prefix = storeApiName + '-';
+  const now = Date.now();
+  for (const key of Object.keys(syncStatusCache)) {
+    if (key.indexOf(prefix) !== 0) continue;
+    const dateStr = key.slice(prefix.length);
+    if (map[dateStr]) continue;
+    if (_localSyncSetAt[key] && now - _localSyncSetAt[key] < 2 * 60 * 1000) continue;
+    delete syncStatusCache[key];
+  }
   for (const dateStr of Object.keys(map)) {
     syncStatusCache[syncStatusKey(storeApiName, dateStr)] = map[dateStr];
+  }
+}
+// Drop every store's sync entry for one date (after a manual regenerate —
+// the engine's _clearSyncedStateForDate_ has just done the same server-side).
+function clearSyncStatusForDate_(dateStr) {
+  for (const sk of Object.keys(STORES)) {
+    const key = syncStatusKey(STORES[sk].name, dateStr);
+    delete syncStatusCache[key];
+    delete _localSyncSetAt[key];
   }
 }
 function refreshSyncStatusDisplay() {
@@ -1012,7 +1039,7 @@ async function loadInitBundle() {
         const filtered = Object.fromEntries(
           Object.entries(data.inputs.orders).filter(([k]) => {
             if (isSantJoanBreadKey(currentStore, k)) return false;
-            if (shouldDropSjBreadOrder_(currentStore, k, data.inputs.updatedAt, fetchKey, dateStr)) {
+            if (shouldDropSjBreadOrder_(currentStore, k, data.inputs.updatedAt, fetchKey, dateStr, data.inputs.orderTimes)) {
               droppedSj.push(k);
               return false;
             }
@@ -1143,7 +1170,7 @@ async function loadEstimatesForCurrentDay() {
         const filtered = Object.fromEntries(
           Object.entries(inputsResp.orders).filter(([k]) => {
             if (isSantJoanBreadKey(currentStore, k)) return false;
-            if (shouldDropSjBreadOrder_(currentStore, k, inputsResp.updatedAt, cacheKey, dateStr)) {
+            if (shouldDropSjBreadOrder_(currentStore, k, inputsResp.updatedAt, cacheKey, dateStr, inputsResp.orderTimes)) {
               droppedSj.push(k);
               return false;
             }
@@ -1466,18 +1493,21 @@ async function prefetchNextDayForFocaccia() {
     const cachedInputs = _cachedBqInputs[nextKey];
     const aiData = forecastCache[nextKey];
     if (cachedInputs && cachedInputs.updatedAt && aiData && aiData.generatedAt) {
-      const bqTime = Number(cachedInputs.updatedAt) * 1000;
+      // FIX 2026-09-22 (QA #2): per-row timestamps, same rule as
+      // shouldDropSjBreadOrder_ (global updatedAt only as fallback).
       const aiTime = new Date(aiData.generatedAt).getTime();
-      const stale = bqTime < aiTime;
+      const globalMs = Number(cachedInputs.updatedAt) * 1000;
+      const times = cachedInputs.orderTimes || {};
       const synced = (function() {
         const entry = syncStatusCache[syncStatusKey(STORE_API_NAMES[prefetchStore], nextDateStr)];
         return !!(entry && entry.syncedAt);
       })();
-      if (stale && !synced) {
+      if (!synced) {
         for (const k of Object.keys(_activeOverrides[nextKey].orders)) {
-          if (/^bread-[^-]+-order$/.test(k)) {
-            delete _activeOverrides[nextKey].orders[k];
-          }
+          if (!/^bread-[^-]+-order$/.test(k)) continue;
+          const rowMs = Number(times[k]) || 0;
+          const bqTime = rowMs > 0 ? rowMs : globalMs;
+          if (bqTime < aiTime) delete _activeOverrides[nextKey].orders[k];
         }
       }
     }
@@ -2481,12 +2511,20 @@ function isSantJoanBreadKey(store, key) {
 //      self-perpetuating. Callers now delete dropped keys (self-heal).
 // Keep rules: day already synced (authoritative) OR the BQ row is NEWER than
 // the current AI run (a genuine edit made after today's regeneration).
-function shouldDropSjBreadOrder_(store, key, updatedAt, fetchKey, dateStr) {
+// FIX 2026-09-22 (QA #2): compare the ROW's own timestamp (orderTimes[key],
+// epoch ms, from the engine's per-key map added 2026-09-16), not the
+// response-wide `updatedAt` (the newest row of ANY type for that date). With
+// the global stamp, the moment Rafa edited any shop cell for next week's SJ
+// day, every stale envío-2 row from last week passed this guard, rendered
+// red and got synced. `updatedAt` (epoch seconds) stays as the fallback for
+// an engine that doesn't send orderTimes.
+function shouldDropSjBreadOrder_(store, key, updatedAt, fetchKey, dateStr, orderTimes) {
   if (store !== 'santjoan' || !/^bread-[^-]+-order$/.test(key)) return false;
   if (hasSyncedShop(dateStr)) return false;   // synced values are authoritative
   const gen = forecastCache[fetchKey] && forecastCache[fetchKey].generatedAt;
   if (!gen) return true;                       // AI time unknown → fail closed
-  const bqTime = Number(updatedAt || 0) * 1000;
+  const rowMs = (orderTimes && Number(orderTimes[key])) || 0;
+  const bqTime = rowMs > 0 ? rowMs : Number(updatedAt || 0) * 1000;
   return bqTime < new Date(gen).getTime();     // stale vs current AI run → drop
 }
 
@@ -2675,7 +2713,7 @@ async function restoreInputState() {
       const filteredOrders = Object.fromEntries(
         Object.entries(bqData.orders).filter(([k]) => {
           if (isSantJoanBreadKey(snapshotStore, k)) return false;
-          if (shouldDropSjBreadOrder_(snapshotStore, k, bqData.updatedAt, fetchKey, dateStr)) {
+          if (shouldDropSjBreadOrder_(snapshotStore, k, bqData.updatedAt, fetchKey, dateStr, bqData.orderTimes)) {
             droppedSj.push(k);
             return false;
           }
@@ -2887,19 +2925,28 @@ function getProductFactorTooltip(estKey) {
     parts.push(`⚠️ Error de cálculo: ${f.errorMessage || 'desconocido'}`);
     return parts.join('\n');
   }
+  // FIX 2026-09-22 (QA #5): skipped products (Especial off-Thursday, Llavors
+  // on Thursday, Croissant d'ametlla on weekdays) carry no numeric factors —
+  // show the reason and stop, instead of "Tendencia tienda: NaN%".
+  if (f.skipped) {
+    return `⏭ ${f.skipReason || 'No se produce este día'}`;
+  }
+  const num = v => typeof v === 'number' && isFinite(v);
   // ADDED 2026-07-14: show the full chain — where the number comes FROM
   // (4-week weighted base) and where it lands (final estimate). This is what
   // lets Rafa judge whether to trust or override the suggestion.
   let infoLines = 0;
   if (f.base != null) { parts.push(`📊 Base (media 4 semanas): ${f.base}`); infoLines++; }
   if (est.w1RawSales != null) { parts.push(`🧾 Vendido sem. pasada: ${_fmtW1_(est.w1RawSales)} (Square + Shopify)`); infoLines++; }
-  if (f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
-  if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
-  else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
-  else if (f.contextType === 'postHoliday') parts.push(`Post-vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
-  else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
-  if (f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
-  if (f.weather !== 1) {
+  if (num(f.trend) && f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
+  if (num(f.context)) {
+    if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+    else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+    else if (f.contextType === 'postHoliday') parts.push(`Post-vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
+    else if (f.contextType === 'yoyTransition') parts.push(`Tendencia estacional: ${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}% (${f.contextReason || ''})`);
+  }
+  if (num(f.holiday) && f.holiday !== 1) parts.push(`Festivo: +${Math.round((f.holiday - 1) * 100)}%`);
+  if (num(f.weather) && f.weather !== 1) {
     const wPct = Math.round((f.weather - 1) * 100);
     const wSign = wPct > 0 ? '+' : '';
     const wLabel = {
@@ -2910,7 +2957,7 @@ function getProductFactorTooltip(estKey) {
     }[f.weatherReason] || 'Clima';
     parts.push(`${wLabel}: ${wSign}${wPct}%`);
   }
-  if (f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}`);
+  if (num(f.soldOut) && f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}`);
   if (f.soldOutFloorApplied) parts.push(`🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (est.batchSplit && est.batchSplit.coverage) {
@@ -2919,7 +2966,7 @@ function getProductFactorTooltip(estKey) {
     if (sw && (sw.b1 >= 2 || sw.b2 >= 2)) covLine += ` · buffer ampliado por agotados recientes`;
     parts.push(covLine);
   }
-  if (f.feedback && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
+  if (num(f.feedback) && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
   if (est.productOutliers && est.productOutliers.length > 0) {
     for (const ol of est.productOutliers) {
@@ -3065,7 +3112,11 @@ function renderAlertsBar() {
 function recalcBreadTotals() {
   BREAD.forEach(item => {
     if (!item.key) return;
-    const sv = parseInt((document.querySelector(`input[data-key="bread-${item.key}-shop"]`) || {}).value) || 0;
+    // QA #6: Milà / Sant Pau FOCACCIA shop is a derived read-only cell.
+    const derived = document.querySelector('td[data-fc-derived-shop]');
+    const sv = (item.key === 'focaccia' && derived)
+      ? (parseInt(derived.textContent) || 0)
+      : (parseInt((document.querySelector(`input[data-key="bread-${item.key}-shop"]`) || {}).value) || 0);
     const ov = parseInt((document.querySelector(`input[data-key="bread-${item.key}-order"]`) || {}).value) || 0;
     const totalCell = document.querySelector(`td[data-bread-total="${item.key}"]`);
     if (totalCell) totalCell.textContent = (sv + ov) || '';
@@ -3142,6 +3193,16 @@ function recalcFocacciaTotals() {
   const wholeFocaccias = computeWholeFocacciasSplit(shopGrand, orderGrand).totalWhole + _breadFcOrders;
   if (wholeSummary) wholeSummary.textContent = wholeFocaccias || '';
   if (portionSummary) portionSummary.textContent = grandTotal > 0 ? grandTotal + ' porc.' : '';
+  // QA #6: keep the derived bread-row FOCACCIA shop cell (Milà / Sant Pau) in
+  // step with the per-flavor pieces — exactly the G19 value confirmSync writes.
+  const derived = document.querySelector('td[data-fc-derived-shop]');
+  if (derived) {
+    const shopWhole = computeWholeFocacciasSplit(shopGrand, 0).shopWhole;
+    if (String(derived.textContent) !== String(shopWhole || '')) {
+      derived.textContent = shopWhole || '';
+      recalcBreadTotals();
+    }
+  }
 }
 
 /**
@@ -3276,6 +3337,14 @@ async function regenerateEstimates() {
       delete _cachedBqInputs[rk];
       delete _valueTimes[rk];
       _inputsFetched.delete(rk);
+    }
+    // FIX 2026-09-22 (QA #3): the engine cleared the sync registry for this
+    // date; mirror it locally so hasSyncedShop() stops returning true.
+    clearSyncStatusForDate_(snapshotDate);
+    // Also forget the previous generation stamp so clearEditsIfNewAIRun
+    // doesn't re-fire on the next visit (fresh cache already seeded above).
+    for (const sk of Object.keys(STORES)) {
+      try { localStorage.setItem(`origo-ai-gen-${sk}-${snapshotDate}`, data.generatedAt || ''); } catch(e) {}
     }
 
     // Only touch editedCells / re-render if Rafa is still looking at the
@@ -3457,12 +3526,26 @@ function renderMain() {
     const orderNum = parseInt(orderVal) || 0;
     const total = shopNum + orderNum;
 
+    // FIX 2026-09-22 (QA #6): at Milà / Sant Pau the FOCACCIA shop count is
+    // NOT synced from this cell — confirmSync writes G19 from the per-flavor
+    // "Porciones" inputs below (Σ ÷ 15, allocateFocaccias). The cell used to
+    // be editable anyway: it turned red, was persisted as an override, and
+    // changed nothing on the sheet. Render it as a derived, read-only value
+    // (kept live by recalcFocacciaTotals) so what Rafa edits is what syncs.
+    let shopCellHtml;
+    if (item.key === 'focaccia' && !isSantJoan) {
+      shopCellHtml = `<td class="trays-cell" data-fc-derived-shop title="Derivado de las porciones por sabor (Σ porciones ÷ 15, redondeado hacia arriba). Edita las porciones abajo.">${shopNum || ''}</td>`;
+      displayName = `FOCACCIA <span style="font-weight:400;font-size:11px;color:#666">(Σ sabores ÷ 15)</span>`;
+    } else {
+      shopCellHtml = eCell(`bread-${item.key}-shop`, shopVal, 'ai');
+    }
+
     html += `<tr>
       ${productNameCell(displayName, item.label, item.key, `bread-${item.key}`)}
       ${sobrasCell(sobrasData, getW1SalesForKey(item.key))}
       ${discardsCell(sobrasData)}
       <td class="sep"></td>
-      ${eCell(`bread-${item.key}-shop`, shopVal, 'ai')}
+      ${shopCellHtml}
       ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell', isSantJoan ? orderVal : undefined)}
       <td class="sep"></td>
       <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
@@ -4480,9 +4563,12 @@ async function confirmSync() {
         syncedAt: data.syncedAt || new Date().toISOString(),
         generatedAt,
       };
+      _localSyncSetAt[syncStatusKey(storeName, targetDateStr)] = Date.now();  // QA #3: survive an in-flight poll
       refreshSyncStatusDisplay();
 
-      // Also record Rafa's approved values in BigQuery (fire-and-forget)
+      // Also record Rafa's approved values in BigQuery (fire-and-forget).
+      // targetDate ADDED 2026-09-22 (QA #4) so the engine can pin the exact
+      // Forecast_History row instead of guessing by weekday.
       try {
         fetch(apiUrl, {
           method: 'POST',
@@ -4490,7 +4576,8 @@ async function confirmSync() {
           body: JSON.stringify({
             action: 'recordApproval',
             store: storeName,
-            dayOfWeek: currentDay,
+            dayOfWeek: syncDay,
+            targetDate: targetDateStr,
             estimates
           })
         }).catch(() => {}); // Non-blocking, ok if it fails
