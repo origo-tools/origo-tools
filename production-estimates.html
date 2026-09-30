@@ -1017,6 +1017,7 @@ async function loadInitBundle() {
       _inputsFetched.add(fetchKey);
       _cachedBqInputs[fetchKey] = data.inputs;
       ingestNotesFromInputsResp(currentStore, dateStr, data.inputs);
+      ingestB2bOrders_(fetchKey, data.inputs);   // B2B sheet defaults (2026-09-30)
 
       if (!_activeOverrides[fetchKey]) _activeOverrides[fetchKey] = { shop: {}, orders: {} };
       let skipShop = false;
@@ -1137,6 +1138,7 @@ async function loadEstimatesForCurrentDay() {
       _cachedBqInputs[cacheKey] = inputsResp;
       _inputsFetched.add(cacheKey);
       ingestNotesFromInputsResp(currentStore, dateStr, inputsResp);
+      ingestB2bOrders_(cacheKey, inputsResp);   // B2B sheet defaults (2026-09-30)
 
       if (!_activeOverrides[cacheKey]) _activeOverrides[cacheKey] = { shop: {}, orders: {} };
 
@@ -1468,6 +1470,7 @@ async function prefetchNextDayForFocaccia() {
         .then(data => {
           if (data && data.success) {
             _cachedBqInputs[nextKey] = data;
+            ingestB2bOrders_(nextKey, data);   // B2B sheet defaults (2026-09-30)
             if (!_activeOverrides[nextKey]) _activeOverrides[nextKey] = { shop: {}, orders: {} };
             // MULTI-TAB FIX 2026-09-16: per-key newest-wins ingest
             _ingestShopMap_(nextKey, data.shop, data.shopTimes, false);
@@ -1658,10 +1661,13 @@ function getShopSuggestions() {
 }
 
 function getLastWeekOrders() {
-  // Orders from last week — for now return empty, will integrate later
+  // Defaults for the "Pedidos" cells. Milà / Sant Pau: the live totals of the
+  // B2B order sheets (see _b2bOrders; all bollería → 1er lote). Everything
+  // else 0 — Sant Joan envío 2 is algorithm-driven (getBreadShippingSplit).
   const result = { bread: {}, pastry: {} };
-  BREAD.forEach(item => { if (item.key) result.bread[item.key] = 0; });
-  PASTRY_GROUPS.flat().forEach(p => { if (p.key) result.pastry[p.key] = { b1: 0, b2: 0, b3: 0 }; });
+  const b2b = getB2bOrdersForCurrentView_() || {};
+  BREAD.forEach(item => { if (item.key) result.bread[item.key] = b2b[`bread-${item.key}-order`] || 0; });
+  PASTRY_GROUPS.flat().forEach(p => { if (p.key) result.pastry[p.key] = { b1: b2b[`pastry-${p.key}-b1o`] || 0, b2: 0, b3: 0 }; });
   return result;
 }
 
@@ -2185,6 +2191,78 @@ async function syncInputsToBigQuery(inputs, store) {
 const _inputsFetched = new Set();
 const _cachedBqInputs = {};  // Pre-fetched BQ inputs from init bundle
 
+// ── B2B orders (2026-09-30) ──────────────────────────────────────────────
+// Live per-date totals the engine reads from the weekly B2B order sheets
+// (Milà / Sant Pau only), served in every loadInputs response as
+// `b2bOrders: {inputKey: n}` (+ b2bOk, b2bTab). Keyed like _activeOverrides
+// (`${store}-${date}`). These are DEFAULTS, not overrides: they feed
+// getLastWeekOrders() → eCell's base value, exactly like an AI-proposed shop
+// value. Precedence is untouched — a manual override (dow-keyed BQ order row
+// or a local edit, both still routed through _ingestOrdersMap_'s per-key
+// newest-wins) beats the sheet value. Never written to Manual_Inputs or
+// localStorage; Sant Joan is never populated (envío-2 system). When the
+// displayed value differs from the sheet, the cell carries a title tooltip
+// "Pedidos según hoja B2B: N" (refreshB2bTooltips_).
+const _b2bOrders = {};
+const B2B_ORDER_KEYS = new Set([
+  'bread-origo-order', 'bread-origoMolde-order', 'bread-origoIntegral-order', 'bread-segolIntegral-order',
+  'bread-copenhague-order', 'bread-llavors-order', 'bread-baguette-order',
+  'pastry-canelaTwist-b1o', 'pastry-cardamomoTwist-b1o', 'pastry-croissant-b1o', 'pastry-cookieChocolate-b1o',
+  'pastry-brioixClassic-b1o', 'pastry-painChocolat-b1o',
+]);
+function b2bStoreEligible_(store) { return store === 'mila' || store === 'santpau'; }
+// Ingest the b2bOrders map of a loadInputs response for cache key `ck`.
+// Older engines (no b2bOrders field) leave state untouched; a failed sheet
+// read (b2bOk === false) must not wipe values a previous successful read
+// produced this session. Returns true when the map for `ck` changed.
+function ingestB2bOrders_(ck, resp) {
+  if (!resp || typeof resp !== 'object' || !('b2bOrders' in resp)) return false;
+  if (!b2bStoreEligible_(String(ck).split('-')[0])) return false;
+  if (resp.b2bOk === false && _b2bOrders[ck]) return false;
+  const map = {};
+  for (const [k, v] of Object.entries(resp.b2bOrders || {})) {
+    if (!B2B_ORDER_KEYS.has(k)) continue;
+    const n = Math.round(Number(v)) || 0;
+    if (n > 0) map[k] = n;
+  }
+  const changed = JSON.stringify(_b2bOrders[ck] || null) !== JSON.stringify(map);
+  _b2bOrders[ck] = map;
+  return changed;
+}
+// Sheet totals for the day on screen, or null when none were loaded (older
+// engine, Sant Joan, first load still in flight).
+function getB2bOrdersForCurrentView_() {
+  if (!b2bStoreEligible_(currentStore)) return null;
+  const ck = `${currentStore}-${formatDateStr(getTargetDate(currentDay))}`;
+  return _b2bOrders[ck] || null;
+}
+// eCell baseline for a B2B-mapped order cell: an override equal to the sheet
+// value is not a real edit (cell stays green). undefined → no baseline.
+function b2bBaseline_(key) {
+  const m = getB2bOrdersForCurrentView_();
+  if (!m || !B2B_ORDER_KEYS.has(key)) return undefined;
+  return m[key] || 0;
+}
+// A B2B-mapped order cell whose default comes from the sheet. For these, a
+// 0 override means "no override" (the same '' vs 0 sentinel shop cells use:
+// a clear is saved as 0 and the baseline shows through on reload), so the
+// two blind override→DOM passes must not paint a 0 over the sheet value.
+function b2bIsDefaultedKey_(key) {
+  return B2B_ORDER_KEYS.has(key) && !!getB2bOrdersForCurrentView_();
+}
+function refreshB2bTooltips_() {
+  const map = getB2bOrdersForCurrentView_();
+  for (const key of B2B_ORDER_KEYS) {
+    const input = document.querySelector(`input[data-key="${key}"]`);
+    if (!input) continue;
+    if (!map) { input.removeAttribute('title'); continue; }
+    const sheetVal = map[key] || 0;
+    const shown = parseInt(input.value) || 0;
+    if (shown !== sheetVal) input.title = `Pedidos según hoja B2B: ${sheetVal}`;
+    else input.removeAttribute('title');
+  }
+}
+
 // Active BQ overrides: { 'santpau-2026-04-16': { shop: { key: val }, orders: { key: val } } }
 // Populated by restoreInputState once, then used by renderMain on every DOM rebuild.
 // This eliminates race conditions: values are baked into the HTML, not patched async.
@@ -2632,12 +2710,14 @@ async function restoreInputState() {
   const fetchKey = `${currentStore}-${dateStr}`;
 
   let bqData = null;
+  let fetchedHere = false;   // B2B: only a fresh network read may trigger a re-render below
 
   if (_cachedBqInputs[fetchKey]) {
     // Use inputs already fetched by init bundle — no extra network call
     bqData = _cachedBqInputs[fetchKey];
   } else if (!_inputsFetched.has(fetchKey)) {
     _inputsFetched.add(fetchKey);
+    fetchedHere = true;
     try {
       const apiUrl = getForecastApiUrl();
       if (!apiUrl) { _inputsFetched.delete(fetchKey); return; }
@@ -2663,6 +2743,14 @@ async function restoreInputState() {
 
   if (bqData && bqData.success) {
     ingestNotesFromInputsResp(snapshotStore, dateStr, bqData);
+    // B2B sheet defaults (2026-09-30). When THIS call fetched them fresh and
+    // they differ from what the grid was built with, rebuild once so the
+    // order cells show the sheet values (renderMain's tail re-enters here on
+    // the cached path, where fetchedHere is false — no loop).
+    if (ingestB2bOrders_(fetchKey, bqData) && fetchedHere) {
+      renderMain();
+      return;
+    }
     // Restore shop inputs — but skip if they're older than the AI generation.
     // After a regeneration, BQ still holds pre-regen edits that would overwrite
     // the fresh AI estimates and turn them red.  Compare timestamps to detect this.
@@ -2742,6 +2830,8 @@ function applyInputValues(inputMap, markAsEdited) {
       // Skip restoring 0 for shop cells — 0 means user cleared it, so show AI value
       const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
       if (!isOrder && (val === 0 || val === '0')) continue;
+      // B2B (2026-09-30): same sentinel for sheet-defaulted order cells.
+      if (isOrder && b2bIsDefaultedKey_(key) && (val === 0 || val === '0')) continue;
 
       // If the restored value matches what's already rendered (e.g. Sant Joan
       // envío 2 where the previously-synced value equals today's algorithm
@@ -2763,6 +2853,7 @@ function applyInputValues(inputMap, markAsEdited) {
   recalcBreadTotals();
   recalcPastryTotals();
   recalcFocacciaTotals();
+  refreshB2bTooltips_();
 }
 
 // ============ HELPERS ============
@@ -3546,7 +3637,7 @@ function renderMain() {
       ${discardsCell(sobrasData)}
       <td class="sep"></td>
       ${shopCellHtml}
-      ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell', isSantJoan ? orderVal : undefined)}
+      ${eCell(`bread-${item.key}-order`, orderVal, isSantJoan ? 'ai' : 'manual order-cell', isSantJoan ? orderVal : b2bBaseline_(`bread-${item.key}-order`))}
       <td class="sep"></td>
       <td class="total-col" data-bread-total="${item.key}" style="color:#2d6a4f;font-weight:600">${total || ''}</td>
     </tr>`;
@@ -3598,7 +3689,7 @@ function renderMain() {
         ${discardsCell(sd)}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
-        ${eCell(`pastry-${p.key}-b1o`, o.b1, 'manual order-cell')}
+        ${eCell(`pastry-${p.key}-b1o`, o.b1, 'manual order-cell', b2bBaseline_(`pastry-${p.key}-b1o`))}
         <td class="sep"></td>
         ${eCell(`pastry-${p.key}-b2s`, s.b2, 'ai')}
         ${eCell(`pastry-${p.key}-b2o`, o.b2, 'manual order-cell')}
@@ -3772,6 +3863,7 @@ function renderMain() {
       recalcBreadTotals();
       recalcPastryTotals();
       recalcFocacciaTotals();
+      refreshB2bTooltips_();
     });
   });
 
@@ -3791,6 +3883,10 @@ function renderMain() {
   for (const [key, val] of Object.entries(ov.orders)) {
     // Sant Joan bread envío values are algorithm-driven — skip overrides
     if (isSantJoanBreadKey(currentStore, key)) continue;
+    // B2B (2026-09-30): a 0 override on a sheet-defaulted order cell is "no
+    // override" — let the sheet value show. '' (cleared this session) still
+    // renders empty, as for shop cells.
+    if (b2bIsDefaultedKey_(key) && (val === 0 || val === '0')) continue;
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
       const matchesRendered = String(val) === String(input.value);
@@ -3801,6 +3897,7 @@ function renderMain() {
   recalcBreadTotals();
   recalcPastryTotals();
   recalcFocacciaTotals();
+  refreshB2bTooltips_();
 
   // Also kick off the async BQ fetch (first time only) to populate _activeOverrides
   // for subsequent renders if not yet loaded.
@@ -4273,6 +4370,10 @@ async function confirmSync() {
       const _rCk = `${currentStore}-${_rDate}`;
       _ingestShopMap_(_rCk, _rResp.shop, _rResp.shopTimes, false);
       _ingestShopMap_(_rCk, _rResp.syncShop, _rResp.syncShopTimes, true);
+      // B2B (2026-09-30): orders keep arriving during the week — refresh the
+      // sheet defaults too. If a total moved since the preview, the stale-
+      // preview check below aborts and re-opens the preview for Rafa.
+      ingestB2bOrders_(_rCk, _rResp);
       renderMain();
     }
   } catch (eR) {
