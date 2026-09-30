@@ -354,6 +354,7 @@
     <div class="legend-item"><span class="round-badge">×12</span> Redondeado al sincronizar</div>
   </div>
   <div style="display:flex;align-items:center;gap:16px;">
+    <button id="b2bRefreshBtn" onclick="forceB2bRefresh()" title="Volver a leer la hoja de pedidos B2B ahora (sin esperar los 10 min de caché)" style="display:none;background:#fff;border:1px solid #c8bfae;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;color:#5b4636;cursor:pointer;">↻ Pedidos</button>
     <div class="sync-status" id="syncStatus">Sin sincronizar</div>
     <button class="sync-btn" id="syncBtn" onclick="showSyncPreview()">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
@@ -616,6 +617,9 @@ function clearSyncStatusForDate_(dateStr) {
 function refreshSyncStatusDisplay() {
   const el = document.getElementById('syncStatus');
   if (!el) return;
+  // "↻ Pedidos" only where a B2B order sheet exists (Milà / Sant Pau)
+  const b2bBtn = document.getElementById('b2bRefreshBtn');
+  if (b2bBtn) b2bBtn.style.display = b2bStoreEligible_(currentStore) ? '' : 'none';
   const storeApiName = STORE_API_NAMES[currentStore];
   const dateStr = formatDateStr(getTargetDate(currentDay));
   const entry = syncStatusCache[syncStatusKey(storeApiName, dateStr)];
@@ -2228,6 +2232,36 @@ function ingestB2bOrders_(ck, resp) {
   const changed = JSON.stringify(_b2bOrders[ck] || null) !== JSON.stringify(map);
   _b2bOrders[ck] = map;
   return changed;
+}
+
+// "↻ Pedidos" button (2026-09-30): re-read the B2B order sheet NOW, bypassing
+// the engine's 10-min cache — for when Rafa just changed an order in the
+// weekly spreadsheet and wants it on screen immediately. Only touches the
+// B2B defaults (ingestB2bOrders_); manual overrides and all other state are
+// untouched, so this can never stomp an edit.
+async function forceB2bRefresh() {
+  const btn = document.getElementById('b2bRefreshBtn');
+  if (!btn || btn.disabled || !b2bStoreEligible_(currentStore)) return;
+  const apiUrl = getForecastApiUrl();
+  if (!apiUrl) return;
+  btn.disabled = true;
+  btn.textContent = '↻ Leyendo hoja…';
+  const day = currentDay, store = currentStore;
+  try {
+    const target = getTargetDate(day);
+    const dateStr = formatDateStr(target);
+    const resp = await fetchJson(`${apiUrl}?action=loadInputs&store=${store}&date=${dateStr}&dayOfWeek=${target.getDay()}&b2bFresh=1`);
+    if (store === currentStore && day === currentDay && resp && !resp.error) {
+      const changed = ingestB2bOrders_(`${store}-${dateStr}`, resp);
+      if (changed) renderMain();
+      btn.textContent = changed ? '✓ Pedidos actualizados' : '✓ Sin cambios';
+    } else {
+      btn.textContent = '↻ Pedidos';
+    }
+  } catch (e) {
+    btn.textContent = '⚠ No se pudo leer';
+  }
+  setTimeout(() => { btn.textContent = '↻ Pedidos'; btn.disabled = false; }, 2500);
 }
 // Sheet totals for the day on screen, or null when none were loaded (older
 // engine, Sant Joan, first load still in flight).
@@ -4363,7 +4397,7 @@ async function confirmSync() {
     const _rDate = formatDateStr(getTargetDate(currentDay));
     const _rDow = DAYS_TO_DOW[currentDay] || '1';
     const _rResp = await Promise.race([
-      fetchJson(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${_rDate}&dayOfWeek=${_rDow}`),
+      fetchJson(`${apiUrl}?action=loadInputs&store=${currentStore}&date=${_rDate}&dayOfWeek=${_rDow}&b2bFresh=1`),
       new Promise(function (res) { setTimeout(function () { res(null); }, 6000); }),
     ]);
     if (_rResp && _rResp.success) {
