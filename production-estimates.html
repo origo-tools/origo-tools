@@ -2193,6 +2193,23 @@ async function syncInputsToBigQuery(inputs, store) {
     if (!resp || resp.error || resp.success === false) {
       throw new Error((resp && resp.error) || 'saveInputs returned no success');
     }
+    // FIX 2026-10-02 (Tuesday-Oct-6 incident): the engine can report success
+    // while its resurrection guard dropped rows — a batch of syncShop rows
+    // fully eaten (clock-skew at the generation-timestamp boundary) looked
+    // like a successful save and was never retried, leaving the red
+    // "no se pudieron cargar los valores sincronizados" banner days later.
+    // The engine now has a 2-min grace, so legitimate drops should be rare —
+    // but if a sync-time batch saves 0 of its rows, say so loudly instead of
+    // pretending it worked. No retry (a guard drop is deterministic).
+    if (resp.droppedStale > 0) {
+      console.warn('saveInputs: engine dropped ' + resp.droppedStale + ' stale row(s); saved=' + resp.saved);
+      const hadSyncShop = inputs.some(i => i && i.type === 'syncShop');
+      if (hadSyncShop && !(resp.saved > 0)) {
+        alert('⚠ La hoja se sincronizó, pero la copia de valores para la app NO se pudo guardar (' +
+          resp.droppedStale + ' valores descartados por marca de tiempo). Recarga la página y vuelve a sincronizar; si se repite, avisa a François.');
+        return false;
+      }
+    }
     return true;
   } catch (e) {
     console.warn('BigQuery sync failed, queued for retry:', e.message);
@@ -3110,7 +3127,9 @@ function getProductFactorTooltip(estKey) {
   let infoLines = 0;
   if (f.base != null) { parts.push(`📊 Base (media 4 semanas): ${f.base}`); infoLines++; }
   if (est.w1RawSales != null) { parts.push(`🧾 Vendido sem. pasada: ${_fmtW1_(est.w1RawSales)} (Square + Shopify)`); infoLines++; }
-  if (num(f.trend) && f.trend !== 1) parts.push(`📈 Tendencia tienda: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}%`);
+  // 2026-09-30: factors.trend is now the store MOMENTUM (median week-over-week
+  // ratio of store totals, last 6 days vs the week before). Key unchanged.
+  if (num(f.trend) && f.trend !== 1) parts.push(`📈 Impulso semanal: ${f.trend > 1 ? '+' : ''}${Math.round((f.trend - 1) * 100)}% (esta semana vs anterior)`);
   if (num(f.context)) {
     if (f.contextType === 'specialDate') parts.push(`Fecha especial: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
     else if (f.contextType === 'schoolHoliday' || f.contextType === 'stacked_holiday+yoy') parts.push(`Vacaciones: ${f.contextReason} (${f.context > 1 ? '+' : ''}${Math.round((f.context - 1) * 100)}%)`);
