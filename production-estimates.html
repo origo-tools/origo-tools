@@ -69,6 +69,21 @@
   table.grid th.batch-1 { background: #457b9d; }
   table.grid th.batch-2 { background: #6d6875; }
   table.grid th.batch-3 { background: #9b5de5; }
+  /* Sant Joan's Lote extra (2026-10-02) — sits between the 2nd and 3rd batch */
+  table.grid th.batch-4 { background: #b5651d; }
+  /* Fermenter tray counter in each batch header: "bandejas X/17", red when over */
+  .tray-counter {
+    display: block; margin-top: 3px; font-size: 11px; font-weight: 700;
+    background: rgba(255,255,255,0.18); border-radius: 8px; padding: 1px 6px;
+  }
+  .tray-counter:empty { display: none; }
+  .tray-counter.over { background: #c0392b; color: #fff; }
+  .fermenter-warning {
+    background: #fdecea; border: 1px solid #e07a5f; border-radius: 8px; color: #a13c28;
+    padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.5;
+  }
+  .fermenter-warning label { display: block; margin-top: 8px; font-weight: 600; cursor: pointer; }
+  .sync-modal-btns button.confirm:disabled { opacity: 0.45; cursor: not-allowed; }
   table.grid th.sobras-header { background: #8b6914; }
 
   table.grid td {
@@ -331,14 +346,18 @@
 
 <!-- Pastry del mes — history modal -->
 <div class="modal-overlay" id="pdmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center;">
-  <div class="modal" style="background:#fff;border-radius:12px;padding:20px;max-width:720px;width:92%;max-height:85vh;overflow:auto;">
+  <div class="modal" style="background:#fff;border-radius:12px;padding:20px;max-width:860px;width:94%;max-height:85vh;overflow:auto;">
     <h3 style="margin-top:0">Pastry del mes — historia</h3>
     <p style="color:#888;font-size:13px;margin-bottom:14px">
       Añade una entrada por cada periodo. Si dos periodos se solapan, el que empezó más tarde se aplica.
       Para corregir retroactivamente, edita el nombre o las fechas de cualquier entrada pasada.
     </p>
-    <div style="display:grid;grid-template-columns:1fr 160px 160px;gap:6px;padding-bottom:6px;border-bottom:1px solid #e8e4dd;font-size:12px;font-weight:600;color:#888">
-      <div>Nombre (en Square)</div><div>Desde</div><div>Hasta (vacío = actual)</div>
+    <p style="color:#888;font-size:13px;margin-bottom:14px">
+      <strong>Fermenta:</strong> márcalo si la pastry de ese periodo pasa por el fermentador (ocupa bandejas en cada lote);
+      <strong>Uds/bandeja</strong> es cuántas caben en una bandeja de fermentador (12 por defecto). Si no fermenta, no cuenta para el límite de bandejas.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 150px 150px 80px 90px;gap:6px;padding-bottom:6px;border-bottom:1px solid #e8e4dd;font-size:12px;font-weight:600;color:#888">
+      <div>Nombre (en Square)</div><div>Desde</div><div>Hasta (vacío = actual)</div><div>Fermenta</div><div>Uds/bandeja</div>
     </div>
     <div id="pdmHistoryList" style="margin-top:8px"></div>
     <div style="margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -377,7 +396,7 @@
     <div id="syncPreviewContent"></div>
     <div class="sync-modal-btns">
       <button class="cancel" onclick="closeSyncPreview()">Cancelar</button>
-      <button class="confirm" onclick="confirmSync()">Confirmar y sincronizar</button>
+      <button class="confirm" id="syncConfirmBtn" onclick="confirmSync()">Confirmar y sincronizar</button>
     </div>
   </div>
 </div>
@@ -664,6 +683,118 @@ const CELL_TO_KEY = {
   'D46': 'pastisLlimona'
 };
 
+// ===== FERMENTER CAPACITY (2026-10-02) =====
+// Fermenting pastry is proofed in trays and each batch is one fermenter run:
+// a batch holds at most `limit` trays (Sant Joan 17, Milà 25, Sant Pau 42).
+// Trays per batch = Σ ceil((shop + pedidos) ÷ trayFit) over the fermenting
+// products — a partial tray takes a full slot. trayFit is the FERMENTER tray,
+// not the rounding lata (Mico rounds in 6s but ferments 24 per tray).
+// Everything here comes from the engine (CONFIG.FERMENTER / PASTRY_SHEET_LAYOUT)
+// as `fermenterConfig` on each estimates response — no second copy of the
+// limits, the product list or the sheet columns lives in this page:
+//   { limit, batches: ['b1','b2','b4','b3'], extra: {key,label,hour} | null,
+//     trayFit: { 'D34': 12, … }, cols: { b1s:'G', … }, layout, b2Hour }
+// `b4` is Sant Joan's Lote extra: 4th internally, displayed (and baked)
+// between the 2nd and 3rd batch. An older engine sends no config → the page
+// behaves exactly as before (3 batches, G…N columns, no counters).
+const PASTRY_COLS_FALLBACK = { b1s: 'G', b1o: 'H', b2s: 'J', b2o: 'K', b3s: 'M', b3o: 'N' };
+const BATCH_LABELS = { b1: '1er lote', b2: '2do lote', b4: 'Lote extra', b3: '3er lote' };
+const BATCH_SHORT = { b1: '1er', b2: '2do', b4: 'extra', b3: '3er' };
+
+function getFermenterConfig_() {
+  const c = forecastCache[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`];
+  return (c && c.fermenterConfig) || null;
+}
+
+// Batch keys in time order for the store/day on screen.
+function pastryBatchKeys_() {
+  const cfg = getFermenterConfig_();
+  return (cfg && Array.isArray(cfg.batches) && cfg.batches.length >= 3) ? cfg.batches : ['b1', 'b2', 'b3'];
+}
+
+// Sheet column per pastry cell suffix (b1s, b1o, …) for the store on screen.
+function pastryColMap_() {
+  const cfg = getFermenterConfig_();
+  return (cfg && cfg.cols) ? cfg.cols : PASTRY_COLS_FALLBACK;
+}
+
+// Units per fermenter tray for a product key; 0 = takes no fermenter space.
+function fermenterTrayFit_(productKey) {
+  const cfg = getFermenterConfig_();
+  if (!cfg || !cfg.trayFit) return 0;
+  return cfg.trayFit[KEY_TO_CELL[productKey]] || 0;
+}
+
+// Trays per batch. getPair(productKey, batch) → { shop, order } (units).
+function computeFermenterTrays_(getPair) {
+  const batches = pastryBatchKeys_();
+  const out = {};
+  batches.forEach(b => { out[b] = 0; });
+  PASTRY_GROUPS.flat().forEach(p => {
+    const fit = fermenterTrayFit_(p.key);
+    if (!(fit > 0)) return;
+    batches.forEach(b => {
+      const v = getPair(p.key, b) || {};
+      const units = (parseInt(v.shop) || 0) + (parseInt(v.order) || 0);
+      if (units > 0) out[b] += Math.ceil(units / fit);
+    });
+  });
+  return out;
+}
+
+// Current on-screen values of one pastry batch cell pair.
+function domPastryPair_(productKey, b) {
+  const s = document.querySelector(`input[data-key="pastry-${productKey}-${b}s"]`);
+  const o = document.querySelector(`input[data-key="pastry-${productKey}-${b}o"]`);
+  return { shop: s ? (parseInt(s.value) || 0) : 0, order: o ? (parseInt(o.value) || 0) : 0 };
+}
+
+// Live "bandejas X/N" counter in every batch header — recomputed on every
+// input change (called from recalcPastryTotals), red when over the limit.
+function updateTrayCounters_() {
+  const els = document.querySelectorAll('[data-tray-batch]');
+  if (!els || !els.length) return;
+  const cfg = getFermenterConfig_();
+  const trays = (cfg && cfg.limit) ? computeFermenterTrays_(domPastryPair_) : null;
+  els.forEach(el => {
+    const b = el.dataset.trayBatch;
+    if (!trays || trays[b] === undefined) { el.textContent = ''; el.classList.remove('over'); return; }
+    el.textContent = `bandejas ${trays[b]}/${cfg.limit}`;
+    el.classList.toggle('over', trays[b] > cfg.limit);
+    el.title = trays[b] > cfg.limit
+      ? `Supera la capacidad del fermentador: ${trays[b]} bandejas, máximo ${cfg.limit} por lote`
+      : `Bandejas de fermentador en este lote (máximo ${cfg.limit})`;
+  });
+}
+
+// Sync-preview gate: trays per batch from the FINAL numbers (after rounding).
+// getPair as in computeFermenterTrays_. Returns one entry per batch over the
+// limit: { batch, label, trays, limit, over, suggestion }. At Sant Joan a
+// batch other than the Lote extra itself gets "mueve N bandejas al Lote
+// extra" (capped to the room the extra batch still has).
+function fermenterWarnings_(getPair) {
+  const cfg = getFermenterConfig_();
+  if (!cfg || !cfg.limit) return [];
+  const trays = computeFermenterTrays_(getPair);
+  const extraKey = cfg.extra && cfg.extra.key;
+  let extraRoom = extraKey ? Math.max(0, cfg.limit - (trays[extraKey] || 0)) : 0;
+  const out = [];
+  pastryBatchKeys_().forEach(b => {
+    if (!(trays[b] > cfg.limit)) return;
+    const over = trays[b] - cfg.limit;
+    let suggestion = '';
+    if (extraKey && b !== extraKey) {
+      const n = Math.min(over, extraRoom);
+      extraRoom -= n;
+      if (n === over) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al Lote extra`;
+      else if (n > 0) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al Lote extra (no cabe${over - n === 1 ? '' : 'n'} ${over - n} más)`;
+      else suggestion = 'el Lote extra también está lleno';
+    }
+    out.push({ batch: b, label: BATCH_LABELS[b] || b, trays: trays[b], limit: cfg.limit, over, suggestion });
+  });
+  return out;
+}
+
 const FORECAST_API_URL = 'https://script.google.com/macros/s/AKfycbwFWN1OIzAmisOOTJ6OxorrIExpMNu1FtN-8WdAq5CVYOWzEV3_d_e1Lxp2p4NnYf8x/exec';
 const SOBRAS_API_URL   = 'https://script.google.com/macros/s/AKfycbz1z5Yz-qyJSPfxINXMFnqBJwR-nNQ3NlTrACj04mwOgs_Xk0U_tdmjsLYI7eM7rV0/exec';
 function getForecastApiUrl() { return FORECAST_API_URL; }
@@ -770,19 +901,34 @@ function renderPdmHistoryList() {
   list.innerHTML = '';
   pdmHistory.forEach(function(entry, idx) {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:1fr 160px 160px;gap:6px;padding:6px 0;align-items:center';
+    row.style.cssText = 'display:grid;grid-template-columns:1fr 150px 150px 80px 90px;gap:6px;padding:6px 0;align-items:center';
+    // Fermenter flags (2026-10-02). Entries saved before the flag existed
+    // have none → shown (and saved) as fermenting, 12 per tray: the
+    // conservative default, it takes fermenter space.
+    const ferments = pdmFerments_(entry);
     row.innerHTML =
       '<input type="text" class="pdm-name" data-idx="' + idx + '" value="' + pdmEscape(entry.name) + '" placeholder="Nombre en Square" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">' +
       '<input type="date" class="pdm-start" data-idx="' + idx + '" value="' + pdmEscape(entry.startDate) + '" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">' +
-      '<input type="date" class="pdm-end" data-idx="' + idx + '" value="' + pdmEscape(entry.endDate || '') + '" placeholder="Actual" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">';
+      '<input type="date" class="pdm-end" data-idx="' + idx + '" value="' + pdmEscape(entry.endDate || '') + '" placeholder="Actual" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px">' +
+      '<label style="display:flex;align-items:center;justify-content:center;gap:4px;font-size:13px;cursor:pointer"><input type="checkbox" class="pdm-ferments" data-idx="' + idx + '"' + (ferments ? ' checked' : '') + '> sí</label>' +
+      '<input type="number" class="pdm-trayfit" data-idx="' + idx + '" value="' + pdmTrayFit_(entry) + '" min="1" max="200" step="1" title="Unidades por bandeja de fermentador" style="padding:8px;border-radius:6px;border:1px solid #e8e4dd;font-size:14px;width:100%">';
     list.appendChild(row);
   });
+}
+
+// Pastry del mes fermenter flags with their defaults (unset → ferments, 12/tray).
+function pdmFerments_(entry) {
+  return !entry || entry.ferments === undefined || entry.ferments === null ? true : entry.ferments !== false;
+}
+function pdmTrayFit_(entry) {
+  const n = Math.round(Number(entry && entry.trayFit));
+  return (isFinite(n) && n >= 1 && n <= 200) ? n : 12;
 }
 
 function addPdmRow() {
   const today = new Date();
   const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
-  pdmHistory.unshift({ name: '', startDate: todayStr, endDate: null });
+  pdmHistory.unshift({ name: '', startDate: todayStr, endDate: null, ferments: true, trayFit: 12 });
   renderPdmHistoryList();
 }
 
@@ -790,6 +936,8 @@ async function savePdmHistory() {
   const nameInputs = document.querySelectorAll('#pdmHistoryList .pdm-name');
   const startInputs = document.querySelectorAll('#pdmHistoryList .pdm-start');
   const endInputs = document.querySelectorAll('#pdmHistoryList .pdm-end');
+  const fermentInputs = document.querySelectorAll('#pdmHistoryList .pdm-ferments');
+  const trayFitInputs = document.querySelectorAll('#pdmHistoryList .pdm-trayfit');
   const newHistory = [];
   const errEl = document.getElementById('pdmModalError');
   errEl.style.display = 'none';
@@ -802,7 +950,9 @@ async function savePdmHistory() {
     if (!name) { errEl.textContent = 'Falta el nombre en la fila ' + (i + 1); errEl.style.display = 'block'; return; }
     if (!startDate) { errEl.textContent = 'Falta la fecha de inicio en la fila ' + (i + 1); errEl.style.display = 'block'; return; }
     if (endDate && endDate < startDate) { errEl.textContent = 'Fecha fin antes de inicio en la fila ' + (i + 1); errEl.style.display = 'block'; return; }
-    newHistory.push({ name: name, startDate: startDate, endDate: endDate });
+    const ferments = fermentInputs[i] ? !!fermentInputs[i].checked : true;
+    const trayFit = pdmTrayFit_({ trayFit: trayFitInputs[i] ? trayFitInputs[i].value : 12 });
+    newHistory.push({ name: name, startDate: startDate, endDate: endDate, ferments: ferments, trayFit: trayFit });
   }
 
   const apiUrl = getForecastApiUrl();
@@ -1318,7 +1468,7 @@ function clearEditsIfNewAIRun(dateStr) {
 
     // Clear editedCells for shop keys (keep order edits)
     for (const key of Object.keys(editedCells)) {
-      if (!key.includes('-order') && !/-(b[123]o)$/.test(key)) {
+      if (!key.includes('-order') && !/-(b[1-4]o)$/.test(key)) {
         delete editedCells[key];
       }
     }
@@ -1645,6 +1795,15 @@ function getShopSuggestions() {
       window._coverageRounding[key] = !!(est.batchSplit && est.batchSplit.coverage);
 
       // Show raw numbers to Rafa — rounding to lata multiples happens only at sync time
+      // 2026-10-02: the engine now ships the shop cells per batch itself
+      // (est.batchCells — same arithmetic as below, then the fermenter
+      // capacity spill, incl. Sant Joan's Lote extra as b4). Use them as-is;
+      // the local derivation stays only for payloads stored before that.
+      if (est.batchCells && typeof est.batchCells === 'object') {
+        const bc = est.batchCells;
+        result.pastry[key] = { b1: bc.b1 || 0, b2: bc.b2 || 0, b3: bc.b3 || 0, b4: bc.b4 || 0 };
+        continue;
+      }
       // Special baking rules per product:
       // - Pastís llimona i ametlla: only baked once in B1
       // - Cookie chocolate: only B1 (08-13h) and B3 (13h-close), no B2
@@ -1968,7 +2127,7 @@ function saveInputState() {
     // Treat cleared fields as 0 so the old value in BigQuery gets overwritten
     const saveVal = val === '' ? '0' : val;
 
-    const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+    const isOrder = key.includes('-order') || /-(b[1-4]o)$/.test(key);
     // MULTI-TAB FIX 2026-09-16: carry the edit's timestamp so the engine's
     // MERGE can refuse to let older state overwrite it.
     const vTime = _vt(`${currentStore}-${dateStr}`)[key] || Date.now();
@@ -2074,7 +2233,7 @@ function _collectSnapshotInputs_(store, dateStr) {
     const val = input.value;
     const saveVal = val === '' ? '0' : val;
     const vTime = vtMap[key] || genMs;
-    const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+    const isOrder = key.includes('-order') || /-(b[1-4]o)$/.test(key);
     if (isOrder) {
       inputs.push({ key, type: 'order', dateKey: dow, value: saveVal, valueTime: vTime });
     } else {
@@ -2917,7 +3076,7 @@ function applyInputValues(inputMap, markAsEdited) {
     const input = document.querySelector(`input[data-key="${key}"]`);
     if (input) {
       // Skip restoring 0 for shop cells — 0 means user cleared it, so show AI value
-      const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+      const isOrder = key.includes('-order') || /-(b[1-4]o)$/.test(key);
       if (!isOrder && (val === 0 || val === '0')) continue;
       // B2B MIRROR (2026-09-30): sheet is the only source — never restored.
       if (isOrder && isB2bMirrorKey_(currentStore, key)) continue;
@@ -2963,7 +3122,7 @@ function eCell(key, value, cls, aiBaseline) {
     return `<td class="editable b2b-mirror"><input type="text" data-key="${key}" value="${shown}" inputmode="numeric" readonly tabindex="-1" aria-readonly="true"></td>`;
   }
   const overrides = getActiveOverrides();
-  const isOrder = key.includes('-order') || /-(b[123]o)$/.test(key);
+  const isOrder = key.includes('-order') || /-(b[1-4]o)$/.test(key);
   const overrideMap = isOrder ? overrides.orders : overrides.shop;
   // Sant Joan bread envío values are algorithm-driven — never override with BQ edits
   const sjGuard = isSantJoanBreadKey(currentStore, key);
@@ -3149,7 +3308,10 @@ function getProductFactorTooltip(estKey) {
     parts.push(`${wLabel}: ${wSign}${wPct}%`);
   }
   if (num(f.soldOut) && f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}`);
-  if (f.soldOutFloorApplied) parts.push(`🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
+  // 2026-10-02: near-close sell-outs floor at W1 raw × 1.00 (no +5% buffer).
+  if (f.soldOutFloorApplied) parts.push(f.soldOutFloorNearClose
+    ? `🛡 Mínimo aplicado: vendido sem. pasada, agotado cerca del cierre (sin +5%)`
+    : `🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (est.batchSplit && est.batchSplit.coverage) {
     let covLine = `↰ Lotes por curva de demanda horaria (nuevo): el 3er lote cubre la demanda de tarde real`;
@@ -3316,10 +3478,11 @@ function recalcBreadTotals() {
 
 // Recalculate pastry row totals from current input values (global for use in applyInputValues)
 function recalcPastryTotals() {
+  const batches = pastryBatchKeys_();
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.key) return;
     let shopTotal = 0, allTotal = 0;
-    ['b1','b2','b3'].forEach(b => {
+    batches.forEach(b => {
       const sv = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`) || {}).value) || 0;
       const ov = parseInt((document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`) || {}).value) || 0;
       shopTotal += sv;
@@ -3330,6 +3493,8 @@ function recalcPastryTotals() {
     if (shopCell) shopCell.textContent = shopTotal || '';
     if (allCell) allCell.textContent = allTotal || '';
   });
+  // Fermenter "bandejas X/N" counters follow every recalculation.
+  updateTrayCounters_();
 }
 
 // Stable slug derived from a flavor name. Replaces the old positional index
@@ -3510,6 +3675,10 @@ async function regenerateEstimates() {
           dayOfWeek: snapshotDay,
           generatedAt: data.generatedAt,
           estimates: storeData.estimates || [],
+          // 2026-10-02: fermenter render config + generation-time capacity result
+          fermenterConfig: storeData.fermenterConfig || null,
+          fermenter: storeData.fermenter || null,
+          fermenterOverflow: !!storeData.fermenterOverflow,
         };
       }
     }
@@ -3747,56 +3916,54 @@ function renderMain() {
   // ===== PASTRY =====
   html += `<div class="section-header">🥐 Bollería — para el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid">`;
+  // Batch columns come from the engine's fermenterConfig (2026-10-02): the
+  // batches in time order (Sant Joan adds the Lote extra pair between the 2nd
+  // and 3rd), the 2nd batch's hour for THIS date (Sant Joan weekends 10:00)
+  // and a live fermenter tray counter in every header. Without a config
+  // (older engine) it renders the classic three batches.
+  const fermCfg = getFermenterConfig_();
+  const pastryBatches = pastryBatchKeys_();
+  const BATCH_CLS = { b1: 'batch-1', b2: 'batch-2', b3: 'batch-3', b4: 'batch-4' };
+  const batchHour = {
+    b1: '7:00',
+    b2: (fermCfg && fermCfg.b2Hour) || (currentStore === 'santpau' ? '09:30' : '11:00'),
+    b3: '13:00',
+    b4: (fermCfg && fermCfg.extra && fermCfg.extra.hour) || '12:00',
+  };
+  const pastryColCount = 6 + pastryBatches.length * 3;   // name, sobras, merma, sep + (2 cells + sep)/batch + 2 totals
   html += `<tr>
     <th style="min-width:220px" rowspan="2">Producto</th>
     <th rowspan="2">Sem. pasada</th>
     <th class="discard-header" rowspan="2">Merma</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
-    <th class="batch-1" colspan="2">1er lote · 7:00</th>
-    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
-    <th class="batch-2" colspan="2">2do lote · ${currentStore === 'santpau' ? '09:30' : '11:00'}</th>
-    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
-    <th class="batch-3" colspan="2">3er lote · 13:00</th>
-    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
+    ${pastryBatches.map(b => `<th class="${BATCH_CLS[b] || 'batch-3'}" colspan="2">${BATCH_LABELS[b] || b} · ${batchHour[b] || ''}<span class="tray-counter" data-tray-batch="${b}"></span></th>
+    <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>`).join('\n    ')}
     <th rowspan="2">Total Shop</th>
     <th rowspan="2">Total</th>
   </tr>`;
   html += `<tr>
-    <th class="batch-1">Shop</th><th class="batch-1">Ped.</th>
-    <th class="batch-2">Shop</th><th class="batch-2">Ped.</th>
-    <th class="batch-3">Shop</th><th class="batch-3">Ped.</th>
+    ${pastryBatches.map(b => `<th class="${BATCH_CLS[b] || 'batch-3'}">Shop</th><th class="${BATCH_CLS[b] || 'batch-3'}">Ped.</th>`).join('\n    ')}
   </tr>`;
 
   PASTRY_GROUPS.forEach((group, gi) => {
     const filteredGroup = group.filter(p => !p.stJoanOnly || currentStore === 'santjoan');
     if (filteredGroup.length === 0) return;
-    if (gi > 0) html += `<tr><td colspan="15" class="group-sep"></td></tr>`;
+    if (gi > 0) html += `<tr><td colspan="${pastryColCount}" class="group-sep"></td></tr>`;
     filteredGroup.forEach(p => {
       const s = shop.pastry[p.key] || { b1:0, b2:0, b3:0 };
       const o = orders.pastry[p.key] || { b1:0, b2:0, b3:0 };
       const sd = sobras.pastry[p.key];
-      const totalShop = (s.b1||0) + (s.b2||0) + (s.b3||0);
-      const totalAll = totalShop + (o.b1||0) + (o.b2||0) + (o.b3||0);
-
-      // Per-batch sold-out badges next to each batch column
-      const b1Alert = pastryBatchSobras(sd, 1);
-      const b2Alert = pastryBatchSobras(sd, 2);
-      const b3Alert = pastryBatchSobras(sd, 3);
+      const totalShop = pastryBatches.reduce((t, b) => t + (s[b] || 0), 0);
+      const totalAll = totalShop + pastryBatches.reduce((t, b) => t + (o[b] || 0), 0);
 
       html += `<tr>
         ${productNameCell(p.name, p.label, p.key, `pastry-${p.key}`)}
         ${pastryTotalSobras(sd, getW1SalesForKey(p.key))}
         ${discardsCell(sd)}
         <td class="sep"></td>
-        ${eCell(`pastry-${p.key}-b1s`, s.b1, 'ai')}
-        ${eCell(`pastry-${p.key}-b1o`, o.b1, 'manual order-cell')}
-        <td class="sep"></td>
-        ${eCell(`pastry-${p.key}-b2s`, s.b2, 'ai')}
-        ${eCell(`pastry-${p.key}-b2o`, o.b2, 'manual order-cell')}
-        <td class="sep"></td>
-        ${eCell(`pastry-${p.key}-b3s`, s.b3, 'ai')}
-        ${eCell(`pastry-${p.key}-b3o`, o.b3, 'manual order-cell')}
-        <td class="sep"></td>
+        ${pastryBatches.map(b => `${eCell(`pastry-${p.key}-${b}s`, s[b] || 0, 'ai')}
+        ${eCell(`pastry-${p.key}-${b}o`, o[b] || 0, 'manual order-cell')}
+        <td class="sep"></td>`).join('\n        ')}
         <td style="color:#2d6a4f;font-weight:600" data-total-shop="${p.key}">${totalShop || ''}</td>
         <td class="total-col" data-total-all="${p.key}">${totalAll || ''}</td>
       </tr>`;
@@ -3944,7 +4111,7 @@ function renderMain() {
       const dateStr = formatDateStr(targetDate);
       const overKey = `${currentStore}-${dateStr}`;
       if (!_activeOverrides[overKey]) _activeOverrides[overKey] = { shop: {}, orders: {} };
-      const isOrd = k.includes('-order') || /-(b[123]o)$/.test(k);
+      const isOrd = k.includes('-order') || /-(b[1-4]o)$/.test(k);
 
       // Sant Joan focaccia: clearing the cell reverts to the live calculated
       // value (ceil(next-day bocadillos / 12)) rather than persisting an
@@ -4027,9 +4194,17 @@ function computePastryRounding(p) {
   const SMALL_OVERSHOOT = Math.max(1, Math.floor(lata / 6));  // lata=12 → 2
   const SMALL_LEFTOVER  = Math.max(1, Math.floor(lata / 3));  // lata=12 → 4
 
-  // Read current values for all 3 batches
+  // Batches in TIME order (2026-10-02). Sant Joan's Lote extra (b4) sits
+  // between the 2nd and 3rd and is treated like any other batch: an earlier
+  // batch may pull from it to complete a tray, and it may pull from the 3rd.
+  // With three batches (Milà / Sant Pau, or Sant Joan with an empty Lote
+  // extra) every rule below reduces exactly to the original B1/B2/B3 logic.
+  const seq = pastryBatchKeys_();
+  const last = seq[seq.length - 1];   // the 3er lote
+
+  // Read current values for all batches
   const vals = {};
-  ['b1','b2','b3'].forEach(b => {
+  seq.forEach(b => {
     const shopInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}s"]`);
     const orderInput = document.querySelector(`input[data-key="pastry-${p.key}-${b}o"]`);
     const shop = shopInput ? (parseInt(shopInput.value) || 0) : 0;
@@ -4048,6 +4223,8 @@ function computePastryRounding(p) {
   //       buffer must survive rounding (the next bake can arrive late).
   //   B2: residual against the tray-rounded grand total, so the day's
   //       total is conserved like the cascade conserved it.
+  //   Lote extra (Sant Joan): plain tray rounding of whatever the capacity
+  //       spill put there; B2 stays the residual. B3's rules are unchanged.
   if (window._coverageRounding && window._coverageRounding[p.key]) {
     const HALF_TRAY = Math.ceil(lata / 2);
     const mk = (v, finalTotal, action) => ({
@@ -4068,16 +4245,23 @@ function computePastryRounding(p) {
     if (vals.b1.total === 0) b1Final = 0;
     else if (b1Rem > SMALL_LEFTOVER) b1Final = (Math.floor(vals.b1.total / lata) + 1) * lata;
     else b1Final = roundWithOrderGuarantee(vals.b1.total, vals.b1.order, lata);
+    // Any other batch (the Lote extra): plain rounding
+    const others = seq.filter(b => b !== 'b1' && b !== 'b2' && b !== 'b3');
+    const otherFinal = {};
+    let othersSum = 0;
+    others.forEach(b => {
+      otherFinal[b] = vals[b].total > 0 ? roundWithOrderGuarantee(vals[b].total, vals[b].order, lata) : 0;
+      othersSum += otherFinal[b];
+    });
     // B2: residual so the grand total still lands on its nearest tray multiple
-    const grand = vals.b1.total + vals.b2.total + vals.b3.total;
-    const orders = vals.b1.order + vals.b2.order + vals.b3.order;
+    const grand = seq.reduce((t, b) => t + vals[b].total, 0);
+    const orders = seq.reduce((t, b) => t + vals[b].order, 0);
     const grandTarget = grand > 0 ? roundWithOrderGuarantee(grand, orders, lata) : 0;
-    let b2Final = Math.max(0, grandTarget - b1Final - b3Final);
+    let b2Final = Math.max(0, grandTarget - b1Final - b3Final - othersSum);
     if (b2Final < vals.b2.order) b2Final = Math.ceil(vals.b2.order / lata) * lata;
-    return {
-      batches: { b1: mk(vals.b1, b1Final, 'round'), b2: mk(vals.b2, b2Final, 'round'), b3: mk(vals.b3, b3Final, b3Action) },
-      transfers: [],
-    };
+    const batches = { b1: mk(vals.b1, b1Final, 'round'), b2: mk(vals.b2, b2Final, 'round'), b3: mk(vals.b3, b3Final, b3Action) };
+    others.forEach(b => { batches[b] = mk(vals[b], otherFinal[b], 'round'); });
+    return { batches, transfers: [] };
   }
 
   // Decide smart-skip flags BEFORE cascading. The risk we're guarding against:
@@ -4093,7 +4277,7 @@ function computePastryRounding(p) {
       if (v.shop === 0) return true;
       if (v.shop >= lata) return true;
       if (v.order > 0) return true;
-      if (dk === 'b3' && v.shop <= SMALL_LEFTOVER) return true;
+      if (dk === last && v.shop <= SMALL_LEFTOVER) return true;
       return false;
     });
   }
@@ -4105,57 +4289,43 @@ function computePastryRounding(p) {
     if (rem === 0 || rem > SMALL_OVERSHOOT) return false;
     return donorsClean(donorKeys);
   }
-  const skipped = {
-    b1: eligibleSkip('b1', ['b2', 'b3']),
-    b2: eligibleSkip('b2', ['b3']),
-  };
+  // Every batch except the last can be smart-skipped; its donors are the
+  // batches after it.
+  const skipped = {};
+  seq.forEach((b, i) => { if (b !== last) skipped[b] = eligibleSkip(b, seq.slice(i + 1)); });
 
-  // Cascade Step 1: fill B1's tray from B2 then B3.
+  // Cascade, earliest batch first: complete the batch's tray by pulling shop
+  // units from the LATER batches in time order (B1 ← B2 ← [extra] ← B3, then
+  // B2 ← [extra] ← B3, then extra ← B3).
   // A smart-skipped donor (e.g. B2 about to be trimmed down) must NOT be drawn
   // from — otherwise cascade depletes its shop and the subsequent floor()
   // collapses it to 0, throwing away a full tray of intended production.
   const transfers = [];
-  if (!skipped.b1 && vals.b1.total > 0) {
-    const rem = vals.b1.total % lata;
-    if (rem > 0) {
-      let needed = lata - rem;
-      if (!skipped.b2 && needed > 0 && vals.b2.shop > 0) {
-        const move = Math.min(needed, vals.b2.shop);
-        vals.b1.shop += move; vals.b1.total += move;
-        vals.b2.shop -= move; vals.b2.total -= move;
-        needed -= move;
-        transfers.push({ from: '2do', to: '1er', units: move });
-      }
-      if (needed > 0 && vals.b3.shop > 0) {
-        const move = Math.min(needed, vals.b3.shop);
-        vals.b1.shop += move; vals.b1.total += move;
-        vals.b3.shop -= move; vals.b3.total -= move;
-        transfers.push({ from: '3er', to: '1er', units: move });
-      }
+  seq.forEach((b, i) => {
+    if (b === last || skipped[b] || !(vals[b].total > 0)) return;
+    const rem = vals[b].total % lata;
+    if (rem === 0) return;
+    let needed = lata - rem;
+    for (const d of seq.slice(i + 1)) {
+      if (needed <= 0) break;
+      if (skipped[d] || !(vals[d].shop > 0)) continue;
+      const move = Math.min(needed, vals[d].shop);
+      vals[b].shop += move; vals[b].total += move;
+      vals[d].shop -= move; vals[d].total -= move;
+      needed -= move;
+      transfers.push({ from: BATCH_SHORT[d] || d, to: BATCH_SHORT[b] || b, units: move });
     }
-  }
-  // Cascade Step 2: fill B2's tray from B3
-  if (!skipped.b2 && vals.b2.total > 0 && vals.b3.shop > 0) {
-    const rem = vals.b2.total % lata;
-    if (rem > 0) {
-      const move = Math.min(lata - rem, vals.b3.shop);
-      if (move > 0) {
-        vals.b2.shop += move; vals.b2.total += move;
-        vals.b3.shop -= move; vals.b3.total -= move;
-        transfers.push({ from: '3er', to: '2do', units: move });
-      }
-    }
-  }
+  });
 
   // Round each batch with the appropriate rule
   const batches = {};
-  ['b1','b2','b3'].forEach(b => {
+  seq.forEach(b => {
     const v = vals[b];
     let finalTotal, action = 'round';
     if (skipped[b]) {
       finalTotal = Math.floor(v.total / lata) * lata;
       action = 'trim';
-    } else if (b === 'b3' && v.order === 0 && v.total > 0 && v.total <= SMALL_LEFTOVER) {
+    } else if (b === last && v.order === 0 && v.total > 0 && v.total <= SMALL_LEFTOVER) {
       finalTotal = 0;
       action = 'drop';
     } else {
@@ -4203,7 +4373,7 @@ function collectRoundingChanges() {
   });
 
   // Pastry: cascade + smart-skip + B3 threshold (see computePastryRounding)
-  const batchNames = { b1: '1er lote', b2: '2do lote', b3: '3er lote' };
+  const batchNames = BATCH_LABELS;
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
     const result = computePastryRounding(p);
@@ -4214,7 +4384,7 @@ function collectRoundingChanges() {
     });
 
     // Per-batch round/trim/drop rows
-    ['b1','b2','b3'].forEach(b => {
+    pastryBatchKeys_().forEach(b => {
       const r = result.batches[b];
       if (!r.shopInput) return;
       const reportable = (
@@ -4262,6 +4432,38 @@ function updateSyncButtonState() {
   }
 }
 
+// FERMENTER GATE (2026-10-02): trays per batch recomputed from the numbers
+// that would actually be synced — the rounded shop value of every lata-rounded
+// product (computePastryRounding, the same function the apply path uses) and
+// the on-screen value of the rest (Pastry del mes) — plus pedidos.
+function collectFermenterWarnings_() {
+  const finals = {};
+  PASTRY_GROUPS.flat().forEach(p => {
+    if (!p.key || !p.roundTo) return;
+    if (!(fermenterTrayFit_(p.key) > 0)) return;
+    const res = computePastryRounding(p);
+    finals[p.key] = {};
+    Object.keys(res.batches).forEach(b => {
+      finals[p.key][b] = { shop: res.batches[b].finalShop, order: res.batches[b].orderVal };
+    });
+  });
+  return fermenterWarnings_((key, b) => (finals[key] && finals[key][b]) || domPastryPair_(key, b));
+}
+
+// Everything Rafa approves in the modal: rounding changes + fermenter warnings.
+function _previewStateJson_() {
+  return JSON.stringify({ changes: collectRoundingChanges(), fermenter: collectFermenterWarnings_() });
+}
+
+// The fermenter warning is a gate, not a block: Rafa may know something the
+// system doesn't (a hand-run second fermenter cycle) — but she has to tick
+// the box before "Confirmar y sincronizar" is enabled.
+function onFermenterAckChange_() {
+  const ack = document.getElementById('fermenterAck');
+  const btn = document.getElementById('syncConfirmBtn');
+  if (btn) btn.disabled = !!(ack && !ack.checked);
+}
+
 let _previewChangesJson = null;  // QA 2026-09-16: what Rafa approved in the modal
 function showSyncPreview() {
   if (forecastLoading) {
@@ -4269,13 +4471,23 @@ function showSyncPreview() {
     return;
   }
   const changes = collectRoundingChanges();
-  _previewChangesJson = JSON.stringify(changes);
+  const fermWarnings = collectFermenterWarnings_();
+  _previewChangesJson = JSON.stringify({ changes, fermenter: fermWarnings });
   const content = document.getElementById('syncPreviewContent');
 
+  let fermHtml = '';
+  if (fermWarnings.length > 0) {
+    fermHtml = `<div class="fermenter-warning">
+      <strong>⚠️ Capacidad del fermentador superada</strong> (después del redondeo):
+      ${fermWarnings.map(w => `<div>• <strong>${w.label}: ${w.trays} bandejas — máximo ${w.limit}</strong>${w.suggestion ? ` → ${w.suggestion}` : ''}</div>`).join('')}
+      <label><input type="checkbox" id="fermenterAck" onchange="onFermenterAckChange_()"> Lo he visto y quiero sincronizar igualmente</label>
+    </div>`;
+  }
+
   if (changes.length === 0) {
-    content.innerHTML = `<p style="color:#2e7d32;font-weight:500;">✓ Todos los valores ya son múltiplos correctos. No se necesita redondeo.</p>`;
+    content.innerHTML = fermHtml + `<p style="color:#2e7d32;font-weight:500;">✓ Todos los valores ya son múltiplos correctos. No se necesita redondeo.</p>`;
   } else {
-    let html = '';
+    let html = fermHtml;
     changes.forEach(c => {
       if (c.type === 'transfer') {
         html += `<div class="round-row" style="color:#1a5276;background:#eef6ff;border-radius:6px;padding:4px 8px;margin:6px 0 2px;">
@@ -4306,6 +4518,10 @@ function showSyncPreview() {
     });
     content.innerHTML = html;
   }
+
+  // Confirm stays disabled until the fermenter warning (if any) is acknowledged.
+  const confirmBtn = document.getElementById('syncConfirmBtn');
+  if (confirmBtn) confirmBtn.disabled = fermWarnings.length > 0;
 
   document.getElementById('syncPreview').classList.add('show');
 }
@@ -4345,6 +4561,11 @@ function allocateFocaccias(flavorsPortions) {
 }
 
 async function confirmSync() {
+  // FERMENTER GATE (2026-10-02): a batch over the fermenter limit needs the
+  // explicit tick in the preview. The button is disabled until then; this
+  // also covers a programmatic call.
+  const _fermAck = document.getElementById('fermenterAck');
+  if (_fermAck && !_fermAck.checked) return;
   closeSyncPreview();
 
   // QA FIX 2026-09-16 (audit: no capture-and-recheck in confirmSync): pin the
@@ -4412,7 +4633,7 @@ async function confirmSync() {
           if (!inp) continue;
           const cur = inp.value === '' ? '0' : String(inp.value);
           const want = (v === '' || v === null) ? '0' : String(v);
-          if (cur !== want) _gDiffs.push(k.replace(/^(bread|pastry)-/, '').replace(/-(shop|b[123]s)$/, ' $1') + ': sincronizado ' + want + ' → pantalla ' + cur);
+          if (cur !== want) _gDiffs.push(k.replace(/^(bread|pastry)-/, '').replace(/-(shop|b[1-4]s)$/, ' $1') + ': sincronizado ' + want + ' → pantalla ' + cur);
         }
         if (_gDiffs.length > 0) {
           const ok = confirm('⚠️ ATENCIÓN: ' + _gDiffs.length + ' valor(es) en pantalla NO coinciden con lo último sincronizado y NO los has editado tú en esta sesión (posible fallo de carga):\n\n' +
@@ -4494,7 +4715,10 @@ async function confirmSync() {
   // what would be synced. Abort and re-open the preview for re-review
   // instead of silently syncing different values than she saw.
   try {
-    const nowChanges = JSON.stringify(collectRoundingChanges());
+    // 2026-10-02: the comparison includes the fermenter warnings — a refresh
+    // that pushes a batch over the limit (or changes the tray count she
+    // accepted) re-opens the preview too.
+    const nowChanges = _previewStateJson_();
     if (_previewChangesJson !== null && nowChanges !== _previewChangesJson) {
       if (_syncBtnEarly) _syncBtnEarly.disabled = false;
       alert('Los datos se actualizaron mientras se preparaba la sincronización (cambios desde otra pestaña o dispositivo). Revisa el resumen actualizado y confirma de nuevo.');
@@ -4559,7 +4783,7 @@ async function confirmSync() {
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
     const result = computePastryRounding(p);
-    ['b1','b2','b3'].forEach(b => {
+    pastryBatchKeys_().forEach(b => {
       const r = result.batches[b];
       applyRoundedShop_(r.shopInput, r.finalShop);
     });
@@ -4605,13 +4829,15 @@ async function confirmSync() {
     estimates.push({ cell: 'J' + row, value: orderVal });
   });
 
-  // Pastry: each batch has shop + orders in specific columns
-  // B1: G (shop), H (orders) | B2: J (shop), K (orders) | B3: M (shop), N (orders)
-  const PASTRY_COL_MAP = {
-    b1s: 'G', b1o: 'H',
-    b2s: 'J', b2o: 'K',
-    b3s: 'M', b3o: 'N',
-  };
+  // Pastry: each batch has shop + orders in specific columns. The map comes
+  // from the engine (CONFIG.PASTRY_SHEET_LAYOUT via fermenterConfig.cols):
+  //   Milà / Sant Pau: B1 G/H | B2 J/K | B3 M/N
+  //   Sant Joan:       B1 G/H | B2 J/K | Lote extra M/N | B3 P/Q
+  // `sheetLayout` travels with the payload so the engine can refuse a sync
+  // built from a different layout than the one it writes to.
+  const PASTRY_COL_MAP = pastryColMap_();
+  const _fermCfgSync = getFermenterConfig_();
+  const sheetLayout = (_fermCfgSync && _fermCfgSync.layout) || null;
 
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.key) return;
@@ -4753,6 +4979,7 @@ async function confirmSync() {
         dayOfWeek: currentDay,
         targetDate: targetDateStr,
         generatedAt,
+        sheetLayout,
         estimates
       })
     });
