@@ -69,7 +69,7 @@
   table.grid th.batch-1 { background: #457b9d; }
   table.grid th.batch-2 { background: #6d6875; }
   table.grid th.batch-3 { background: #9b5de5; }
-  /* Sant Joan's Lote extra (2026-10-02) — sits between the 2nd and 3rd batch */
+  /* The 12:00 slot (b4: Sant Joan 2026-10-02, Sant Pau 2026-10-08) — sits between the 2nd and the last batch */
   table.grid th.batch-4 { background: #b5651d; }
   /* Fermenter tray counter in each batch header: "bandejas X/17", red when over */
   .tray-counter {
@@ -692,14 +692,29 @@ const CELL_TO_KEY = {
 // Everything here comes from the engine (CONFIG.FERMENTER / PASTRY_SHEET_LAYOUT)
 // as `fermenterConfig` on each estimates response — no second copy of the
 // limits, the product list or the sheet columns lives in this page:
-//   { limit, batches: ['b1','b2','b4','b3'], extra: {key,label,hour} | null,
-//     trayFit: { 'D34': 12, … }, cols: { b1s:'G', … }, layout, b2Hour }
-// `b4` is Sant Joan's Lote extra: 4th internally, displayed (and baked)
-// between the 2nd and 3rd batch. An older engine sends no config → the page
-// behaves exactly as before (3 batches, G…N columns, no counters).
+//   { limit, batches: ['b1','b2','b4','b3'], extra: {key,label,hour,regular} | null,
+//     trayFit: { 'D34': 12, … }, cols: { b1s:'G', … }, layout, b2Hour,
+//     hours: { b1, b2, b4, b3 } (out times for THIS date), shortDay, b4Regular }
+// `b4` is the 12:00 slot (Sant Pau + Sant Joan, 2026-10-08): 4th internally,
+// displayed (and baked) between the 2nd and the LAST batch. Which stores
+// have it is decided by the engine config, never by the store name here.
+// An older engine sends no config → the page behaves exactly as before
+// (3 batches, G…N columns, no counters).
 const PASTRY_COLS_FALLBACK = { b1s: 'G', b1o: 'H', b2s: 'J', b2o: 'K', b3s: 'M', b3o: 'N' };
-const BATCH_LABELS = { b1: '1er lote', b2: '2do lote', b4: 'Lote extra', b3: '3er lote' };
-const BATCH_SHORT = { b1: '1er', b2: '2do', b4: 'extra', b3: '3er' };
+// Labels are CHRONOLOGICAL per store (Rafa's team: the 12:00 slot is the
+// "3 batch" and the last one the "4 batch" where there are four): four-slot
+// stores → 1er / 2º / 3er lote (12:00) / 4º lote; three-slot → 1er / 2º / 3er.
+const BATCH_ORDINALS = ['1er', '2º', '3er', '4º'];
+function batchLabel_(b) {
+  const i = pastryBatchKeys_().indexOf(b);
+  if (i < 0) return b;
+  return BATCH_ORDINALS[i] + ' lote' + (b === 'b4' ? ' (12:00)' : '');
+}
+function batchShort_(b) {
+  const i = pastryBatchKeys_().indexOf(b);
+  if (i < 0) return b;
+  return BATCH_ORDINALS[i] + (b === 'b4' ? ' (12h)' : '');
+}
 
 function getFermenterConfig_() {
   const c = forecastCache[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`];
@@ -769,14 +784,15 @@ function updateTrayCounters_() {
 
 // Sync-preview gate: trays per batch from the FINAL numbers (after rounding).
 // getPair as in computeFermenterTrays_. Returns one entry per batch over the
-// limit: { batch, label, trays, limit, over, suggestion }. At Sant Joan a
-// batch other than the Lote extra itself gets "mueve N bandejas al Lote
-// extra" (capped to the room the extra batch still has).
+// limit: { batch, label, trays, limit, over, suggestion }. Where the store
+// has the 12:00 slot, a batch other than the slot itself gets "mueve N
+// bandejas al 3er lote (12:00)" (capped to the room that slot still has).
 function fermenterWarnings_(getPair) {
   const cfg = getFermenterConfig_();
   if (!cfg || !cfg.limit) return [];
   const trays = computeFermenterTrays_(getPair);
   const extraKey = cfg.extra && cfg.extra.key;
+  const extraLabel = extraKey ? batchLabel_(extraKey) : '';
   let extraRoom = extraKey ? Math.max(0, cfg.limit - (trays[extraKey] || 0)) : 0;
   const out = [];
   pastryBatchKeys_().forEach(b => {
@@ -786,11 +802,11 @@ function fermenterWarnings_(getPair) {
     if (extraKey && b !== extraKey) {
       const n = Math.min(over, extraRoom);
       extraRoom -= n;
-      if (n === over) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al Lote extra`;
-      else if (n > 0) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al Lote extra (no cabe${over - n === 1 ? '' : 'n'} ${over - n} más)`;
-      else suggestion = 'el Lote extra también está lleno';
+      if (n === over) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al ${extraLabel}`;
+      else if (n > 0) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al ${extraLabel} (no cabe${over - n === 1 ? '' : 'n'} ${over - n} más)`;
+      else suggestion = `el ${extraLabel} también está lleno`;
     }
-    out.push({ batch: b, label: BATCH_LABELS[b] || b, trays: trays[b], limit: cfg.limit, over, suggestion });
+    out.push({ batch: b, label: batchLabel_(b), trays: trays[b], limit: cfg.limit, over, suggestion });
   });
   return out;
 }
@@ -1797,7 +1813,7 @@ function getShopSuggestions() {
       // Show raw numbers to Rafa — rounding to lata multiples happens only at sync time
       // 2026-10-02: the engine now ships the shop cells per batch itself
       // (est.batchCells — same arithmetic as below, then the fermenter
-      // capacity spill, incl. Sant Joan's Lote extra as b4). Use them as-is;
+      // capacity spill, incl. the 12:00 slot as b4). Use them as-is;
       // the local derivation stays only for payloads stored before that.
       if (est.batchCells && typeof est.batchCells === 'object') {
         const bc = est.batchCells;
@@ -3314,10 +3330,19 @@ function getProductFactorTooltip(estKey) {
     : `🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
   if (est.batchSplit && est.batchSplit.coverage) {
-    let covLine = `↰ Lotes por curva de demanda horaria (nuevo): el 3er lote cubre la demanda de tarde real`;
+    let covLine = `↰ Lotes por curva de demanda horaria: cada lote cubre su franja hasta que sale el siguiente (+ colchón); el último cubre la demanda de tarde real`;
     const sw = est.batchSplit.soldOutWeeks;
-    if (sw && (sw.b1 >= 2 || sw.b2 >= 2)) covLine += ` · buffer ampliado por agotados recientes`;
+    if (sw && (sw.b1 >= 2 || sw.b2 >= 2 || sw.b4 >= 2)) covLine += ` · colchón ampliado por agotados recientes`;
     parts.push(covLine);
+    // 2026-10-08: sell-out tail reconstruction (like "inferido": Rafa can audit it by hand).
+    const rc = est.batchSplit.reconstruction;
+    if (rc && rc.applied && rc.days > 0) {
+      const fmtS = a => (Array.isArray(a) ? a.map(x => Math.round(x * 100)).filter((x, i) => !(i === 2 && x === 0 && a[2] === 0)).join('/') : '?');
+      parts.push(`↰ Reconstruido: ${rc.days} de ${rc.refDays} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.ref === 'pooled' ? 'laminados juntos' : 'este producto'})`);
+      (rc.refDays || []).filter(d => d.applied).forEach(d => {
+        parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' ? 'inferido del TPV' : d.trigger === 'both' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
+      });
+    }
   }
   if (num(f.feedback) && f.feedback !== 1) parts.push(`Feedback: ${f.feedback > 1 ? '+' : ''}${Math.round((f.feedback - 1) * 100)}% (${f.feedbackWeeks || 0} sem. — ${f.feedbackReason || ''})`);
   if (f.skipped) parts.push(`⏭ ${f.skipReason || 'No se produce este día'}`);
@@ -3916,27 +3941,34 @@ function renderMain() {
   // ===== PASTRY =====
   html += `<div class="section-header">🥐 Bollería — para el: ${currentDay.toLowerCase()}</div>`;
   html += `<table class="grid">`;
-  // Batch columns come from the engine's fermenterConfig (2026-10-02): the
-  // batches in time order (Sant Joan adds the Lote extra pair between the 2nd
-  // and 3rd), the 2nd batch's hour for THIS date (Sant Joan weekends 10:00)
-  // and a live fermenter tray counter in every header. Without a config
-  // (older engine) it renders the classic three batches.
+  // Batch columns come from the engine's fermenterConfig (2026-10-02 /
+  // 2026-10-08): the batches in time order (Sant Pau and Sant Joan add the
+  // 12:00-slot pair between the 2nd and the last), every batch's OUT time
+  // for THIS date (short days differ), chronological labels, and a live
+  // fermenter tray counter in every header. On a normal day the 12:00 slot
+  // is spill-only and says so; on a short day it is a batch like any other.
+  // Without a config (older engine) it renders the classic three batches.
   const fermCfg = getFermenterConfig_();
   const pastryBatches = pastryBatchKeys_();
   const BATCH_CLS = { b1: 'batch-1', b2: 'batch-2', b3: 'batch-3', b4: 'batch-4' };
+  const cfgHours = (fermCfg && fermCfg.hours) || {};
   const batchHour = {
-    b1: '7:00',
-    b2: (fermCfg && fermCfg.b2Hour) || (currentStore === 'santpau' ? '09:30' : '11:00'),
-    b3: '13:00',
-    b4: (fermCfg && fermCfg.extra && fermCfg.extra.hour) || '12:00',
+    b1: cfgHours.b1 || '08:00',
+    b2: cfgHours.b2 || (fermCfg && fermCfg.b2Hour) || '11:00',
+    b3: cfgHours.b3 || '13:00',
+    b4: cfgHours.b4 || (fermCfg && fermCfg.extra && fermCfg.extra.hour) || '12:00',
   };
+  const b4SpillOnly = !!(fermCfg && fermCfg.extra && fermCfg.extra.regular === false);
+  const batchHint = b => (b === 'b4' && b4SpillOnly)
+    ? `<span style="display:block;font-size:10px;font-weight:400;opacity:.75" title="Entre semana este lote va vacío salvo que el fermentador no dé abasto: solo recibe lo que no cabe en el 2º lote">solo desbordamiento</span>`
+    : '';
   const pastryColCount = 6 + pastryBatches.length * 3;   // name, sobras, merma, sep + (2 cells + sep)/batch + 2 totals
   html += `<tr>
     <th style="min-width:220px" rowspan="2">Producto</th>
     <th rowspan="2">Sem. pasada</th>
     <th class="discard-header" rowspan="2">Merma</th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>
-    ${pastryBatches.map(b => `<th class="${BATCH_CLS[b] || 'batch-3'}" colspan="2">${BATCH_LABELS[b] || b} · ${batchHour[b] || ''}<span class="tray-counter" data-tray-batch="${b}"></span></th>
+    ${pastryBatches.map(b => `<th class="${BATCH_CLS[b] || 'batch-3'}" colspan="2" title="Sale a las ${batchHour[b] || ''}">${batchLabel_(b)} · ${batchHour[b] || ''}${batchHint(b)}<span class="tray-counter" data-tray-batch="${b}"></span></th>
     <th class="sep" style="background:#f5f0eb;border:none" rowspan="2"></th>`).join('\n    ')}
     <th rowspan="2">Total Shop</th>
     <th rowspan="2">Total</th>
@@ -4194,13 +4226,14 @@ function computePastryRounding(p) {
   const SMALL_OVERSHOOT = Math.max(1, Math.floor(lata / 6));  // lata=12 → 2
   const SMALL_LEFTOVER  = Math.max(1, Math.floor(lata / 3));  // lata=12 → 4
 
-  // Batches in TIME order (2026-10-02). Sant Joan's Lote extra (b4) sits
-  // between the 2nd and 3rd and is treated like any other batch: an earlier
-  // batch may pull from it to complete a tray, and it may pull from the 3rd.
-  // With three batches (Milà / Sant Pau, or Sant Joan with an empty Lote
-  // extra) every rule below reduces exactly to the original B1/B2/B3 logic.
+  // Batches in TIME order (2026-10-02). The 12:00 slot (b4, Sant Pau / Sant
+  // Joan) sits between the 2nd and the last and is treated like any other
+  // batch: an earlier batch may pull from it to complete a tray, and it may
+  // pull from the last. With three batches (Milà, or a four-slot store with
+  // an empty 12:00 slot) every rule below reduces exactly to the original
+  // B1/B2/B3 logic.
   const seq = pastryBatchKeys_();
-  const last = seq[seq.length - 1];   // the 3er lote
+  const last = seq[seq.length - 1];   // the LAST batch (b3)
 
   // Read current values for all batches
   const vals = {};
@@ -4223,8 +4256,8 @@ function computePastryRounding(p) {
   //       buffer must survive rounding (the next bake can arrive late).
   //   B2: residual against the tray-rounded grand total, so the day's
   //       total is conserved like the cascade conserved it.
-  //   Lote extra (Sant Joan): plain tray rounding of whatever the capacity
-  //       spill put there; B2 stays the residual. B3's rules are unchanged.
+  //   12:00 slot (b4): plain tray rounding of whatever the allocation or the
+  //       capacity spill put there; B2 stays the residual. B3's rules are unchanged.
   if (window._coverageRounding && window._coverageRounding[p.key]) {
     const HALF_TRAY = Math.ceil(lata / 2);
     const mk = (v, finalTotal, action) => ({
@@ -4245,7 +4278,7 @@ function computePastryRounding(p) {
     if (vals.b1.total === 0) b1Final = 0;
     else if (b1Rem > SMALL_LEFTOVER) b1Final = (Math.floor(vals.b1.total / lata) + 1) * lata;
     else b1Final = roundWithOrderGuarantee(vals.b1.total, vals.b1.order, lata);
-    // Any other batch (the Lote extra): plain rounding
+    // Any other batch (the 12:00 slot): plain rounding
     const others = seq.filter(b => b !== 'b1' && b !== 'b2' && b !== 'b3');
     const otherFinal = {};
     let othersSum = 0;
@@ -4313,7 +4346,7 @@ function computePastryRounding(p) {
       vals[b].shop += move; vals[b].total += move;
       vals[d].shop -= move; vals[d].total -= move;
       needed -= move;
-      transfers.push({ from: BATCH_SHORT[d] || d, to: BATCH_SHORT[b] || b, units: move });
+      transfers.push({ from: batchShort_(d), to: batchShort_(b), units: move });
     }
   });
 
@@ -4373,7 +4406,7 @@ function collectRoundingChanges() {
   });
 
   // Pastry: cascade + smart-skip + B3 threshold (see computePastryRounding)
-  const batchNames = BATCH_LABELS;
+  const batchNames = { b1: batchLabel_('b1'), b2: batchLabel_('b2'), b4: batchLabel_('b4'), b3: batchLabel_('b3') };
   PASTRY_GROUPS.flat().forEach(p => {
     if (!p.roundTo) return;
     const result = computePastryRounding(p);
@@ -4831,8 +4864,8 @@ async function confirmSync() {
 
   // Pastry: each batch has shop + orders in specific columns. The map comes
   // from the engine (CONFIG.PASTRY_SHEET_LAYOUT via fermenterConfig.cols):
-  //   Milà / Sant Pau: B1 G/H | B2 J/K | B3 M/N
-  //   Sant Joan:       B1 G/H | B2 J/K | Lote extra M/N | B3 P/Q
+  //   Milà:                 B1 G/H | B2 J/K | B3 M/N
+  //   Sant Pau / Sant Joan: B1 G/H | B2 J/K | 12:00 slot M/N | último lote P/Q
   // `sheetLayout` travels with the payload so the engine can refuse a sync
   // built from a different layout than the one it writes to.
   const PASTRY_COL_MAP = pastryColMap_();
