@@ -628,26 +628,88 @@ const PASTRY = [
   { id: 'pastis_llimona', name: 'Pastís llimona i ametlla', category: 'pastry', hasBatches: true },
 ];
 
-// Batch time boundaries
-// Batch 1: before 11:00 | Batch 2: 11:00–12:59 | Batch 3: 13:00+
-// Batch boundaries per store, in minutes from midnight. Must mirror the
-// engine's CONFIG.BATCH_HOURS: Sant Pau's second bake comes out at 09:30
-// (B2B coffee-shop orders fill the first), everyone else at 11:00.
-const BATCH_BOUNDS = {
-  default: { b1End: 11 * 60, b2End: 13 * 60 },
-  santpau: { b1End: 9 * 60 + 30, b2End: 13 * 60 },
+// ─── Batch grid (RESTRUCTURED 2026-10-08) ───────────────────────────
+// A "Se acabó" tap is routed to the batch whose stock was on the shelf: the
+// boundaries are the OUT times of the NEXT batch (a 10:30 tap at Sant Pau
+// on a weekday means the 1st batch ran out — the 2nd only comes out at
+// 11:00). Batch keys: 1 = first (out 8:00), 2 = second, 4 = the 12:00 slot
+// (chronologically THIRD, Sant Pau + Sant Joan), 3 = the LAST batch.
+// Short days = weekends AND bank holidays. The engine is the source of
+// truth: on load the app asks action=batchgrid for today's grid (it knows
+// the bank holidays and whether today's plan put volume in the 12:00 slot
+// on a normal day); the table below is the offline fallback, which mirrors
+// CONFIG.BATCH_HOURS and treats weekends as short days.
+//   Milà:      8:00 · 11:00 · 13:30          | short: 8:00 · 10:30 · 13:30
+//   Sant Pau:  8:00 · 11:00 · (12:00) · 15:00 | short: 8:00 · 10:00 · 12:00 · 15:00
+//   Sant Joan: 8:00 · 11:00 · (12:00) · 14:00 | short: 8:00 · 10:00 · 12:00 · 14:00
+// (12:00) = spill-only on normal days: a target only when the plan filled it.
+const BATCH_GRID_FALLBACK = {
+  mila:     { normal: { b2Out: 11 * 60, b4Out: null,    b3Out: 13 * 60 + 30, b4Target: false },
+              short:  { b2Out: 10 * 60 + 30, b4Out: null, b3Out: 13 * 60 + 30, b4Target: false } },
+  santpau:  { normal: { b2Out: 11 * 60, b4Out: 12 * 60, b3Out: 15 * 60, b4Target: false },
+              short:  { b2Out: 10 * 60, b4Out: 12 * 60, b3Out: 15 * 60, b4Target: true } },
+  santjoan: { normal: { b2Out: 11 * 60, b4Out: 12 * 60, b3Out: 14 * 60, b4Target: false },
+              short:  { b2Out: 10 * 60, b4Out: 12 * 60, b3Out: 14 * 60, b4Target: true } },
 };
+let _batchGrid = null;   // today's grid from the engine: { date, b2Out, b4Out, b3Out, b4Target, source }
+
+function _gridCacheKey_(dateStr) { return `origo_batchgrid_${currentStore}_${dateStr}`; }
+function currentBatchGrid_() {
+  const today = getLocalDateStr();
+  if (_batchGrid && _batchGrid.date === today && _batchGrid.store === currentStore) return _batchGrid;
+  try {
+    const cached = localStorage.getItem(_gridCacheKey_(today));
+    if (cached) { _batchGrid = JSON.parse(cached); if (_batchGrid.date === today) return _batchGrid; }
+  } catch (e) {}
+  const fb = BATCH_GRID_FALLBACK[currentStore] || BATCH_GRID_FALLBACK.mila;
+  const d = new Date(today + 'T12:00:00');
+  const short = d.getDay() === 0 || d.getDay() === 6;
+  const g = short ? fb.short : fb.normal;
+  return { date: today, store: currentStore, b2Out: g.b2Out, b4Out: g.b4Out, b3Out: g.b3Out, b4Target: !!g.b4Target, source: 'fallback' };
+}
+// Ask the engine for today's grid (bank holidays + today's plan). Silent on failure.
+async function fetchBatchGrid_() {
+  if (!currentStore || !STORES[currentStore]) return;
+  const today = getLocalDateStr();
+  try {
+    const res = await fetch(`${FORECASTING_API_URL}?action=batchgrid&store=${encodeURIComponent(STORES[currentStore].name)}&date=${today}`);
+    const data = await res.json();
+    if (!data || data.error || !data.hours) return;
+    const toMin = h => (h == null ? null : Math.round(Number(h) * 60));
+    _batchGrid = { date: today, store: currentStore, b2Out: toMin(data.hours.b2Out), b4Out: toMin(data.hours.b4Out), b3Out: toMin(data.hours.b3Out),
+                   b4Target: Array.isArray(data.targets) && data.targets.includes('b4'), shortDay: !!data.shortDay, source: 'engine' };
+    try { localStorage.setItem(_gridCacheKey_(today), JSON.stringify(_batchGrid)); } catch (e) {}
+  } catch (e) { /* offline: fallback table */ }
+}
 function timeToBatch(timeStr) {
   if (!timeStr) return null;
   const [h, m] = timeStr.split(':').map(Number);
   const mins = h * 60 + (m || 0);
-  const b = BATCH_BOUNDS[currentStore] || BATCH_BOUNDS.default;
-  if (mins < b.b1End) return 1;
-  if (mins < b.b2End) return 2;
+  const g = currentBatchGrid_();
+  if (mins < g.b2Out) return 1;
+  if (g.b4Target && g.b4Out != null) {
+    if (mins < g.b4Out) return 2;
+    if (mins < g.b3Out) return 4;
+    return 3;
+  }
+  if (mins < g.b3Out) return 2;
   return 3;
 }
+// Chronological order of the batch keys (4 = the 12:00 slot sits third).
+const BATCH_RANK = { 1: 1, 2: 2, 4: 3, 3: 4 };
+function batchOrder_() {
+  const g = currentBatchGrid_();
+  return (g.b4Target && g.b4Out != null) ? [1, 2, 4, 3] : [1, 2, 3];
+}
+function storeHasFourSlots_() {
+  const fb = BATCH_GRID_FALLBACK[currentStore];
+  return !!(fb && fb.normal.b4Out != null);
+}
+// Labels are chronological, as Rafa's team names them: four-slot stores
+// (Sant Pau, Sant Joan) → 1er / 2º / 3er lote (12:00) / 4º lote; Milà → 1er / 2º / 3er.
 function batchLabel(b) {
-  return b === 1 ? '1er lote' : b === 2 ? '2do lote' : '3er lote';
+  if (storeHasFourSlots_()) return b === 1 ? '1er lote' : b === 2 ? '2º lote' : b === 4 ? '3er lote (12:00)' : '4º lote';
+  return b === 1 ? '1er lote' : b === 2 ? '2º lote' : '3er lote';
 }
 
 // ─── STATE ─────────────────────────────────────────────────
@@ -936,6 +998,8 @@ function startApp() {
   loadDailyData();
   renderProducts();
   showSubmittedBanner();
+  // Today's batch grid from the engine (date-aware routing of "Se acabó"); silent fallback.
+  fetchBatchGrid_();
   // Async: fetch current flavors from Square (via forecasting API) and re-render if changed.
   // Runs silently in the background — no spinner, no error shown on failure.
   fetchAndUpdateFlavors(currentStore);
@@ -1102,9 +1166,9 @@ function renderBatchCard(product, data, escapedName) {
   const shownName = _displayName_(product.name);
   const hasBatchData = data && data.batchSoldOuts && data.batchSoldOuts.length > 0;
   const hasSobras = data && data.sobras !== null && data.sobras !== undefined;
-  // v3 (2026-08-25): the day is over for a pastry when the FINAL slot (3er
-  // lote) sold out — not only when all three did. Batches that never ran
-  // out simply have no record.
+  // v3 (2026-08-25): the day is over for a pastry when the FINAL slot (batch
+  // key 3 = the last batch, "4º lote" where there are four) sold out — not
+  // only when every batch did. Batches that never ran out simply have no record.
   const finalDone = hasBatchData && data.batchSoldOuts.some(bs => bs.batch === 3);
   const isComplete = hasSobras || finalDone;
 
@@ -1129,7 +1193,7 @@ function renderBatchCard(product, data, escapedName) {
   // v3 (2026-08-25, François): ONE button, no batch choice. Staff press it
   // whenever there's no product left in the store; the app assigns the
   // batch from the hour (with a grace window). Pressable once per batch —
-  // it disappears after the final slot (3er lote) or once sobras exist.
+  // it disappears after the final slot (the last batch) or once sobras exist.
   if (!isComplete) {
     html += `<button class="btn-acabado" onclick="recordSoldOutTap('${product.id}')">⚡ Se acabó</button>`;
   }
@@ -1374,7 +1438,11 @@ function recordSoldOutTap(id) {
       if (ageMin >= 0 && ageMin <= 5) {
         // double-tap in the same window → update the time, no duplicate
       } else {
-        while (batch < 3 && rec(batch)) batch++;
+        // advance along the day's batches in TIME order (1 → 2 → [4] → 3)
+        const order = batchOrder_();
+        let idx = Math.max(0, order.indexOf(batch));
+        while (idx < order.length - 1 && rec(order[idx])) idx++;
+        batch = order[idx];
         if (rec(batch)) { showToast('Ya estaba todo marcado como agotado hoy', 2500, 'info'); return; }
       }
     }
@@ -1505,16 +1573,16 @@ function recordBatchSoldOutNow(id, batch) {
     existing.time = timeStr;
   } else {
     productData[id].batchSoldOuts.push({ batch, time: timeStr });
-    productData[id].batchSoldOuts.sort((a, b) => a.batch - b.batch);
+    productData[id].batchSoldOuts.sort((a, b) => BATCH_RANK[a.batch] - BATCH_RANK[b.batch]);
   }
   saveDailyData();
   renderProducts();
   scrollToProduct(id);
   const prod = _findProductById_(id);
   const pname = prod ? _displayName_(prod.name) : 'el producto';
-  showToast(batch < 3
+  showToast(batch !== 3
     ? '⚡ No queda ' + pname + ' (' + timeStr + ') — apuntado al ' + batchLabel(batch) + '. Si llega más y se acaba otra vez, púlsalo de nuevo.'
-    : '⚡ No queda ' + pname + ' (' + timeStr + ') — apuntado al 3er lote, el último del día.', 4500, 'info');
+    : '⚡ No queda ' + pname + ' (' + timeStr + ') — apuntado al ' + batchLabel(3) + ', el último del día.', 4500, 'info');
 }
 
 // Tag tap → correct the time. v3: the batch RE-DERIVES from the corrected
@@ -1546,7 +1614,7 @@ function editBatchSoldOutTime(id, index, name) {
     } else {
       bs.batch = newBatch;
       bs.time = `${newH}:${newM}`;
-      data.batchSoldOuts.sort((a, b) => a.batch - b.batch);
+      data.batchSoldOuts.sort((a, b) => BATCH_RANK[a.batch] - BATCH_RANK[b.batch]);
     }
     saveDailyData();
     renderProducts();
