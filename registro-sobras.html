@@ -1093,7 +1093,7 @@ function renderCard(product) {
   const hasSobrasOrRanOut = data && (data.type === 'leftover' || data.type === 'ran_out');
   // Sant Joan bread only (ADDED 2026-07-16): "ran out before the 2nd delivery"
   // is a SEPARATE record from the end-of-day state — more bread arrives at
-  // ~14:30, so the day can continue with sobras or a second sell-out.
+  // (10:30 since 2026-10-09), so the day can continue with sobras or a second sell-out.
   const isSjBread = currentStore === 'santjoan' && product.category === 'bread';
   const hasPreEnvio2 = isSjBread && data && data.preEnvio2SoldOut;
 
@@ -1398,8 +1398,8 @@ function _nowHM() {
 //     PREVIOUS batch — the new batch can't plausibly have sold out yet.
 //     If the derived batch is already recorded: a tap within 5 min is a
 //     duplicate (updates the time); later taps advance to the next batch.
-//   • SJ dual-envío bread: before 14:45 (14:30 arrival + 15 min grace) and
-//     no pre-envío record yet → "sin pan antes del 2º envío"; otherwise
+//   • SJ dual-envío bread: before the 2nd delivery's arrival + 15 min grace
+//     and no pre-envío record yet → "sin pan antes del 2º envío"; otherwise
 //     final sell-out. A second press after the pre-envío record is always
 //     final — it can only mean the 2º envío ran out too.
 //   • Everything else: one press = final sell-out (single delivery).
@@ -1407,6 +1407,26 @@ function _nowHM() {
 // RE-DERIVES the slot, so boundary mistakes are fixed by fixing the hour.
 const SOLDOUT_BATCH_GRACE_MIN = 10;
 const SOLDOUT_ENVIO_GRACE_MIN = 15;
+// Sant Joan envío 2 arrival (2026-10-09): 10:30 from the cutover date, 14:30
+// before it. DATE-AWARE: editing a past day keeps that day's boundary. Must
+// mirror the engine's CONFIG.SJ_ENVIO2 / SJ_ENVIO2_CUTOVER.
+const SJ_ENVIO2_CUTOVER = '2026-10-09';
+const SJ_ENVIO2_ARRIVAL = { current: 10.5, legacy: 14.5 };
+function sjEnvio2ArrivalFor_(dateStr) {
+  return (dateStr && dateStr < SJ_ENVIO2_CUTOVER) ? SJ_ENVIO2_ARRIVAL.legacy : SJ_ENVIO2_ARRIVAL.current;
+}
+function sjEnvio2ArrivalLabel_(dateStr) {
+  const m = Math.round(sjEnvio2ArrivalFor_(dateStr) * 60);
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+// The day the app is recording for (an orphan past day being edited, else today).
+function activeDateStr_() {
+  return (typeof _editingOrphanDate !== 'undefined' && _editingOrphanDate) || getLocalDateStr();
+}
+// Is a sell-out tap at this hour (decimal) "before the 2nd delivery" on that date?
+function isPreEnvio2Tap_(hourDec, dateStr) {
+  return hourDec < sjEnvio2ArrivalFor_(dateStr) + SOLDOUT_ENVIO_GRACE_MIN / 60;
+}
 
 function _findProductById_(id) {
   return BREAD.find(p => p && p.id === id)
@@ -1454,7 +1474,7 @@ function recordSoldOutTap(id) {
     const data = productData[id];
     const hasPre = data && data.preEnvio2SoldOut;
     const hourDec = h + m / 60;
-    if (!hasPre && hourDec < 14.5 + SOLDOUT_ENVIO_GRACE_MIN / 60) {
+    if (!hasPre && isPreEnvio2Tap_(hourDec, activeDateStr_())) {
       recordEnvio1SoldOutNow(id);
     } else {
       recordBreadSoldOutNow(id);
@@ -1465,7 +1485,7 @@ function recordSoldOutTap(id) {
   recordBreadSoldOutNow(id);
 }
 
-// "1er envío" tap: bread ran out before the 2nd delivery (~14:30). Records
+// "1er envío" tap: bread ran out before the 2nd delivery (10:30 since 2026-10-09). Records
 // preEnvio2SoldOut; sobras (or a 2º-envío sell-out) still expected at close.
 function recordEnvio1SoldOutNow(id) {
   const [h, m] = _nowHM();
@@ -1528,7 +1548,7 @@ function editTimePreEnvio2(id, name) {
   document.getElementById('time-modal-title').textContent = `🚚 Sin pan antes del 2º envío — ${name}`;
   const hint = document.getElementById('batchHint');
   hint.style.display = 'block';
-  hint.textContent = 'El 2º envío llega ~14:30.';
+  hint.textContent = 'El 2º envío llega ~' + sjEnvio2ArrivalLabel_(activeDateStr_()) + '.';
   showTimeModal();
 
   timeModalCallback = (newH, newM) => {
@@ -1539,7 +1559,7 @@ function editTimePreEnvio2(id, name) {
 function _savePreEnvio2(id, h, m) {
   // (2026-08-29: the old ≥15:00 warning toast was removed — with the explicit
   // "1er envío" segment a late tap is legitimate ("I forgot earlier"), and
-  // the engine resolves the real time from pre-14:30 Square sales anyway.)
+  // the engine resolves the real time from pre-envío-2 Square sales anyway.)
   const prev = productData[id] || {};
   productData[id] = { ...prev, preEnvio2SoldOut: `${h}:${m}` };
   saveDailyData();
