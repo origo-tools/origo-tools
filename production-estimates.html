@@ -3329,6 +3329,14 @@ function getProductFactorTooltip(estKey) {
     ? `🛡 Mínimo aplicado: vendido sem. pasada, agotado cerca del cierre (sin +5%)`
     : `🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
+  // Sant Joan bread deliveries (2026-10-09): how envío 1 was sized.
+  const ss = est.shippingSplit;
+  if (ss && currentStore === 'santjoan' && typeof ss.envio1 === 'number') {
+    if (ss.rule === 'max-morning') parts.push(`🚚 Envío 1 ${ss.envio1} / Envío 2 ${ss.envio2}: el 1º cubre hasta las ${ss.envio2Arrival || '10:30'}; peor mañana de ${ss.refDays} sem. = ${Math.round((ss.morningMax || 0) * 100)}% del día (media ${Math.round((ss.morningMean || 0) * 100)}%) → ${Math.round((ss.envio1Share || 0) * 100)}% + colchón${ss.preEnvio2Boost ? ` · ×${ss.preEnvio2Boost} por agotados antes del 2º envío` : ''}`);
+    else if (/^fallback/.test(ss.rule || '')) parts.push(`🚚 Envío 1 ${ss.envio1} / Envío 2 ${ss.envio2}: sin historial suficiente de mañanas, reparto por defecto ${Math.round((ss.envio1Share || 0) * 100)}% + colchón`);
+    else if (ss.rule === 'all-envio2') parts.push(`🚚 Todo en el 2º envío. ${ss.note || ''}`.trim());
+    else if (ss.rule === 'all-envio1') parts.push(`🚚 Todo en el 1er envío (una sola entrega)`);
+  }
   if (est.batchSplit && est.batchSplit.coverage) {
     let covLine = `↰ Lotes por curva de demanda horaria: cada lote cubre su franja hasta que sale el siguiente (+ colchón); el último cubre la demanda de tarde real`;
     const sw = est.batchSplit.soldOutWeeks;
@@ -3867,7 +3875,8 @@ function renderMain() {
     <th>Total</th>
   </tr>`;
   if (isSantJoan) {
-    html += `<tr><td colspan="${breadColCount}" style="font-size:11px;color:#888;padding:2px 8px;border:none;">Envío 1: llega 07:30 · Envío 2: llega 14:30</td></tr>`;
+    const sjEnvio = (getFermenterConfig_() || {}).sjEnvio || { envio1Arrival: '07:30', envio2Arrival: '10:30' };
+    html += `<tr><td colspan="${breadColCount}" style="font-size:11px;color:#888;padding:2px 8px;border:none;">Envío 1: llega ${sjEnvio.envio1Arrival} · Envío 2: llega ${sjEnvio.envio2Arrival} (desde el 09/10; antes 14:30). El envío 1 se calcula para la peor mañana de las últimas 8 semanas, con margen.</td></tr>`;
   }
 
   BREAD.forEach(item => {
