@@ -71,7 +71,7 @@
   table.grid th.batch-3 { background: #9b5de5; }
   /* The 12:00 slot (b4: Sant Joan 2026-10-02, Sant Pau 2026-10-08) — sits between the 2nd and the last batch */
   table.grid th.batch-4 { background: #b5651d; }
-  /* Fermenter tray counter in each batch header: "bandejas X/17", red when over */
+  /* Fermenter tray counter in each batch header: "bandejas X/N" (N = the store's limit from the engine), red when over */
   .tray-counter {
     display: block; margin-top: 3px; font-size: 11px; font-weight: 700;
     background: rgba(255,255,255,0.18); border-radius: 8px; padding: 1px 6px;
@@ -685,7 +685,7 @@ const CELL_TO_KEY = {
 
 // ===== FERMENTER CAPACITY (2026-10-02) =====
 // Fermenting pastry is proofed in trays and each batch is one fermenter run:
-// a batch holds at most `limit` trays (Sant Joan 17, Milà 25, Sant Pau 42).
+// a batch holds at most `limit` trays (Sant Joan 18, Milà 25, Sant Pau 42 — from the engine config).
 // Trays per batch = Σ ceil((shop + pedidos) ÷ trayFit) over the fermenting
 // products — a partial tray takes a full slot. trayFit is the FERMENTER tray,
 // not the rounding lata (Mico rounds in 6s but ferments 24 per tray).
@@ -784,28 +784,34 @@ function updateTrayCounters_() {
 
 // Sync-preview gate: trays per batch from the FINAL numbers (after rounding).
 // getPair as in computeFermenterTrays_. Returns one entry per batch over the
-// limit: { batch, label, trays, limit, over, suggestion }. Where the store
-// has the 12:00 slot, a batch other than the slot itself gets "mueve N
-// bandejas al 3er lote (12:00)" (capped to the room that slot still has).
+// limit: { batch, label, trays, limit, over, suggestion }. The suggestion
+// follows the engine's spill order (2026-10-09): move trays to the next
+// REGULAR batch with room first, the 12:00 slot last; nothing to suggest
+// when no later batch has room.
 function fermenterWarnings_(getPair) {
   const cfg = getFermenterConfig_();
   if (!cfg || !cfg.limit) return [];
   const trays = computeFermenterTrays_(getPair);
   const extraKey = cfg.extra && cfg.extra.key;
-  const extraLabel = extraKey ? batchLabel_(extraKey) : '';
-  let extraRoom = extraKey ? Math.max(0, cfg.limit - (trays[extraKey] || 0)) : 0;
+  const keys = pastryBatchKeys_();
+  const room = {}; keys.forEach(k => { room[k] = Math.max(0, cfg.limit - (trays[k] || 0)); });
   const out = [];
-  pastryBatchKeys_().forEach(b => {
+  keys.forEach((b, i) => {
     if (!(trays[b] > cfg.limit)) return;
     const over = trays[b] - cfg.limit;
-    let suggestion = '';
-    if (extraKey && b !== extraKey) {
-      const n = Math.min(over, extraRoom);
-      extraRoom -= n;
-      if (n === over) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al ${extraLabel}`;
-      else if (n > 0) suggestion = `mueve ${n} bandeja${n === 1 ? '' : 's'} al ${extraLabel} (no cabe${over - n === 1 ? '' : 'n'} ${over - n} más)`;
-      else suggestion = `el ${extraLabel} también está lleno`;
+    const later = keys.slice(i + 1);
+    const receivers = later.filter(k => k !== extraKey).concat(later.filter(k => k === extraKey));
+    const parts = []; let left = over;
+    for (const k of receivers) {
+      if (left <= 0) break;
+      const n = Math.min(left, room[k]);
+      if (n <= 0) continue;
+      room[k] -= n; left -= n;
+      parts.push(`${n} bandeja${n === 1 ? '' : 's'} al ${batchLabel_(k)}`);
     }
+    let suggestion = '';
+    if (parts.length) suggestion = 'mueve ' + parts.join(' y ') + (left > 0 ? ` (no cabe${left === 1 ? '' : 'n'} ${left} más)` : '');
+    else if (receivers.length) suggestion = 'los lotes siguientes también están llenos';
     out.push({ batch: b, label: batchLabel_(b), trays: trays[b], limit: cfg.limit, over, suggestion });
   });
   return out;
