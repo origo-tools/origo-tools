@@ -570,6 +570,12 @@ let weatherCache = {};   // cache: { 'date': weatherData }
 // just-applied recurring orders — matching Rafa's "previous Thursday's
 // numbers got synced on the second click" report.
 let forecastLoading = true;
+// QA 2026-10-09 (A5): every estimates load takes a sequence number; only the
+// LATEST load may clear `forecastLoading` (and re-enable the sync button).
+// Without this, the init bundle's finally re-enabled sync on an empty grid
+// while the real day's request was still in flight, and a discarded stale
+// response could do the same after a quick day switch.
+let _loadSeq = 0;
 
 // Shared fetch helper: throws on non-2xx HTTP status BEFORE attempting to parse
 // JSON. Without this, a 5xx that returns an HTML error page triggers a
@@ -1126,6 +1132,7 @@ async function loadInitBundle() {
   const apiUrl = getForecastApiUrl();
   if (!apiUrl) return false;
 
+  const loadSeq = ++_loadSeq;
   forecastLoading = true;
   updateSyncButtonState();
   renderMain();
@@ -1247,8 +1254,10 @@ async function loadInitBundle() {
     return false;
   } finally {
     clearTimeout(timeout);
-    forecastLoading = false;
-    updateSyncButtonState();
+    if (loadSeq === _loadSeq) {   // a nested loadEstimatesForCurrentDay() now owns the flag
+      forecastLoading = false;
+      updateSyncButtonState();
+    }
   }
 }
 
@@ -1274,6 +1283,7 @@ async function loadEstimatesForCurrentDay() {
     return;
   }
 
+  const loadSeq = ++_loadSeq;
   forecastLoading = true;
   updateSyncButtonState();
   renderMain();
@@ -1370,6 +1380,7 @@ async function loadEstimatesForCurrentDay() {
     _estimatesLoadFailed[cacheKey] = e.message || 'Error de red';
     console.warn('Failed to fetch estimates/inputs:', e);
   } finally {
+    if (loadSeq !== _loadSeq) return;   // a newer load is in flight: it owns the flag and the render
     forecastLoading = false;
     updateSyncButtonState();
     updateEstimatesErrorBanner_();
@@ -3352,7 +3363,8 @@ function getProductFactorTooltip(estKey) {
     const rc = est.batchSplit.reconstruction;
     if (rc && rc.applied && rc.days > 0) {
       const fmtS = a => (Array.isArray(a) ? a.map(x => Math.round(x * 100)).filter((x, i) => !(i === 2 && x === 0 && a[2] === 0)).join('/') : '?');
-      parts.push(`↰ Reconstruido: ${rc.days} de ${rc.refDays} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.ref === 'pooled' ? 'laminados juntos' : 'este producto'})`);
+      const refWeeks = rc.refWeeks != null ? rc.refWeeks : (Array.isArray(rc.refDays) ? rc.refDays.length : rc.refDays);
+      parts.push(`↰ Reconstruido: ${rc.days} de ${refWeeks} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.ref === 'pooled' ? 'laminados juntos' : 'este producto'})`);
       (rc.refDays || []).filter(d => d.applied).forEach(d => {
         parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' ? 'inferido del TPV' : d.trigger === 'both' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
       });
@@ -4301,14 +4313,32 @@ function computePastryRounding(p) {
       otherFinal[b] = vals[b].total > 0 ? roundWithOrderGuarantee(vals[b].total, vals[b].order, lata) : 0;
       othersSum += otherFinal[b];
     });
-    // B2: residual so the grand total still lands on its nearest tray multiple
+    // Residual pool so the grand total still lands on its nearest tray multiple.
+    // QA 2026-10-09 (A3): with four batches B2 used to absorb the round-ups of
+    // B1, B3 AND the 12:00 slot and could collapse to 0 while the spill tray
+    // became a full one. Now B2 has FIRST claim on the pool (up to its own
+    // tray rounding) and the 12:00 slot — an overflow batch — takes the rest;
+    // with three batches this is exactly the old residual.
     const grand = seq.reduce((t, b) => t + vals[b].total, 0);
     const orders = seq.reduce((t, b) => t + vals[b].order, 0);
     const grandTarget = grand > 0 ? roundWithOrderGuarantee(grand, orders, lata) : 0;
-    let b2Final = Math.max(0, grandTarget - b1Final - b3Final - othersSum);
+    let pool = Math.max(0, grandTarget - b1Final - b3Final);
+    let b2Final;
+    if (others.length === 0) {
+      b2Final = pool;
+    } else {
+      const b2Own = vals.b2.total > 0 ? roundWithOrderGuarantee(vals.b2.total, vals.b2.order, lata) : 0;
+      b2Final = Math.min(pool, b2Own);
+      let rest = pool - b2Final;
+      others.forEach(b => {
+        const take = Math.min(rest, otherFinal[b]);
+        otherFinal[b] = Math.max(take, Math.ceil(vals[b].order / lata) * lata);   // never below its own orders
+        rest -= take;
+      });
+    }
     if (b2Final < vals.b2.order) b2Final = Math.ceil(vals.b2.order / lata) * lata;
     const batches = { b1: mk(vals.b1, b1Final, 'round'), b2: mk(vals.b2, b2Final, 'round'), b3: mk(vals.b3, b3Final, b3Action) };
-    others.forEach(b => { batches[b] = mk(vals[b], otherFinal[b], 'round'); });
+    others.forEach(b => { batches[b] = mk(vals[b], otherFinal[b], otherFinal[b] === 0 && vals[b].total > 0 ? 'drop' : 'round'); });
     return { batches, transfers: [] };
   }
 
