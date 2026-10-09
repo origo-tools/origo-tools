@@ -651,41 +651,76 @@ const BATCH_GRID_FALLBACK = {
   santjoan: { normal: { b2Out: 11 * 60, b4Out: 12 * 60, b3Out: 14 * 60, b4Target: false },
               short:  { b2Out: 10 * 60, b4Out: 12 * 60, b3Out: 14 * 60, b4Target: true } },
 };
-let _batchGrid = null;   // today's grid from the engine: { date, b2Out, b4Out, b3Out, b4Target, source }
+// QA 2026-10-09 (B7): grids are keyed on store + DATE and the date is the one
+// being RECORDED (a pending past day while it is being edited, else today),
+// not "today at start-up". The engine answers with the requested day plus
+// the six that follow; every day is cached, so a phone left open over
+// midnight — or into a bank holiday — still routes on the right grid, and
+// the cache is refreshed when the app comes back to the foreground.
+let _batchGrids = {};   // 'store|date' → { date, store, b2Out, b4Out, b3Out, b4Target, shortDay, source, fetchedAt }
+const BATCH_GRID_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 function _gridCacheKey_(dateStr) { return `origo_batchgrid_${currentStore}_${dateStr}`; }
-function currentBatchGrid_() {
-  const today = getLocalDateStr();
-  if (_batchGrid && _batchGrid.date === today && _batchGrid.store === currentStore) return _batchGrid;
+function currentBatchGrid_(dateStr) {
+  const day = dateStr || activeDateStr_();
+  const k = currentStore + '|' + day;
+  if (_batchGrids[k]) return _batchGrids[k];
   try {
-    const cached = localStorage.getItem(_gridCacheKey_(today));
-    if (cached) { _batchGrid = JSON.parse(cached); if (_batchGrid.date === today) return _batchGrid; }
+    const cached = localStorage.getItem(_gridCacheKey_(day));
+    if (cached) { const g = JSON.parse(cached); if (g && g.date === day) { _batchGrids[k] = g; return g; } }
   } catch (e) {}
   const fb = BATCH_GRID_FALLBACK[currentStore] || BATCH_GRID_FALLBACK.mila;
-  const d = new Date(today + 'T12:00:00');
+  const d = new Date(day + 'T12:00:00');
   const short = d.getDay() === 0 || d.getDay() === 6;
   const g = short ? fb.short : fb.normal;
-  return { date: today, store: currentStore, b2Out: g.b2Out, b4Out: g.b4Out, b3Out: g.b3Out, b4Target: !!g.b4Target, source: 'fallback' };
+  return { date: day, store: currentStore, b2Out: g.b2Out, b4Out: g.b4Out, b3Out: g.b3Out, b4Target: !!g.b4Target, source: 'fallback' };
 }
-// Ask the engine for today's grid (bank holidays + today's plan). Silent on failure.
-async function fetchBatchGrid_() {
+// Ask the engine for the grid of a date (+ the next six days: bank holidays and
+// each day's plan). Silent on failure.
+async function fetchBatchGrid_(dateStr) {
   if (!currentStore || !STORES[currentStore]) return;
-  const today = getLocalDateStr();
+  const day = dateStr || activeDateStr_();
   try {
-    const res = await fetch(`${FORECASTING_API_URL}?action=batchgrid&store=${encodeURIComponent(STORES[currentStore].name)}&date=${today}`);
+    const res = await fetch(`${FORECASTING_API_URL}?action=batchgrid&store=${encodeURIComponent(STORES[currentStore].name)}&date=${day}`);
     const data = await res.json();
     if (!data || data.error || !data.hours) return;
     const toMin = h => (h == null ? null : Math.round(Number(h) * 60));
-    _batchGrid = { date: today, store: currentStore, b2Out: toMin(data.hours.b2Out), b4Out: toMin(data.hours.b4Out), b3Out: toMin(data.hours.b3Out),
-                   b4Target: Array.isArray(data.targets) && data.targets.includes('b4'), shortDay: !!data.shortDay, source: 'engine' };
-    try { localStorage.setItem(_gridCacheKey_(today), JSON.stringify(_batchGrid)); } catch (e) {}
+    const store = currentStore;
+    const put = (d) => {
+      if (!d || !d.date || !d.hours) return;
+      const g = { date: d.date, store: store, b2Out: toMin(d.hours.b2Out), b4Out: toMin(d.hours.b4Out), b3Out: toMin(d.hours.b3Out),
+                  b4Target: Array.isArray(d.targets) && d.targets.includes('b4'), shortDay: !!d.shortDay, source: 'engine', fetchedAt: Date.now() };
+      _batchGrids[store + '|' + d.date] = g;
+      try { localStorage.setItem(`origo_batchgrid_${store}_${d.date}`, JSON.stringify(g)); } catch (e) {}
+    };
+    (Array.isArray(data.days) && data.days.length ? data.days : [data]).forEach(put);
+    _pruneOldBatchGrids_();
   } catch (e) { /* offline: fallback table */ }
 }
-function timeToBatch(timeStr) {
+// The active date's grid again when the app comes back (midnight crossed, a
+// pending day opened), at most once per BATCH_GRID_MAX_AGE_MS per date.
+function refreshBatchGridIfStale_() {
+  if (!currentStore) return;
+  const day = activeDateStr_();
+  const g = _batchGrids[currentStore + '|' + day];
+  if (!g || g.source !== 'engine' || !g.fetchedAt || Date.now() - g.fetchedAt > BATCH_GRID_MAX_AGE_MS) fetchBatchGrid_(day);
+}
+function _pruneOldBatchGrids_() {
+  try {
+    const limit = new Date(); limit.setDate(limit.getDate() - 14);
+    const cutoff = getLocalDateStr(limit);
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('origo_batchgrid_') && k.slice(-10) < cutoff) localStorage.removeItem(k);
+    }
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshBatchGridIfStale_(); });
+function timeToBatch(timeStr, dateStr) {
   if (!timeStr) return null;
   const [h, m] = timeStr.split(':').map(Number);
   const mins = h * 60 + (m || 0);
-  const g = currentBatchGrid_();
+  const g = currentBatchGrid_(dateStr);
   if (mins < g.b2Out) return 1;
   if (g.b4Target && g.b4Out != null) {
     if (mins < g.b4Out) return 2;
@@ -697,8 +732,8 @@ function timeToBatch(timeStr) {
 }
 // Chronological order of the batch keys (4 = the 12:00 slot sits third).
 const BATCH_RANK = { 1: 1, 2: 2, 4: 3, 3: 4 };
-function batchOrder_() {
-  const g = currentBatchGrid_();
+function batchOrder_(dateStr) {
+  const g = currentBatchGrid_(dateStr);
   return (g.b4Target && g.b4Out != null) ? [1, 2, 4, 3] : [1, 2, 3];
 }
 function storeHasFourSlots_() {
@@ -998,7 +1033,7 @@ function startApp() {
   loadDailyData();
   renderProducts();
   showSubmittedBanner();
-  // Today's batch grid from the engine (date-aware routing of "Se acabó"); silent fallback.
+  // The batch grids (today + 6 days) from the engine: date-aware routing of "Se acabó"; silent fallback.
   fetchBatchGrid_();
   // Async: fetch current flavors from Square (via forecasting API) and re-render if changed.
   // Runs silently in the background — no spinner, no error shown on failure.
@@ -1438,7 +1473,7 @@ function _findProductById_(id) {
 function _deriveBatchFromTime_(h, m) {
   const total = h * 60 + m - SOLDOUT_BATCH_GRACE_MIN;
   const gh = Math.max(0, Math.floor(total / 60));
-  return timeToBatch(gh + ':' + Math.max(0, total % 60));
+  return timeToBatch(gh + ':' + Math.max(0, total % 60), activeDateStr_());
 }
 
 function recordSoldOutTap(id) {
@@ -2513,6 +2548,7 @@ function _loadOrphanIntoUI(orphan) {
   if (tgtgEl) tgtgEl.value = orphan.data.tgtg || '0';
   if (commentsEl) commentsEl.value = orphan.data.comments || '';
   _editingOrphanDate = orphan.date;
+  fetchBatchGrid_(orphan.date);   // B7: route that day's taps on ITS grid (bank holiday / spill plan), not today's
   // Reflect the editing date in the header so the team sees what they're submitting.
   const d = new Date(orphan.date + 'T12:00:00');
   document.getElementById('dayname').textContent = days[d.getDay()] + ' (pendiente)';
