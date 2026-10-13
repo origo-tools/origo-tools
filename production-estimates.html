@@ -2125,8 +2125,10 @@ function overlayPosResolvedTimes(sobras) {
     // per-flavor times are hidden and only the aggregate Focaccia line
     // (bread row) carries the sell-out. Payloads generated before this
     // carry neither field and render the raw taps as before.
+    // Sant Joan keeps its BOCADILLO records under `focaccia` (keyed by slug) —
+    // never touched here. Records with no matching flavor are left as they are.
     const fcEst = cached.estimates.find(e => (e.isFocaccia || e.product === 'FOCACCIA') && !e.flavorName);
-    if (fcEst && out.focaccia && (Array.isArray(fcEst.w1FocacciaFlavors) || fcEst.w1FocacciaSparse)) {
+    if (fcEst && out.focaccia && currentStore !== 'santjoan' && (Array.isArray(fcEst.w1FocacciaFlavors) || fcEst.w1FocacciaSparse)) {
       const byName = {};
       for (const fl of (fcEst.w1FocacciaFlavors || [])) {
         for (const nm of [fl.name, FOCACCIA_DISPLAY_MAP[fl.name]]) if (nm) byName[fcSlug(nm)] = fl;
@@ -2135,7 +2137,8 @@ function overlayPosResolvedTimes(sobras) {
         const rec = out.focaccia[slug];
         if (!rec || typeof rec !== 'object') continue;
         const fl = byName[slug];
-        if (fcEst.w1FocacciaSparse || !fl) { rec.b1SoldOut = null; rec.b2SoldOut = null; rec.b3SoldOut = null; rec.soldOutHidden = !!(fcEst.w1FocacciaSparse); continue; }
+        if (fcEst.w1FocacciaSparse) { rec.b1SoldOut = null; rec.b2SoldOut = null; rec.b3SoldOut = null; rec.soldOutHidden = true; continue; }
+        if (!fl) continue;
         rec.b1SoldOut = null; rec.b2SoldOut = null;
         if (fl.produced === false) { rec.b3SoldOut = null; rec.notProduced = true; }
         else { rec.b3SoldOut = fl.tapped ? (fl.time || fl.logged || null) : null; rec.notProduced = false; }
@@ -3400,7 +3403,7 @@ function getProductFactorTooltip(estKey) {
   if (num(f.soldOut) && f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}${f.soldOutCapped ? ' (limitado a la demanda real estimada)' : ''}`);
   else if (f.soldOutCapped && f.reconDemand) parts.push(`⚡ Agotado sem. pasada a las ${f.reconDemand.t}: demanda perdida ≈ ${f.reconDemand.pct}% → sin subida`);
   if (f.chronicSkipped) parts.push(`⚡ Agotado crónico (3–4 de 4 semanas) sin aplicar: la sem. pasada quedaron sobras`);
-  if (f.reconDemand && f.reconDemand.demand != null) parts.push(`🔎 Demanda real estimada: ~${Math.round(f.reconDemand.demand)} (agotado ${f.reconDemand.t}; +${f.reconDemand.pct}% sobre lo vendido, curva: ${f.reconDemand.refLabel || 'este producto'})`);
+  if (f.reconDemand && f.reconDemand.demand != null) parts.push(`🔎 Demanda real estimada: ~${Math.round(f.reconDemand.demand)} (agotado ${f.reconDemand.t}; +${f.reconDemand.pct}% sobre lo vendido${f.reconDemand.refLabel ? `, curva: ${f.reconDemand.refLabel}` : ' — vendió hasta el cierre'})`);
   // 2026-10-02: near-close sell-outs floor at W1 raw × 1.00 (no +5% buffer).
   if (f.soldOutFloorApplied) {
     if (f.soldOutFloorKind === 'recon' && f.reconDemand) parts.push(`🛡 Mínimo aplicado: demanda real estimada de la sem. pasada (~${Math.round(f.reconDemand.demand)})`);
@@ -3420,7 +3423,7 @@ function getProductFactorTooltip(estKey) {
     parts.push(`↰ Reconstruido: ${rc.days} de ${rc.refWeeks} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.refLabel || (rc.ref === 'pooled' ? 'laminados juntos' : 'este producto')}) antes de repartir los lotes`);
     (rc.refDays || []).filter(d => d.applied).forEach(d => {
       const fmtS = a => (Array.isArray(a) ? a.map(x => Math.round(x * 100)).filter((x, i) => !(i === 2 && x === 0 && a[2] === 0)).join('/') : '?');
-      parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' ? 'inferido del TPV' : d.trigger === 'both' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
+      parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' || d.trigger === 'i' ? 'inferido del TPV' : d.trigger === 'both' || d.trigger === 'b' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
     });
   }
   // Sant Joan bread deliveries (2026-10-09): how envío 1 was sized.
@@ -3444,7 +3447,7 @@ function getProductFactorTooltip(estKey) {
       // 2026-10-13: the ladder rung used ('este producto' / 'este producto, 3 tiendas' / 'laminados juntos')
       parts.push(`↰ Reconstruido: ${rc.days} de ${refWeeks} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.refLabel || (rc.ref === 'pooled' ? 'laminados juntos' : 'este producto')})`);
       (rc.refDays || []).filter(d => d.applied).forEach(d => {
-        parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' ? 'inferido del TPV' : d.trigger === 'both' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
+        parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' || d.trigger === 'i' ? 'inferido del TPV' : d.trigger === 'both' || d.trigger === 'b' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
       });
     }
   }
