@@ -457,18 +457,37 @@ const PASTRY_GROUPS = [
   [{ name: 'Pastís llimona i ametlla', key: 'pastisLlimona', roundTo: null }]
 ];
 
-function roundToNearest(value, multiple) {
+// ── Sync rounding (2026-10-13, Rafa point 1): BIAS UP, CONSERVE THE TOTAL ──
+// A day total rounds UP to the next lata / molde when the remainder is at
+// least roundUpThreshold of the unit (⅓: 17 → 24, 54 → 60, 64 → 72, 4 → 6
+// with unit 3) and down only below it (13 → 12). Rafa corrected the old
+// round-to-nearest upward four times in one week during the autumn climb.
+// Pastry: the drop / trim rules keep their reshaping role but can no longer
+// shrink the day below the rounded total (computePastryRounding).
+const ROUNDING = { roundUpThreshold: 1 / 3 };
+
+// Round `value` to a multiple with the upward bias: up when the remainder is
+// ≥ roundUpThreshold × multiple, else down.
+function roundBiased(value, multiple) {
   if (!multiple || !value) return value;
-  return Math.round(value / multiple) * multiple;
+  const q = Math.floor(value / multiple);
+  const rem = value - q * multiple;
+  const up = rem >= multiple * ROUNDING.roundUpThreshold - 1e-9;
+  return (up ? q + 1 : q) * multiple;
 }
 
-// Round total (shop+orders) to nearest multiple, but:
+function roundToNearest(value, multiple) {
+  if (!multiple || !value) return value;
+  return roundBiased(value, multiple);
+}
+
+// Round total (shop+orders) to a multiple (upward bias, see ROUNDING), but:
 // 1. Never round a non-zero total to 0
 // 2. Always guarantee orders are covered (round up if needed)
 function roundWithOrderGuarantee(total, orderVal, multiple) {
   if (!multiple) return total;
   if (total === 0) return orderVal > 0 ? Math.ceil(orderVal / multiple) * multiple : 0;
-  const rounded = Math.round(total / multiple) * multiple;
+  const rounded = roundBiased(total, multiple);
   // Never round non-zero to 0, and always cover orders
   if (rounded === 0 || rounded < orderVal) return Math.ceil(total / multiple) * multiple;
   return rounded;
@@ -2098,6 +2117,30 @@ function overlayPosResolvedTimes(sobras) {
         rec[f] = w1[f] || null;
       }
     }
+    // 2026-10-13 (Rafa point 7): per-flavor focaccia sell-outs come from the
+    // engine's per-flavor resolution — each flavor's OWN Square item. A
+    // flavor that was not produced that day (no own sales) shows no sell-out
+    // even if it was tapped; a produced one shows its own last sale. When
+    // the engine had no POS data for that day (`w1FocacciaSparse`), the
+    // per-flavor times are hidden and only the aggregate Focaccia line
+    // (bread row) carries the sell-out. Payloads generated before this
+    // carry neither field and render the raw taps as before.
+    const fcEst = cached.estimates.find(e => (e.isFocaccia || e.product === 'FOCACCIA') && !e.flavorName);
+    if (fcEst && out.focaccia && (Array.isArray(fcEst.w1FocacciaFlavors) || fcEst.w1FocacciaSparse)) {
+      const byName = {};
+      for (const fl of (fcEst.w1FocacciaFlavors || [])) {
+        for (const nm of [fl.name, FOCACCIA_DISPLAY_MAP[fl.name]]) if (nm) byName[fcSlug(nm)] = fl;
+      }
+      for (const slug of Object.keys(out.focaccia)) {
+        const rec = out.focaccia[slug];
+        if (!rec || typeof rec !== 'object') continue;
+        const fl = byName[slug];
+        if (fcEst.w1FocacciaSparse || !fl) { rec.b1SoldOut = null; rec.b2SoldOut = null; rec.b3SoldOut = null; rec.soldOutHidden = !!(fcEst.w1FocacciaSparse); continue; }
+        rec.b1SoldOut = null; rec.b2SoldOut = null;
+        if (fl.produced === false) { rec.b3SoldOut = null; rec.notProduced = true; }
+        else { rec.b3SoldOut = fl.tapped ? (fl.time || fl.logged || null) : null; rec.notProduced = false; }
+      }
+    }
     return out;
   } catch (e) {
     return sobras;  // display fallback — never break rendering over this
@@ -3228,6 +3271,13 @@ function sobrasCell(data, w1Sales) {
   // For bread, any sold-out field just means it sold out (no batch distinction)
   const soldOut = data.b1SoldOut || data.b2SoldOut || data.b3SoldOut;
 
+  // 2026-10-13 (point 7): a focaccia flavor not produced that day (no sales of its own Square item)
+  if (data.notProduced && !hasSobras) {
+    return `<td class="sobras-cell" title="Sin ventas de este sabor en Square ese día: no se produjo, así que no cuenta como agotado">${sales}— <span style="font-size:11px;color:#888">no producido</span></td>`;
+  }
+  if (data.soldOutHidden && !hasSobras) {
+    return `<td class="sobras-cell" title="Sin datos del TPV para ese día: el agotado se muestra en la línea Focaccia (total)">${sales}— <span style="font-size:11px;color:#888">ver Focaccia</span></td>`;
+  }
   if (soldOut && !hasSobras) {
     return `<td class="sobras-cell ran-out">${sales}⚡ Agotado ${formatSoldOutTime(soldOut)}</td>`;
   }
@@ -3340,12 +3390,39 @@ function getProductFactorTooltip(estKey) {
     }[f.weatherReason] || 'Clima';
     parts.push(`${wLabel}: ${wSign}${wPct}%`);
   }
-  if (num(f.soldOut) && f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}`);
+  // 2026-10-13 (Rafa's round): every automatic adjustment gets its line —
+  // puente weights, the reconstructed W1 demand (floor / cap), the fallback
+  // step, the chronic skip, the coherence lift, the SJ baguette seed and the
+  // rounding direction. Rafa audits by hand: invisible = distrust.
+  if (Array.isArray(f.puenteWeeks) && f.puenteWeeks.length) {
+    for (const pw of f.puenteWeeks) parts.push(`🗓 sem. del ${pw.date.slice(8)}/${pw.date.slice(5, 7)} ponderada ×${pw.weight} (puente)`);
+  }
+  if (num(f.soldOut) && f.soldOut !== 1) parts.push(`⚡ Agotado sem. pasada: +${Math.round((f.soldOut - 1) * 100)}% total${f.soldOutInferred ? ' (inferido del TPV — sin registro del equipo)' : ''}${f.soldOutCapped ? ' (limitado a la demanda real estimada)' : ''}`);
+  else if (f.soldOutCapped && f.reconDemand) parts.push(`⚡ Agotado sem. pasada a las ${f.reconDemand.t}: demanda perdida ≈ ${f.reconDemand.pct}% → sin subida`);
+  if (f.chronicSkipped) parts.push(`⚡ Agotado crónico (3–4 de 4 semanas) sin aplicar: la sem. pasada quedaron sobras`);
+  if (f.reconDemand && f.reconDemand.demand != null) parts.push(`🔎 Demanda real estimada: ~${Math.round(f.reconDemand.demand)} (agotado ${f.reconDemand.t}; +${f.reconDemand.pct}% sobre lo vendido, curva: ${f.reconDemand.refLabel || 'este producto'})`);
   // 2026-10-02: near-close sell-outs floor at W1 raw × 1.00 (no +5% buffer).
-  if (f.soldOutFloorApplied) parts.push(f.soldOutFloorNearClose
-    ? `🛡 Mínimo aplicado: vendido sem. pasada, agotado cerca del cierre (sin +5%)`
-    : `🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
+  if (f.soldOutFloorApplied) {
+    if (f.soldOutFloorKind === 'recon' && f.reconDemand) parts.push(`🛡 Mínimo aplicado: demanda real estimada de la sem. pasada (~${Math.round(f.reconDemand.demand)})`);
+    else if (f.soldOutFloorKind === 'step' && f.fallbackStep) parts.push(`🛡 Mínimo aplicado: vendido sem. pasada + ${f.fallbackStep.increment} (agotado ${f.fallbackStep.t || '?'}, sin curva de referencia)`);
+    else if (f.soldOutFloorKind === 'raw' || f.soldOutFloorNearClose) parts.push(`🛡 Mínimo aplicado: vendido sem. pasada, agotado cerca del cierre (sin +5%)`);
+    else if (f.soldOutFloorKind === 'exhaustion') parts.push(`🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5% (se agotó según producción)`);
+    else parts.push(`🛡 Mínimo aplicado: no bajar de lo vendido la sem. pasada +5%`);
+  }
+  if (f.sjBaguetteSeed && f.sjBaguetteSeed.factor > 1) parts.push(`🥖 Transición 2º envío: ×${f.sjBaguetteSeed.factor} (Sant Pau vende el ${Math.round(f.sjBaguetteSeed.share * 100)}% de sus baguettes entre 10:30 y 14:30; se desactiva solo el ${f.sjBaguetteSeed.expires.slice(8)}/${f.sjBaguetteSeed.expires.slice(5, 7)})`);
+  if (f.coherence && f.coherence.applied) parts.push(`📐 ajustado: muy por debajo del resto de la semana (${f.coherence.dow}: ${Math.round(f.coherence.before)}→${Math.round(f.coherence.after)})`);
+  if (f.roundingDir === 'ceil' && num(f.trend) && f.trend > 1) parts.push(`🔼 Redondeo al alza (impulso +${Math.round((f.trend - 1) * 100)}%)`);
+  else if (f.roundingDir === 'floor' && num(f.trend) && f.trend < 1) parts.push(`🔽 Redondeo a la baja (impulso ${Math.round((f.trend - 1) * 100)}%)`);
   if (est.batchSplit && est.batchSplit.soldOutAdjusted) parts.push(`↰ Lotes ajustados por agotados (más en lotes que se agotan)`);
+  // 2026-10-13 (point 6): legacy-split products whose reference days were rebuilt.
+  if (est.batchSplit && !est.batchSplit.coverage && est.batchSplit.reconstruction && est.batchSplit.reconstruction.applied && est.batchSplit.reconstruction.days > 0) {
+    const rc = est.batchSplit.reconstruction;
+    parts.push(`↰ Reconstruido: ${rc.days} de ${rc.refWeeks} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.refLabel || (rc.ref === 'pooled' ? 'laminados juntos' : 'este producto')}) antes de repartir los lotes`);
+    (rc.refDays || []).filter(d => d.applied).forEach(d => {
+      const fmtS = a => (Array.isArray(a) ? a.map(x => Math.round(x * 100)).filter((x, i) => !(i === 2 && x === 0 && a[2] === 0)).join('/') : '?');
+      parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' ? 'inferido del TPV' : d.trigger === 'both' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
+    });
+  }
   // Sant Joan bread deliveries (2026-10-09): how envío 1 was sized.
   const ss = est.shippingSplit;
   if (ss && currentStore === 'santjoan' && typeof ss.envio1 === 'number') {
@@ -3364,7 +3441,8 @@ function getProductFactorTooltip(estKey) {
     if (rc && rc.applied && rc.days > 0) {
       const fmtS = a => (Array.isArray(a) ? a.map(x => Math.round(x * 100)).filter((x, i) => !(i === 2 && x === 0 && a[2] === 0)).join('/') : '?');
       const refWeeks = rc.refWeeks != null ? rc.refWeeks : (Array.isArray(rc.refDays) ? rc.refDays.length : rc.refDays);
-      parts.push(`↰ Reconstruido: ${rc.days} de ${refWeeks} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.ref === 'pooled' ? 'laminados juntos' : 'este producto'})`);
+      // 2026-10-13: the ladder rung used ('este producto' / 'este producto, 3 tiendas' / 'laminados juntos')
+      parts.push(`↰ Reconstruido: ${rc.days} de ${refWeeks} semanas de referencia se agotaron (${rc.logged} registrado${rc.logged === 1 ? '' : 's'}, ${rc.inferred} inferido${rc.inferred === 1 ? '' : 's'}); la curva de esas semanas se completa con la curva de referencia (${rc.refLabel || (rc.ref === 'pooled' ? 'laminados juntos' : 'este producto')})`);
       (rc.refDays || []).filter(d => d.applied).forEach(d => {
         parts.push(`    ${d.date.slice(8)}/${d.date.slice(5, 7)}: agotado ${d.t || '?'} (${d.trigger === 'inferido' || d.trigger === 'inferred' ? 'inferido del TPV' : d.trigger === 'both' ? 'registrado + inferido' : 'registrado'}) → lotes ${fmtS(d.obs)} → ${fmtS(d.rec)} %`);
       });
@@ -4299,11 +4377,10 @@ function computePastryRounding(p) {
     if (vals.b3.total === 0) b3Final = 0;
     else if (vals.b3.order === 0 && vals.b3.total < HALF_TRAY) { b3Final = 0; b3Action = 'drop'; }
     else b3Final = Math.max(lata, roundWithOrderGuarantee(vals.b3.total, vals.b3.order, lata));
-    // B1: round up when the remainder exceeds lata/3
+    // B1: round up when the remainder reaches lata/3 (2026-10-13: the same
+    // ⅓ bias as the day total — roundBiased; it used to be "> lata/3")
     let b1Final;
-    const b1Rem = vals.b1.total % lata;
     if (vals.b1.total === 0) b1Final = 0;
-    else if (b1Rem > SMALL_LEFTOVER) b1Final = (Math.floor(vals.b1.total / lata) + 1) * lata;
     else b1Final = roundWithOrderGuarantee(vals.b1.total, vals.b1.order, lata);
     // Any other batch (the 12:00 slot): plain rounding
     const others = seq.filter(b => b !== 'b1' && b !== 'b2' && b !== 'b3');
@@ -4335,11 +4412,15 @@ function computePastryRounding(p) {
         otherFinal[b] = Math.max(take, Math.ceil(vals[b].order / lata) * lata);   // never below its own orders
         rest -= take;
       });
+      // CONSERVATION (2026-10-13, Rafa point 1 — extends QA A3): whatever the
+      // 12:00 slot could not take goes back to B2, so the day never lands
+      // below its rounded total.
+      if (rest > 0) b2Final += rest;
     }
     if (b2Final < vals.b2.order) b2Final = Math.ceil(vals.b2.order / lata) * lata;
     const batches = { b1: mk(vals.b1, b1Final, 'round'), b2: mk(vals.b2, b2Final, 'round'), b3: mk(vals.b3, b3Final, b3Action) };
     others.forEach(b => { batches[b] = mk(vals[b], otherFinal[b], otherFinal[b] === 0 && vals[b].total > 0 ? 'drop' : 'round'); });
-    return { batches, transfers: [] };
+    return { batches, transfers: [], grandTarget };
   }
 
   // Decide smart-skip flags BEFORE cascading. The risk we're guarding against:
@@ -4423,7 +4504,27 @@ function computePastryRounding(p) {
     };
   });
 
-  return { batches, transfers };
+  // CONSERVATION POST-CONDITION (2026-10-13, Rafa point 1): the drop / trim
+  // rules reshape the day but can no longer shrink it below the ⅓-biased
+  // rounding of the ORIGINAL day total (Napolitana 17 must land at 24, never
+  // 12). Any deficit is absorbed UPWARD by the residual batch: the latest
+  // batch that was dropped or trimmed, else the last batch.
+  const grandOriginal = seq.reduce((t, b) => t + vals[b].originalTotal, 0);
+  const grandOrders = seq.reduce((t, b) => t + vals[b].order, 0);
+  const grandTarget = grandOriginal > 0 ? roundWithOrderGuarantee(grandOriginal, grandOrders, lata) : 0;
+  let finalSum = seq.reduce((t, b) => t + batches[b].finalTotal, 0);
+  if (finalSum < grandTarget) {
+    const shrunk = seq.filter(b => batches[b].action === 'drop' || batches[b].action === 'trim');
+    const residual = shrunk.length ? shrunk[shrunk.length - 1] : last;
+    const r = batches[residual];
+    r.finalTotal += grandTarget - finalSum;
+    r.finalShop = Math.max(0, r.finalTotal - r.orderVal);
+    r.action = r.finalTotal > r.currentTotal ? 'round' : r.action;
+    r.conserved = true;
+    finalSum = grandTarget;
+  }
+
+  return { batches, transfers, grandTarget };
 }
 
 function collectRoundingChanges() {
