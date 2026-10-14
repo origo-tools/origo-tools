@@ -746,6 +746,46 @@ function getFermenterConfig_() {
   return (c && c.fermenterConfig) || null;
 }
 
+// Generation-time capacity result of the day on screen (the engine's
+// `fermenter` summary); null for older payloads and history-served days.
+function fermenterSummary_() {
+  const c = forecastCache[`${currentStore}-${formatDateStr(getTargetDate(currentDay))}`];
+  return (c && c.fermenter) || null;
+}
+
+// Header hint of the 12:00 slot on a NORMAL day (spill-only). When the
+// generated plan activated the 12:00 run (2026-10-14), names the case —
+// CASE A (2º lote window over the fermenter) or CASE B (last batch over
+// with no room in the 2º lote) — and says the day was re-allocated as four
+// batches, like a short day; plain forward spill otherwise.
+// Returns { text, title, active }.
+function b4HeaderHint_(cfg, summary) {
+  const limit = (cfg && cfg.limit) || (summary && summary.limit) || '';
+  const hours = (cfg && cfg.hours) || {};
+  const h4 = hours.b4 || (cfg && cfg.extra && cfg.extra.hour) || '12:00';
+  const idle = { active: false, text: 'solo desbordamiento', title: 'Entre semana este lote va vacío salvo que el fermentador no dé abasto: solo recibe lo que no cabe en el 2º lote' };
+  if (!summary || !summary.b4Path) return idle;
+  const pl = n => `${n} bandeja${n === 1 ? '' : 's'}`;
+  const t = summary.trays || {};
+  const traysLine = (t.b1 != null) ? ` Bandejas: 1er ${t.b1} · 2º ${t.b2} · ${h4} ${t.b4} · ${batchLabel_('b3')} ${t.b3} (máximo ${limit} por lote).` : '';
+  if (summary.b4Path === 'caseA' && summary.caseA) {
+    const a = summary.caseA;
+    return { active: true, text: '3er lote activado (2º lote lleno): reparto en 4 lotes',
+      title: `El 2º lote (${hours.b2 || ''} → ${hours.b3 || ''}) pedía ${a.windowTrays} bandejas y el fermentador admite ${limit} por lote (exceso ${a.excess} ≥ ${a.threshold}): el día se reparte en 4 lotes como un día corto — la demanda decide qué sale a las ${h4}.${traysLine}` };
+  }
+  if (summary.b4Path === 'caseB' && summary.caseB) {
+    const bb = summary.caseB;
+    const lastLabel = batchLabel_('b3');
+    return { active: true, text: `3er lote activado (excedente del ${lastLabel}): reparto en 4 lotes`,
+      title: `El ${lastLabel} (${hours.b3 || ''}) superaba el fermentador y el 2º lote no podía absorberlo (${pl(bb.lastOver)} de más, máximo ${limit}): el día se reparte en 4 lotes como un día corto — la demanda decide qué sale a las ${h4}.${traysLine}` };
+  }
+  if (summary.b4Path === 'spill') {
+    const n = (summary.trays && summary.trays.b4) || 0;
+    if (n > 0) return { active: true, text: `desbordamiento: ${pl(n)}`, title: `Recibe lo que no cabe en los lotes anteriores (${pl(n)}).` };
+  }
+  return idle;
+}
+
 // Batch keys in time order for the store/day on screen.
 function pastryBatchKeys_() {
   const cfg = getFermenterConfig_();
@@ -812,7 +852,9 @@ function updateTrayCounters_() {
 // limit: { batch, label, trays, limit, over, suggestion }. The suggestion
 // follows the engine's spill order (2026-10-09): move trays to the next
 // REGULAR batch with room first, the 12:00 slot last; nothing to suggest
-// when no later batch has room.
+// when no later batch has room. The LAST batch (2026-10-14, CASE B) at a
+// four-slot store proposes the 2º lote if it has room first, then the
+// 12:00 slot — the engine's order; Milà stays warn-only.
 function fermenterWarnings_(getPair) {
   const cfg = getFermenterConfig_();
   if (!cfg || !cfg.limit) return [];
@@ -825,7 +867,10 @@ function fermenterWarnings_(getPair) {
     if (!(trays[b] > cfg.limit)) return;
     const over = trays[b] - cfg.limit;
     const later = keys.slice(i + 1);
-    const receivers = later.filter(k => k !== extraKey).concat(later.filter(k => k === extraKey));
+    const isLast = i === keys.length - 1;
+    const receivers = (isLast && extraKey)
+      ? ['b2', extraKey].filter(k => k !== b && keys.includes(k))
+      : later.filter(k => k !== extraKey).concat(later.filter(k => k === extraKey));
     const parts = []; let left = over;
     for (const k of receivers) {
       if (left <= 0) break;
@@ -836,7 +881,7 @@ function fermenterWarnings_(getPair) {
     }
     let suggestion = '';
     if (parts.length) suggestion = 'mueve ' + parts.join(' y ') + (left > 0 ? ` (no cabe${left === 1 ? '' : 'n'} ${left} más)` : '');
-    else if (receivers.length) suggestion = 'los lotes siguientes también están llenos';
+    else if (receivers.length) suggestion = (isLast && extraKey) ? 'el 2º lote y el de las 12:00 también están llenos' : 'los lotes siguientes también están llenos';
     out.push({ batch: b, label: batchLabel_(b), trays: trays[b], limit: cfg.limit, over, suggestion });
   });
   return out;
@@ -4109,9 +4154,12 @@ function renderMain() {
     b4: cfgHours.b4 || (fermCfg && fermCfg.extra && fermCfg.extra.hour) || '12:00',
   };
   const b4SpillOnly = !!(fermCfg && fermCfg.extra && fermCfg.extra.regular === false);
-  const batchHint = b => (b === 'b4' && b4SpillOnly)
-    ? `<span style="display:block;font-size:10px;font-weight:400;opacity:.75" title="Entre semana este lote va vacío salvo que el fermentador no dé abasto: solo recibe lo que no cabe en el 2º lote">solo desbordamiento</span>`
-    : '';
+  // 2026-10-14: when the generated plan put units in the 12:00 slot, the hint names the case (b4HeaderHint_).
+  const batchHint = b => {
+    if (!(b === 'b4' && b4SpillOnly)) return '';
+    const h = b4HeaderHint_(fermCfg, fermenterSummary_());
+    return `<span style="display:block;font-size:10px;font-weight:${h.active ? '600' : '400'};opacity:${h.active ? '1' : '.75'}${h.active ? ';color:#b35c00' : ''}" title="${escapeHtml(h.title)}">${escapeHtml(h.text)}</span>`;
+  };
   const pastryColCount = 6 + pastryBatches.length * 3;   // name, sobras, merma, sep + (2 cells + sep)/batch + 2 totals
   html += `<tr>
     <th style="min-width:220px" rowspan="2">Producto</th>
