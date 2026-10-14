@@ -2005,28 +2005,19 @@ function getLastWeekDate(dayName) {
 // Per-cache-key retry guard so we don't spin retries if the API stays down.
 const _sobrasRetryScheduled = new Set();
 
-async function fetchSobrasForCurrentDay() {
+// Fetch + transform one store/date sobras record (2026-10-14: shared by the
+// current-day fetch and the background prefetch of the other days). Pure
+// network + transform: no loading flag, no render. Throws on failure.
+async function fetchSobrasRecord_(store, date, timeoutMs) {
   const apiUrl = getApiUrlProd();
-  if (!apiUrl) return;
-
-  const date = getLastWeekDate(currentDay);
-  const cacheKey = `${currentStore}-${date}`;
-
-  // Only skip if cache has real data (not an empty fallback from a failed fetch)
-  if (sobrasCache[cacheKey] && sobrasCache[cacheKey]._hasData) return;
-
-  sobrasLoading = true;
-  renderMain();
-
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
-
+  const timeout = setTimeout(() => controller.abort(), timeoutMs || 15000);
   try {
-    const url = `${apiUrl}?action=getSobras&store=${currentStore}&date=${date}`;
+    const url = `${apiUrl}?action=getSobras&store=${store}&date=${date}`;
     const data = await fetchJson(url, { signal: controller.signal });
 
     // Transform API v2 response into internal format
-    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0, _hasData: true };
+    const result = { bread: {}, pastry: {}, focaccia: {}, comments: data.comments || '', tgtg: data.tgtg || 0, _hasData: true, _fetchedAt: Date.now() };
     const products = data.products || {};
 
     for (const [name, pData] of Object.entries(products)) {
@@ -2061,7 +2052,59 @@ async function fetchSobrasForCurrentDay() {
         }
       }
     }
+    return result;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
+// Background prefetch of last week's sobras for the OTHER six day tabs
+// (2026-10-14, page speed): the sobras read is the slowest of the three calls
+// a day switch makes (~4 s) and is display-only — it never feeds the sync.
+// Sequential, lowest priority, one run at a time; aborts when the store
+// changes; never touches sobrasLoading. A day the user switches to while its
+// prefetch is in flight is handled by fetchSobrasForCurrentDay as before.
+let _sobrasPrefetchRunning = false;
+async function prefetchSobrasForOtherDays_() {
+  if (_sobrasPrefetchRunning || !getApiUrlProd()) return;
+  _sobrasPrefetchRunning = true;
+  const store = currentStore;
+  try {
+    for (const day of DAYS) {
+      if (currentStore !== store) break;                      // store switched: that run will start its own
+      if (day === currentDay) continue;
+      const date = getLastWeekDate(day);
+      const cacheKey = `${store}-${date}`;
+      if (sobrasCache[cacheKey] && sobrasCache[cacheKey]._hasData) continue;
+      try {
+        const rec = await fetchSobrasRecord_(store, date, 15000);
+        if (!(sobrasCache[cacheKey] && sobrasCache[cacheKey]._hasData)) sobrasCache[cacheKey] = rec;
+        // the user switched to this very day while it was loading and sees "—": render it
+        if (currentStore === store && getLastWeekDate(currentDay) === date && !sobrasLoading) renderMain();
+      } catch (e) {
+        // leave it to the on-demand fetch (with its own retry) when the day is opened
+      }
+    }
+  } finally {
+    _sobrasPrefetchRunning = false;
+  }
+}
+
+async function fetchSobrasForCurrentDay() {
+  const apiUrl = getApiUrlProd();
+  if (!apiUrl) return;
+
+  const date = getLastWeekDate(currentDay);
+  const cacheKey = `${currentStore}-${date}`;
+
+  // Only skip if cache has real data (not an empty fallback from a failed fetch)
+  if (sobrasCache[cacheKey] && sobrasCache[cacheKey]._hasData) return;
+
+  sobrasLoading = true;
+  renderMain();
+
+  try {
+    const result = await fetchSobrasRecord_(currentStore, date, 15000);
     sobrasCache[cacheKey] = result;
   } catch(e) {
     console.warn('Failed to fetch sobras:', e);
@@ -2077,7 +2120,6 @@ async function fetchSobrasForCurrentDay() {
       }, 3000);
     }
   } finally {
-    clearTimeout(timeout);
     sobrasLoading = false;
     renderMain();
   }
@@ -5257,6 +5299,7 @@ function switchStore(store) {
   loadEstimatesForCurrentDay();
   fetchSobrasForCurrentDay();
   fetchNoteDays(store);
+  setTimeout(prefetchSobrasForOtherDays_, 1500);   // 2026-10-14: warm the other days' sobras for the new store
 }
 function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
 
@@ -5343,6 +5386,8 @@ function renderAll() { renderDayTabs(); renderAlertsBar(); renderMain(); }
     const cacheKey = `${currentStore}-${dateStr}`;
     const sobrasDate = getLastWeekDate(currentDay);
     const sobrasCacheKey = `${currentStore}-${sobrasDate}`;
+    // 2026-10-14: warm the other six days' sobras in the background (display-only data)
+    setTimeout(prefetchSobrasForOtherDays_, 1500);
 
     // Auto-retry after 3s for anything that failed on first attempt
     // (handles Apps Script cold start where first call times out)
